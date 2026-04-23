@@ -1,0 +1,385 @@
+---
+description: VTON Studio - Complete product documentation, architecture, conventions, and development reference
+alwaysApply: true
+---
+
+# VTON Studio - Complete Product & Architecture Reference
+
+## Product Overview
+
+VTON Studio is a **fully client-side** AI-powered web application for generating photorealistic e-commerce fashion photography. It has **two feature modes** and **two operation modes**:
+
+**Feature Modes:**
+1. **Virtual Try-On (VTON)** — Upload product images (garments or footwear), configure models/poses/backgrounds, and generate professional fashion photography
+2. **Model Swap** — Upload existing product photos with a model already wearing clothing, and replace the entire human model with a new person while preserving the clothing, pose, and optionally the background
+
+**Operation Modes:**
+1. **Single** — Process one product at a time with multiple pose outputs
+2. **Bulk** — Process multiple products organized in folders with round-robin pairing of models, backgrounds, and complementary garments
+
+**Product Categories:**
+- **Clothing**: topwear, bottomwear, onepiece
+- **Footwear**: casual shoes, formal shoes, sneakers, boots, sandals, loafers, heels, sports shoes, slippers (9 types)
+
+## Tech Stack
+
+- **Framework**: Next.js 16+ (App Router), React 19+, TypeScript 5
+- **Styling**: Tailwind CSS 4 + shadcn/ui (New York style, Radix UI primitives)
+- **AI**: `@google/genai` v1.41+ — Gemini 3 Pro (`gemini-3-pro-preview`) for prompt generation, Nano Banana Pro (`gemini-3-pro-image-preview`) for image generation
+- **State**: Custom React hook (`useVTONStore`) with useState/useCallback/useMemo (no external state library)
+- **Icons**: Lucide React
+- **Color System**: OKLCH CSS variables with dark mode support
+- **ZIP Export**: `jszip` (dynamically imported for bulk downloads)
+- **Emoji Picker**: `emoji-mart` (for infographic USP badges)
+
+## Architecture
+
+```
+src/
+├── app/                           # Next.js App Router pages
+│   ├── layout.tsx                 # Root layout (fonts, providers, TooltipProvider)
+│   ├── page.tsx                   # Single page — renders VTONWizard
+│   └── globals.css                # Theme variables, Tailwind config
+├── components/
+│   ├── ui/                        # shadcn/ui primitives (DO NOT edit manually)
+│   │   ├── accordion.tsx          # Expandable content sections
+│   │   ├── badge.tsx              # Status and label badges
+│   │   ├── button.tsx             # Primary button component
+│   │   ├── card.tsx               # Card container
+│   │   ├── dialog.tsx             # Modal dialog
+│   │   ├── input.tsx              # Text input
+│   │   ├── label.tsx              # Form labels
+│   │   ├── popover.tsx            # Popover container
+│   │   ├── radio-group.tsx        # Radio selection group
+│   │   ├── scroll-area.tsx        # Custom scrollable area
+│   │   ├── select.tsx             # Dropdown select
+│   │   ├── separator.tsx          # Visual separator
+│   │   ├── sheet.tsx              # Side panel sheet
+│   │   ├── slider.tsx             # Range slider
+│   │   ├── tabs.tsx               # Tab navigation
+│   │   ├── textarea.tsx           # Multi-line text input
+│   │   └── tooltip.tsx            # Hover tooltips
+│   └── vton/                      # Application components
+│       ├── vton-wizard.tsx        # Main 5-step wizard container (294 lines)
+│       ├── step-garments.tsx      # Step 1: Product category, gender, type, upload (875 lines)
+│       ├── step-styling.tsx       # Step 2: Background & model selection (1236 lines)
+│       ├── step-output.tsx        # Step 3: Aspect ratio & pose selection (715 lines)
+│       ├── step-details.tsx       # Step 4: Instructions textarea & API key (82 lines)
+│       ├── step-generate.tsx      # Step 5: Generation orchestration & results (2262 lines)
+│       ├── image-upload-zone.tsx  # Reusable drag-drop upload component
+│       ├── theme-toggle.tsx       # Dark/light mode toggle
+│       ├── emoji-picker.tsx       # Emoji picker (emoji-mart)
+│       └── infographic-editor.tsx # Post-gen infographic overlay editor
+├── lib/
+│   ├── gemini.ts                  # ALL AI logic — 4 functions (1046 lines)
+│   ├── types.ts                   # TypeScript type definitions (281 lines)
+│   ├── constants.ts               # All configurable options (1237 lines)
+│   ├── utils.ts                   # cn() helper (7 lines)
+│   └── infographic-renderer.ts   # Canvas-based infographic rendering (423 lines)
+└── store/
+    └── vton-store.ts              # Central state management hook (534 lines)
+```
+
+## Complete Feature Breakdown
+
+### Feature Mode 1: Virtual Try-On (VTON)
+
+#### Step 1 — Garments (`step-garments.tsx`)
+- **Product Category**: Clothing or Footwear toggle
+- **Gender**: Male, Female, Unisex — affects model selection, garment analysis prompts, and pose filtering
+- **Garment Type** (Clothing): Topwear, Bottomwear, Onepiece — filters available poses and adjusts prompt emphasis
+- **Footwear Type** (Footwear): 9 types — casual shoes, formal shoes, sneakers, boots, sandals, loafers, heels, sports shoes, slippers
+- **Fit** (Clothing only): 8 options — slim, regular, relaxed, oversized, tailored, loose, bodycon, boxy. User-selected fit is AUTHORITATIVE and overrides AI assessment
+- **Image Upload**: Drag-drop or click to upload product images (multiple images of the same product for different angles)
+- **Complementary Garments** (Clothing only): Additional garment images to include in the outfit (e.g., pants to go with a shirt)
+- **Product Info** (Optional): Free-text field for product-specific details (fabric, key features, selling points). In single mode stored as a global string; in bulk mode stored per-folder on `ProductFolder.productInfo`
+- **Bulk Mode**: Products organized in folders (`ProductFolder`), each folder represents one product with multiple angle shots and optional product info
+
+#### Step 2 — Styling (`step-styling.tsx`)
+- **Background Configuration**:
+  - Inspiration image upload (reference for environment)
+  - Text description (custom background description)
+  - Default studio background (clean e-commerce)
+  - Bulk mode: Multiple backgrounds as `BulkBackground` cards — add/remove/edit each
+- **Model Selection**:
+  - 10 preset AI models: 5 female (Priya, Mei, Emma, Amara, Sofia) + 5 male (Arjun, Kenji, James, Kwame, Carlos) — diverse ethnicities
+  - Custom model upload (reference photo)
+  - Preset + custom can coexist: preset provides description, custom provides reference photo
+  - Filtered by gender selection
+  - Bulk mode: Multiple model images as `BulkModelImage` — each with name, file, preview
+
+#### Step 3 — Output (`step-output.tsx`)
+- **Aspect Ratio**: 8 options — 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 9:16, 16:9
+- **Pose Selection**: Multi-select from filtered pose library
+  - Clothing: 70+ poses across 5 view angles × 7 framing types (from `POSES`)
+  - Footwear: 50+ poses split into Product-Only (20+ no-model shots) and On-Model (25+ shots) (from `FOOTWEAR_POSES`)
+  - Poses grouped by view angle in the UI
+  - Each pose has: `id`, `name`, `description`, `icon`, `viewAngle`, `framing`, `garmentRelevance`, `requiresModel`
+- **Per-Pose Accessories**: Each selected pose can have its own set of accessories
+  - 18 accessory categories: necklace, pendant, earrings, watch, bracelet, ring, sunglasses, shoes, belt, hat, scarf, handbag, clutch, tie, brooch, cufflinks, anklet, hair-accessory
+  - Each accessory can be: AI-chosen (no image — AI picks best match) or exact reference (with uploaded image)
+
+#### Step 4 — Details (`step-details.tsx`)
+- **Additional Instructions**: Free-text field for custom instructions passed to prompt generation
+- **API Key**: Google Gemini API key input (stored in state, not env vars; show/hide toggle)
+
+#### Step 5 — Generate (`step-generate.tsx`)
+- **Generation Summary**: Shows all configured parameters
+- **Image Quality**: 1K, 2K (default), 4K
+- **Generation Process**:
+  1. Creates one `GeneratedResult` per selected pose
+  2. For each pose: calls `generateVTONPrompt()` → calls `generateVTONImage()`
+  3. Auto-retry on first failure (1 second delay, then retry once)
+  4. Concurrency: 5 for single mode, 3 for bulk mode
+- **Results Display**: Grid of cards with image preview, status indicator, pose info, expandable prompt
+- **Actions**: Download individual images, Infographic editor, Retry failed, Regenerate All
+- **Bulk Results**: Grouped by combination with collapsible sections, per-combo ZIP download, master ZIP download
+
+### Feature Mode 2: Model Swap
+
+#### Step 1 — Products (`step-garments.tsx` in model-swap mode)
+- Upload existing product photos (images already showing a model wearing clothing)
+- **Product Info** (Optional): Free-text field for product-specific details, stored same way as VTON
+- Single mode: Upload individual images
+- Bulk mode: Organize in folders
+
+#### Step 2 — Styling (`step-styling.tsx` in model-swap mode)
+- **Background Mode**: 2 options
+  - `keep-same` — Preserve the original background from the product photo
+  - `new-background` — Replace with inspiration image, text description, or studio default
+- **New Model**: Same selection as VTON (presets + custom upload)
+- Bulk mode: Multiple model images, backgrounds configured per-combo
+
+#### Step 3 — Output (`step-output.tsx` in model-swap mode)
+- **Aspect Ratio**: Same 8 options
+- No pose selection (model swap preserves the original pose)
+
+#### Step 4 — Details (same as VTON)
+
+#### Step 5 — Generate (`step-generate.tsx` in model-swap mode)
+- **Single Mode**: One result per source image. Calls `generateModelSwapPrompt()` → `generateModelSwapImage()`
+- **Bulk Mode**: One result per source image × model combination (round-robin pairing)
+- Same auto-retry, concurrency, download features as VTON
+
+### Infographic Editor (`infographic-editor.tsx` + `infographic-renderer.ts`)
+- Opens as a dialog on any generated image
+- **USP Badges**: Text + emoji icon + styling
+  - 6 badge styles: rounded, pill, square, ribbon, outline, minimal
+  - Customizable: text, icon, font size, text color, background color, opacity
+  - 18 preset USPs (Pure Cotton, 100% Organic, Sustainable, etc.)
+  - 18 preset colors
+- **Logo Overlays**: Upload logo image, position, size, opacity
+- **Positioning**: 9 overlay positions (3×3 grid) + fine-tune X/Y offset sliders
+- **Drag-and-drop**: Reposition elements on canvas with hit-testing
+- **Background Dimming**: Overall overlay dimming slider (0-1)
+- **Export**: Render to canvas at full resolution and download as PNG
+
+## AI Pipeline — Two-Step Generation
+
+### Step 1: Prompt Generation (Gemini 3 Pro)
+```
+Model: gemini-3-pro-preview
+Config: ThinkingLevel.LOW
+Input: System prompt + reference images + parameters
+Output: Detailed text prompt (3-5 paragraphs)
+```
+
+### Step 2: Image Generation (Nano Banana Pro)
+```
+Model: gemini-3-pro-image-preview
+Config: responseModalities: ["TEXT", "IMAGE"], imageConfig: { aspectRatio, imageSize }
+Input: Generated prompt + all reference images
+Output: Generated image (base64)
+```
+
+### Four AI Functions in `gemini.ts`:
+1. `generateVTONPrompt()` — VTON prompt generation (clothing + footwear branches)
+2. `generateVTONImage()` — VTON image generation (clothing + footwear branches)
+3. `generateModelSwapPrompt()` — Model Swap prompt generation
+4. `generateModelSwapImage()` — Model Swap image generation
+
+See `gemini-prompts.mdc` for complete prompt text and logic.
+
+## State Management (`vton-store.ts`)
+
+### Core State
+- `mode: AppMode` — "single" | "bulk"
+- `featureMode: FeatureMode` — "vton" | "model-swap"
+- `currentStep: WizardStep` — 1-5
+- `productCategory: ProductCategory` — "clothing" | "footwear"
+- `gender: Gender` — "male" | "female" | "unisex"
+- `garmentImages: GarmentImage[]` — uploaded product images
+- `garmentType: GarmentType` — "topwear" | "bottomwear" | "onepiece"
+- `footwearType: FootwearType` — 9 options
+- `fit: FitType | null` — 8 options or null (auto-detect)
+- `complementaryImages: ComplementaryImage[]` — secondary garments
+- `poseAccessories: Record<string, AccessoryItem[]>` — per-pose accessories
+- `background: BackgroundConfig` — inspiration image or text
+- `selectedModel: AIModel | null` — preset model
+- `modelImage: ModelImage | null` — custom uploaded model photo
+- `aspectRatio: AspectRatio` — default "3:4"
+- `imageQuality: "1K" | "2K" | "4K"` — default "2K"
+- `selectedPoses: Pose[]` — multi-select
+- `additionalInfo: string` — free text (global instructions for all products)
+- `productInfo: string` — free text (product-specific details for single mode)
+- `apiKey: string` — Gemini API key
+
+### Bulk State
+- `primaryFolders: ProductFolder[]`
+- `complementaryFolders: ProductFolder[]`
+- `bulkModelImages: BulkModelImage[]`
+- `bulkBackgrounds: BulkBackground[]`
+- `bulkCombinations: BulkCombination[]` — computed via `useMemo`, round-robin
+- `bulkResults: BulkGeneratedResult[]`
+
+### Model Swap State
+- `modelSwapBgMode: ModelSwapBackgroundMode` — "keep-same" | "new-background"
+- `modelSwapResults: ModelSwapGeneratedResult[]`
+- `modelSwapBulkResults: ModelSwapBulkResult[]`
+- `modelSwapBulkCombinations: ModelSwapBulkCombination[]` — computed via `useMemo`
+
+### Computed Values
+- `hasModel: boolean` — selectedModel !== null || modelImage !== null
+- `bulkCombinations` — round-robin: `primary[i] + complementary[i % cgCount] + model[i % modelCount] + background[i % bgCount]`
+- `modelSwapBulkCombinations` — round-robin: `primary[i] + model[i % modelCount] + background[i % bgCount]`
+
+### Step Validation (`canProceedToStep`)
+**VTON Single:**
+- Step 1: always true
+- Step 2: garmentImages.length > 0
+- Step 3: garmentImages > 0 AND (isFootwear OR hasModel)
+- Step 4: garmentImages > 0 AND selectedPoses > 0 AND (isFootwear ? (!anyPoseNeedsModel OR hasModel) : hasModel)
+- Step 5: Step 4 conditions AND apiKey.length > 0
+
+**VTON Bulk:**
+- Step 1: always true
+- Step 2: hasPrimaryProducts
+- Step 3: hasPrimaryProducts AND hasModels
+- Step 4: hasPrimaryProducts AND hasModels AND selectedPoses > 0
+- Step 5: Step 4 conditions AND apiKey.length > 0
+
+**Model Swap Single:**
+- Step 1: always true
+- Step 2: garmentImages.length > 0
+- Step 3: garmentImages > 0 AND hasModel
+- Step 4: garmentImages > 0 AND hasModel
+- Step 5: Step 4 conditions AND apiKey.length > 0
+
+**Model Swap Bulk:**
+- Step 1: always true
+- Step 2: hasPrimaryProducts
+- Step 3: hasPrimaryProducts AND hasModels
+- Step 4: hasPrimaryProducts AND hasModels
+- Step 5: Step 4 conditions AND apiKey.length > 0
+
+## Key Conventions
+
+### Component Patterns
+- All components are `"use client"` — fully client-side app
+- Each wizard step receives `store: VTONStore` prop
+- No API routes — all AI calls happen client-side via `@google/genai`
+- API key entered by user in Step 4 (not stored in env vars)
+- Use `cn()` from `@/lib/utils` for conditional class merging
+- Prefer shadcn/ui components from `@/components/ui/` for all UI primitives
+
+### Styling
+- Gradient buttons: `bg-gradient-to-r from-orange-600 to-amber-600`
+- Rounded corners: `rounded-xl` or `rounded-2xl` for cards
+- Card pattern: `rounded-2xl border border-border bg-card p-5`
+- Label pattern: `text-xs text-muted-foreground uppercase tracking-wider font-medium`
+- Shadow accent: `shadow-lg shadow-orange-500/20`
+- Always support dark mode via CSS variables (never hardcode colors)
+- Badge colors: Orange for models, Emerald for backgrounds, Secondary for products
+
+### Pose System
+- **Clothing Poses** (`POSES`): 70+ poses organized by view angle × framing
+  - View Angles: front, side, back, three-quarter-front, three-quarter-back
+  - Framing: full-body, three-quarter, mid-thigh, waist-up, bust-up, hip-down, knee-down
+  - `garmentRelevance`: filters which garment types each pose applies to
+- **Footwear Poses** (`FOOTWEAR_POSES`): 50+ poses split into:
+  - Product-Only (`requiresModel: false`): 20+ shots with no human model — front, side, back, ¾ angles, top-down, sole view; single shoe and pair variants
+  - On-Model: 25+ shots — full-body, hip-down, knee-down, feet-closeup framings across all view angles
+  - View Angles: front, side, back, three-quarter-front, three-quarter-back, top-down, bottom
+  - Framing adds: `product-only`, `feet-closeup`
+
+### Generation Flow
+1. User configures all parameters across steps 1-4
+2. Step 5: User clicks "Generate"
+3. App creates result objects (one per pose for VTON, one per source image for Model Swap)
+4. For each result:
+   a. Status → "generating-prompt"
+   b. Call prompt generation function with all parameters
+   c. Status → "generating-image"
+   d. Call image generation function with prompt + all reference images
+   e. Status → "completed" (or "error")
+5. On first failure: auto-retry after 1 second (status → "auto-retrying")
+6. On second failure: status → "error" with error message
+7. Manual retry available for failed results
+
+### Bulk Mode
+- Products organized in folders (`ProductFolder`)
+- Round-robin pairing: `primary[i] + complementary[i % cgCount] + model[i % modelCount] + background[i % bgCount]`
+- Multiple backgrounds: `bulkBackgrounds` array of `BulkBackground` — each has `id`, `name`, `config: BackgroundConfig`
+- If no bulk backgrounds configured, default studio background used
+- Backgrounds configured in Step 2 via card-based UI
+- Concurrency: 3 for bulk, 5 for single
+- Results grouped by combination in UI with collapsible sections
+- Download: Individual, per-combo ZIP, master ZIP (nested folders by product name)
+
+### Infographic Editor
+- Canvas-based rendering (`infographic-renderer.ts`)
+- Supports USP badges (text + icon + styling) and logo overlays
+- Drag-and-drop repositioning with hit-testing
+- 9 overlay positions + fine-tune offset sliders
+- 6 badge styles: rounded, pill, square, ribbon, outline, minimal
+- 18 preset USPs and 18 preset colors
+- Export as PNG at full resolution
+
+## Adding New Features
+
+### New wizard steps
+Add to `WIZARD_STEPS` (and `MODEL_SWAP_WIZARD_STEPS` if applicable) in constants.ts, create `step-*.tsx`, update `vton-wizard.tsx` switch, update `canProceedToStep()` in store
+
+### New gender options
+Add to `GENDER_OPTIONS` in constants.ts, update `Gender` type in types.ts
+
+### New clothing poses
+Add to `POSES` array in constants.ts with correct `viewAngle`, `framing`, `garmentRelevance`
+
+### New footwear poses
+Add to `FOOTWEAR_POSES` in constants.ts — set `requiresModel: false` for product-only shots
+
+### New footwear types
+Add to `FOOTWEAR_TYPE_OPTIONS` in constants.ts, update `FootwearType` type in types.ts
+
+### New product categories
+Add to `PRODUCT_CATEGORY_OPTIONS` in constants.ts, update `ProductCategory` type, add category-specific prompt branches in gemini.ts
+
+### New accessories
+Add to `ACCESSORY_CATEGORIES` in constants.ts, update `AccessoryCategory` type
+
+### New AI models
+Add to `AI_MODELS` in constants.ts
+
+### New fit options
+Add to `FIT_OPTIONS` in constants.ts, update `FitType` type
+
+### New aspect ratios
+Add to `ASPECT_RATIOS` in constants.ts, update `AspectRatio` type
+
+### New feature modes
+Add to `FEATURE_MODE_OPTIONS` in constants.ts, update `FeatureMode` type, add mode-specific wizard steps, prompts, and generation logic
+
+### New background modes
+Update `BackgroundMode` / `ModelSwapBackgroundMode` in types.ts, add options in constants.ts, update prompt logic in gemini.ts
+
+## File Modification Rules
+
+- **NEVER** edit files in `src/components/ui/` directly — use `npx shadcn@latest add <component>`
+- **ALWAYS** update `src/lib/types.ts` when adding new data structures
+- **ALWAYS** update `src/lib/constants.ts` when adding new configurable options
+- **ALWAYS** keep prompts in `src/lib/gemini.ts` — do not scatter AI prompts across components
+- **ALWAYS** update `canProceedToStep()` in the store when changing step validation logic
+- **ALWAYS** update both `WIZARD_STEPS` and `MODEL_SWAP_WIZARD_STEPS` if the step change applies to both feature modes
+- **ALWAYS** clean up `URL.createObjectURL()` references with `URL.revokeObjectURL()` when removing images from state
+- **ALWAYS** maintain round-robin logic in `useMemo` computed combinations when adding new pairing dimensions

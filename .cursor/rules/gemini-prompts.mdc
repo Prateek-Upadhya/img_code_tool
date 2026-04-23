@@ -1,0 +1,627 @@
+---
+description: Complete Gemini AI prompt engineering reference — every prompt, every logic branch, every instruction used in VTON Studio
+globs: src/lib/gemini.ts
+alwaysApply: false
+---
+
+# Gemini Prompt Engineering — Complete Reference
+
+All AI logic lives in `src/lib/gemini.ts`. This file contains 4 exported functions forming two two-step pipelines:
+
+1. **VTON Pipeline**: `generateVTONPrompt()` → `generateVTONImage()`
+2. **Model Swap Pipeline**: `generateModelSwapPrompt()` → `generateModelSwapImage()`
+
+## Two-Model Pipeline Architecture
+
+| Step | Model ID | Model Name | Purpose | Config |
+|------|----------|------------|---------|--------|
+| Prompt Generation | `gemini-3-pro-preview` | Gemini 3 Pro | Analyzes reference images + parameters → detailed text prompt | `ThinkingLevel.LOW` |
+| Image Generation | `gemini-3-pro-image-preview` | Nano Banana Pro | Takes prompt + reference images → generated image | `responseModalities: ["TEXT", "IMAGE"]`, `imageConfig: { aspectRatio, imageSize }` |
+
+---
+
+## FUNCTION 1: `generateVTONPrompt()`
+
+This function branches based on `productCategory` into two completely different prompting strategies:
+- **Clothing**: Product-description approach (detailed garment analysis)
+- **Footwear**: Scene-focused approach (images carry product detail, prompt describes scene)
+
+### Input Parameters
+```typescript
+{
+  apiKey: string;
+  productCategory?: ProductCategory;        // "clothing" | "footwear"
+  gender: Gender;                            // "male" | "female" | "unisex"
+  garmentImages: GarmentImage[];             // 1+ images of the product
+  garmentType: GarmentType;                  // "topwear" | "bottomwear" | "onepiece"
+  footwearType?: FootwearType;               // 9 footwear types
+  fit: FitType | null;                       // 8 fit options or null
+  complementaryImages: ComplementaryImage[]; // secondary garments/accessories
+  accessories: AccessoryItem[];              // per-pose accessories (AI-chosen or with reference image)
+  background: BackgroundConfig;              // inspiration image, text, or default
+  model: AIModel | null;                     // preset AI model
+  modelImage: ModelImage | null;             // custom model reference photo
+  pose: Pose;                                // selected pose with viewAngle, framing, requiresModel
+  aspectRatio: AspectRatio;                  // output aspect ratio
+  additionalInfo: string;                    // user's free-text instructions
+  productInfo?: string;                      // product-specific details (fabric, features, selling points)
+}
+```
+
+### Key Variables Computed Before Branching
+```
+isFootwear = productCategory === "footwear"
+isProductOnlyShot = pose.requiresModel === false
+viewAngle = pose.viewAngle
+framing = pose.framing
+genderLabel = "men's / masculine" | "women's / feminine" | "unisex / gender-neutral"
+```
+
+---
+
+### VIEW ANGLE INSTRUCTIONS (Both Clothing & Footwear)
+
+Each view angle generates specific instructions telling the AI what garment/footwear details to emphasize.
+
+#### FOOTWEAR VIEW ANGLES
+
+**FRONT VIEW (camera facing the toe):**
+```
+TOE BOX: Shape (round, pointed, square, almond), material, cap toe detail, stitching
+VAMP: Upper material, texture, perforations, overlays, branding placement
+TONGUE: Visibility, material, padding, logo/branding on tongue
+LACING/CLOSURE: Lace type, eyelets, lace color, closure mechanism from front
+FRONT BRANDING: Any logo, text, symbol, emblem visible from the front — EXACT position, size, color, and design
+FRONT SILHOUETTE: Overall shape and proportions as seen from the front
+```
+
+**BACK VIEW (camera facing the heel):**
+```
+HEEL COUNTER: Shape, height, material, stiffness
+BACK TAB / PULL TAB: Position, material, logo or branding
+HEEL: Type (flat, block, stiletto, wedge, platform), height, material
+BACK BRANDING: Any logo, text, reflective elements on the heel area — EXACT position, size, color
+OUTSOLE REAR: Visible sole edge, color, tread pattern from behind
+COLLAR/TOPLINE: Opening shape as seen from behind
+```
+
+**SIDE VIEW (lateral or medial profile):**
+```
+FULL SILHOUETTE: The complete shoe profile from toe to heel — MOST important detail
+LATERAL/MEDIAL BRANDING: Logo, swoosh, stripes, or brand marks on the side — EXACT position, size, color, angle, and proportions
+MIDSOLE: Thickness, material, color, air units, cushioning visible from side
+OUTSOLE: Tread pattern edge, color contrast, thickness from side
+UPPER CONSTRUCTION: Panels, overlays, mesh, leather, suede sections from side
+HEEL HEIGHT and profile
+TOE SPRING: How much the toe curves upward
+LACING PROFILE: How the lacing system appears from the side
+```
+
+**THREE-QUARTER FRONT VIEW (angled, showing front and side):**
+```
+TOE BOX and VAMP from the angled front
+PARTIAL SIDE showing branding, midsole, and silhouette depth
+LACING/CLOSURE at an angled perspective
+BRANDING visible from this angle — ALL logos/marks on both front and side surfaces
+UPPER CONSTRUCTION panels and material transitions
+Overall 3D form and depth perception
+```
+
+**THREE-QUARTER BACK VIEW (angled away, showing heel and side):**
+```
+HEEL COUNTER and back tab from angled rear
+PARTIAL SIDE showing branding, midsole, and silhouette
+OUTSOLE visible at this angle
+BRANDING on heel and side surfaces — exact position, size, color
+COLLAR/TOPLINE shape and padding
+```
+
+**TOP-DOWN VIEW (bird's eye looking straight down):**
+```
+TONGUE: Full tongue visible with all branding, labels, logo
+LACING PATTERN: Complete lacing system from above
+INSOLE: If visible, describe insole branding and material
+COLLAR/TOPLINE: Full opening shape
+TOE BOX from above
+OVERALL SHAPE: The footprint/outline shape
+TOP BRANDING: Any logos, text, patterns on upper surfaces
+```
+
+**BOTTOM/SOLE VIEW (looking at the outsole):**
+```
+TREAD PATTERN: Exact pattern, lugs, grooves, flex points
+SOLE BRANDING: Brand logo, text, size markings on the sole
+SOLE MATERIAL: Rubber, EVA, leather, composition
+SOLE COLOR: Color zones, contrasts
+HEEL AREA: Wear indicators, heel strike zone
+FOREFOOT: Flex grooves, pivot point
+```
+
+#### CLOTHING VIEW ANGLES
+
+**FRONT VIEW:**
+```
+NECKLINE: Exact neckline shape and depth
+FRONT CLOSURE: Buttons, zippers, snaps, ties — count, placement, material
+FRONT PATTERN/PRINT: How the pattern appears on the front panel
+FRONT POCKETS: Chest, kangaroo, welt — exact position and style
+FRONT EMBELLISHMENTS: Logos, embroidery, appliqués, screen prints, text
+FRONT DRAPE: How the fabric falls from the front
+SLEEVE LENGTH from front perspective
+HEMLINE as visible from the front
+```
+
+**BACK VIEW:**
+```
+BACK NECKLINE/COLLAR: How it looks from behind (crew, scoop, keyhole, open)
+BACK CLOSURE: Back zipper, buttons, lace-up, hook-and-eye, tie-back
+BACK YOKE: Shoulder yoke shape, seam lines, stitching
+BACK PATTERN/PRINT: How the pattern continues/changes on back
+BACK POCKETS: Shape, placement, stitching
+BACK VENT/SLIT: Center vent, side vents, back slit
+BACK EMBELLISHMENTS: Logos, embroidery, prints, tags
+BACK SEAMS: Center back seam, princess seams, darting
+BACK HEMLINE and BACK DRAPE
+CRITICAL: Camera shows model FROM BEHIND — entire back must be visible
+```
+
+**SIDE VIEW:**
+```
+SILHOUETTE: Overall garment outline/shape — MOST important
+SIDE SEAMS: Construction lines, panel seams
+SIDE DRAPE: How fabric falls and hangs
+SLEEVE SHAPE: Curve, taper, length in profile
+HEM SHAPE: Straight, curved, high-low, asymmetric
+SIDE POCKETS: Slit pockets, cargo pockets, depth and angle
+THICKNESS/STRUCTURE: How thick/structured the garment appears
+FIT PROFILE: How tight or loose from the side
+```
+
+**THREE-QUARTER FRONT VIEW:**
+```
+All FRONT details (neckline, closure, pockets, pattern) are primary
+PARTIAL SIDE showing silhouette, side seam, drape
+SLEEVE: Both length and shape at this angle
+FIT: Waist, torso fit visibility
+FRONT EMBELLISHMENTS at angled perspective
+```
+
+**THREE-QUARTER BACK VIEW:**
+```
+All BACK details (closure, yoke, seams, embellishments) are primary
+PARTIAL SIDE showing drape and silhouette profile
+BACK PATTERN flow at this angle
+BACK HEM from angled rear perspective
+BACK FIT across shoulders, back, and waist
+```
+
+---
+
+### FRAMING INSTRUCTIONS (Both Clothing & Footwear)
+
+**PRODUCT ONLY (No Human Model)** — Footwear only:
+```
+PRODUCT-ONLY shot. NO human model. The image shows ONLY the footwear product against the background.
+The shoe(s) should be the SOLE subject, well-lit, full product visible.
+Professional studio-quality composition.
+```
+
+**FEET CLOSE-UP** — Footwear only:
+```
+Extreme close-up showing ONLY feet and ankles wearing the footwear.
+Frame: mid-calf/ankle down to ground/sole.
+Detail shot focused on how footwear looks when worn — fit, ground interaction, product details at close range.
+```
+
+**FULL BODY (Head to Toe):**
+```
+COMPLETE model from head to toe including feet/footwear.
+Entire garment length visible. Breathing room above head and below feet. No body part cropped.
+```
+
+**THREE-QUARTER BODY (Head to Below Knee):**
+```
+Head to just below the knees (~75% of body).
+Lower calves and feet NOT visible. Full garment length for tops, dresses, knee drape.
+```
+
+**MID-THIGH / COWBOY SHOT:**
+```
+Head to mid-thigh level. Classic "cowboy shot". Full upper body, hip area.
+Full length of tops/jackets, waistband/upper portion of bottoms.
+```
+
+**WAIST-UP:**
+```
+Head to waist/hip area. UPPER BODY only. Medium close-up for necklines, collars, sleeves, bust fit,
+upper garment construction, prints, fabric texture. Lower body below waist NOT visible.
+```
+
+**BUST-UP / CLOSE-UP:**
+```
+Upper chest, neck, and head area. Fine details: neckline construction, collar shape, fabric texture,
+stitching quality, button/closure detail, print clarity, embellishment craftsmanship.
+```
+
+**LOWER BODY (Hip to Feet):**
+```
+ONLY lower body from hip/waist down to feet. Upper body NOT visible.
+Footwear: FOOTWEAR is the HERO — prominently visible, detailed, with complementary clothing above.
+Clothing: LOWER BODY GARMENT is hero — waistband, belt loops, pockets, fly, thigh fit, knee break, taper, hemline.
+```
+
+**KNEE-DOWN:**
+```
+ONLY from knee down to feet.
+Footwear: FOOTWEAR is absolute HERO — extreme detail, pant/sock interaction, construction, material, branding.
+Clothing: Extreme lower-body detail — pant leg taper, hem/cuff, ankle fit, pant break on shoes, cropped length.
+Upper body and thighs NOT visible.
+```
+
+---
+
+### GARMENT TYPE EMPHASIS
+
+**TOPWEAR:**
+```
+Hero garment is a TOP. MAXIMUM detail to: neckline, sleeve length + construction, front/back closure,
+shoulder seam, body/torso fit, fabric texture, print/pattern placement, hemline.
+Bottomwear is secondary — describe briefly.
+```
+
+**BOTTOMWEAR:**
+```
+Hero garment is a BOTTOM. MAXIMUM detail to: waistband style, rise height, front fly/closure,
+pocket style + placement, belt loops, thigh fit, knee area, leg silhouette, hemline/cuff,
+fabric texture, seam construction.
+Topwear is secondary — describe briefly.
+```
+
+**ONEPIECE:**
+```
+Hero garment is ONE PIECE. MAXIMUM detail to: neckline, bodice fit, waistline treatment,
+skirt/leg portion, overall length, sleeve details, back detail, fabric flow,
+pattern placement across full garment, upper-to-lower transition.
+Both upper and lower portions described with equal precision.
+```
+
+**FOOTWEAR (product type emphasis includes BRAND-BLIND approach):**
+```
+Hero product is FOOTWEAR. MAXIMUM detail to:
+UPPER, TOE, HEEL, SOLE/OUTSOLE, MIDSOLE, CLOSURE, COLLAR/TOPLINE, TONGUE, INSOLE,
+COLORWAY, STITCHING, HARDWARE.
+
+═══ BRANDING & LOGO PRESERVATION — BRAND-BLIND APPROACH (MOST CRITICAL) ═══
+★★★ DO NOT IDENTIFY THE BRAND BY NAME ★★★
+
+Describe every branding element PURELY as abstract visual shapes and graphics.
+NEVER name the brand (no "Nike Swoosh", "Adidas Stripes", "Puma Cat").
+
+For EACH branding element:
+1. VISUAL SHAPE: Exact geometric form ("curved checkmark-shaped graphic", "three parallel diagonal stripes")
+2. RENDERING STYLE: Embossed, debossed, printed, stitched, reflective, metallic, perforated, woven
+3. COLOR(S): Exact color of the mark
+4. SIZE: Relative to shoe surface
+5. PLACEMENT: Exact position — which surface and precise location
+6. TEXT/WORDMARKS: Exact letterforms, font style, spacing, color — as visual text, not brand
+7. MULTIPLE MARKS: Each instance separately with full detail
+
+WHY BRAND-BLIND: Image generator substitutes wrong logo variants from world knowledge if it recognizes a brand.
+THE IMAGE GENERATOR MUST REPRODUCE ALL VISUAL MARKS WITH 100% FIDELITY — ZERO changes to anything.
+```
+
+---
+
+### CLOTHING PROMPT — Complete System Prompt Structure
+
+The clothing prompt follows this exact structure:
+
+```
+ROLE: "expert fashion photographer and prompt engineer specializing in Virtual Try-On (VTON) image generation"
+
+GARMENT GENDER CONTEXT: {genderLabel} garment. Informs analysis of design language, fit conventions,
+styling cues, silhouette proportions. Male = broader shoulders, straighter cuts, functional pockets.
+Female = varied necklines, darting, tapered waists. Unisex = relaxed proportions, minimal darting.
+
+POSE VIEW ANGLE: "{viewAngle}" ({pose.name} - {pose.description})
+Camera captures from the {viewAngle} perspective.
+{framingInstruction}
+{garmentTypeInstruction}
+
+CRITICAL ACCURACY REQUIREMENTS (8 items):
+1. SLEEVE LENGTH — exact as observed
+2. NECKLINE — exact shape
+3. HEMLINE & LENGTH — exact ending point
+4. FABRIC & TEXTURE — type, weight, texture
+5. COLOR & PATTERN — exact colors, prints, patterns
+6. CONSTRUCTION DETAILS — buttons, zippers, pockets, embroidery, logos
+7. FIT — {if user selected: CRITICAL OVERRIDE to user's fit; else: AI determines from images}
+8. SILHOUETTE — overall shape and drape
+{viewSpecificGarmentInstruction}
+
+FRAMING RULE: Frame EXACTLY as specified.
+
+FIT PRESERVATION: {if user selected fit: reproduce garment details from images but use user's fit;
+                   else: reproduce everything from images, use AI judgment for fit}
+
+MODEL REFERENCE: {if modelImage provided: "EXACT same person from reference photo"}
+
+[Reference Images: model photo, garment images, complementary items]
+[Accessory Instructions: AI-chosen vs exact reference]
+[Background: inspiration image, text description, or default studio]
+
+--- GENERATION PARAMETERS ---
+Gender, Garment Type, Garment Fit, AI Model, Model Reference, Pose, Framing, Aspect Ratio,
+Background, Accessories, Additional Instructions
+
+FINAL: "write the VTON image generation prompt"
+```
+
+### FOOTWEAR PROMPT — Complete System Prompt Structure
+
+The footwear prompt is DELIBERATELY different — it focuses on SCENE, not product:
+
+```
+ROLE: "expert footwear photographer and prompt engineer"
+
+CRITICAL CONTEXT: "The image generator will receive the actual footwear reference photos SEPARATELY
+and is instructed to copy the product pixel-for-pixel from those photos. YOUR prompt should focus on
+SCENE, POSE, LIGHTING, and COMPOSITION — NOT on re-describing the product in detail."
+
+PRODUCT: {fwLabel} ({genderLabel} footwear)
+SHOT TYPE: PRODUCT-ONLY | ON-MODEL
+POSE VIEW ANGLE: {viewAngle} ({pose.name})
+{framingInstruction}
+
+SCENE ELEMENTS CHECKLIST:
+1. POSE & BODY POSITION (or product placement for product-only)
+2. CAMERA ANGLE & FRAMING
+3. LIGHTING — direction, quality, key/fill/rim lights, shadows
+4. BACKGROUND/ENVIRONMENT — scene setting, surfaces, atmosphere, depth of field
+5. COMPOSITION — rule of thirds, negative space, visual balance
+6. OVERALL MOOD — professional, editorial, lifestyle, studio
+
+PRODUCT REFERENCE RULE:
+- Refer to footwear generically as "the footwear shown in the reference images"
+- Do NOT describe specific colors, patterns, branding, logos, or construction
+- MAY mention general footwear type and material category
+- Do NOT name the brand
+- Include: "Reproduce the footwear EXACTLY as shown in the reference images"
+
+[Reference images labeled: "for scene composition purposes only, do NOT describe product details"]
+
+--- SCENE PARAMETERS ---
+Product, Shot Type, Model, Pose, Framing, Aspect Ratio, Background, Accessories, Additional
+
+REMINDER: Focus on SCENE, POSE, LIGHTING, COMPOSITION. Do NOT describe product details.
+Include exact reproduction instruction.
+
+FINAL: "write the scene-focused footwear image generation prompt"
+```
+
+### Content Parts Assembly Order
+
+Both clothing and footwear prompts assemble content parts in this order:
+1. System prompt text (role + instructions)
+2. Model reference image (if provided AND not product-only shot)
+3. Product images (garment/footwear)
+4. Complementary images (if any)
+5. Accessories (AI-chosen text instructions + exact reference images)
+6. Background (inspiration image if mode is "inspiration")
+7. Generation parameters block
+8. Final instruction
+
+---
+
+## FUNCTION 2: `generateVTONImage()`
+
+### Clothing Architecture (Text-First)
+```
+Content Parts Order:
+1. TEXT: Generated prompt + "garment must match provided reference images EXACTLY" +
+   model reference instruction if applicable
+2. IMAGE: Model reference photo (if provided, not product-only)
+3. IMAGES: Garment reference images
+4. IMAGES: Complementary garment images
+5. IMAGES: Accessory reference images (only those with uploaded images)
+```
+
+### Footwear Architecture (IMAGES-FIRST)
+The key insight: less text = model pays more attention to images.
+
+```
+Content Parts Order:
+1. IMAGES: Footwear reference images FIRST
+2. IMAGE: Model reference (if on-model shot)
+3. IMAGES: Complementary/accessory images
+4. TEXT: Generated prompt + enforcement instruction:
+   "Keep the shoes exactly the same as in the reference images above.
+   Preserve the original colors, patterns, textures, materials, shape, logos, and branding
+   exactly as they appear — do not change, replace, or reinterpret any detail of the footwear.
+   Do not use your knowledge of any brand to modify the logos or branding —
+   copy only what is visible in the reference photos."
+   + Model instruction if on-model
+   + Product-only instruction if no model
+```
+
+### API Config
+```typescript
+{
+  model: "gemini-3-pro-image-preview",
+  contents: contents,
+  config: {
+    responseModalities: ["TEXT", "IMAGE"],
+    imageConfig: {
+      aspectRatio: aspectRatio,  // "1:1" | "2:3" | "3:2" | "3:4" | "4:3" | "4:5" | "9:16" | "16:9"
+      imageSize,                 // "1K" | "2K" | "4K"
+    },
+  },
+}
+```
+
+---
+
+## FUNCTION 3: `generateModelSwapPrompt()`
+
+### Input Parameters
+```typescript
+{
+  apiKey: string;
+  gender: Gender;
+  sourceImage: { file: File; preview: string };  // existing product photo
+  model: AIModel | null;                          // preset model description
+  modelImage: ModelImage | null;                  // new model reference photo
+  backgroundMode: ModelSwapBackgroundMode;        // "keep-same" | "new-background"
+  background: BackgroundConfig;
+  aspectRatio: AspectRatio;
+  additionalInfo: string;
+  productInfo?: string;                          // product-specific details (fabric, features, selling points)
+}
+```
+
+### Complete System Prompt
+```
+ROLE: "expert fashion photographer and prompt engineer specializing in
+COMPLETE MODEL REPLACEMENT in product photography"
+
+TASK: COMPLETE MODEL REPLACEMENT (NOT a face swap)
+The input is an existing product photo showing a model wearing clothing.
+
+Instructions for the image generator:
+1. REPLACE the ENTIRE human model — EVERY visible body part: face, neck, shoulders, arms,
+   hands, fingers, torso, legs, feet. The COMPLETE person must be the new model.
+2. PRESERVE the clothing EXACTLY — same garment, fit, drape, wrinkles, colors, patterns,
+   every construction detail
+3. PRESERVE the exact same POSE — same body position, arm placement, leg stance, head angle
+4. {keepBackground ? "PRESERVE the original BACKGROUND exactly" : "REPLACE the background"}
+5. Maintain same camera angle, framing, and composition
+
+GENDER CONTEXT: {genderLabel} product
+
+═══ CRITICAL: FULL-BODY MODEL REPLACEMENT, NOT A FACE SWAP ═══
+★★★ The #1 most common failure is replacing ONLY the face while keeping the original model's body.
+This produces a visible skin tone mismatch between face and body. ★★★
+
+MUST explicitly instruct:
+- Replace ENTIRE PERSON, not just face — every square inch of visible skin
+- Skin tone UNIFORM and CONSISTENT across ALL visible body parts:
+  face, neck, décolletage, arms, hands, fingers, legs, feet
+- Body build (musculature, frame, proportions) consistent with reference
+- Hands and arms match new model's skin tone and build
+- If legs/feet visible, they also belong to new model
+- Think of this as photographing a COMPLETELY DIFFERENT PERSON in same pose wearing same outfit
+
+ACCURACY:
+- Clothing: PIXEL-PERFECT identical — no garment attribute changes
+- Pose: EXACTLY replicated
+- {keepBackground: "Background IDENTICAL to original"}
+- Clothing-to-body interaction natural on new model's proportions
+
+{modelImage: "Generated image must feature EXACT person — same face, skin tone, hair, body.
+Study reference for skin tone, complexion, body characteristics, apply consistently to every body part."}
+{model: "AI Model: {model.name} — {model.description}"}
+
+Output ONLY generation prompt text. 2-4 paragraphs ensuring COMPLETE model replacement
+with uniform skin tone and perfectly preserved clothing.
+```
+
+### Content Parts Assembly Order
+1. System prompt text
+2. Source product image (labeled: "ORIGINAL product photo — analyze pose, clothing, composition")
+3. New model reference image (labeled: "NEW model — must feature this EXACT person")
+4. Background inspiration image (if new-background mode with image)
+5. Generation parameters block
+6. Final instruction with 6 critical rules
+
+### Generation Parameters Block
+```
+Gender, New Model, Model Reference, Background instruction, Aspect Ratio, Additional Instructions
+
+CRITICAL RULES:
+1. Clothing must match original EXACTLY
+2. Pose must be IDENTICAL
+3. ENTIRE human model replaced — face, neck, arms, hands, legs, feet, ALL skin
+4. SKIN TONE CONSISTENCY — uniform across face, neck, arms, hands, all visible skin — NO mismatch
+5. Professional e-commerce fashion photography quality
+6. {keepBackground: "Background exactly as original" : "Background matches specified new background"}
+
+"Remember: FULL-BODY model replacement, NOT a face swap. Every visible body part must belong to the new model."
+```
+
+---
+
+## FUNCTION 4: `generateModelSwapImage()`
+
+### Content Parts Assembly Order
+```
+1. IMAGE: Source product photo (most important reference)
+2. IMAGE: New model reference photo
+3. IMAGE: Background inspiration (if new-background with image)
+4. TEXT: Generated prompt + enforcement instructions
+```
+
+### Enforcement Instructions (appended after prompt)
+```
+═══ CRITICAL: COMPLETE MODEL REPLACEMENT INSTRUCTIONS (NOT A FACE SWAP) ═══
+
+1. First reference image is ORIGINAL product photo — preserve clothing EXACTLY
+   (same garment, fit, colors, patterns, textures, construction, wrinkles, drape)
+
+2. REPLACE ENTIRE HUMAN MODEL — not just face. Every visible body part
+   (face, neck, shoulders, arms, hands, fingers, torso, legs, feet) must belong
+   to the NEW person. Use their EXACT face, skin tone, hair color, hair style,
+   body build, and proportions for the COMPLETE body.
+
+3. ★★★ SKIN TONE UNIFORMITY (MOST CRITICAL) ★★★
+   New model's skin tone PERFECTLY CONSISTENT across ALL visible body parts:
+   - Face and neck: new model's skin tone
+   - Arms and hands: SAME skin tone as face (not original model's)
+   - Legs and feet (if visible): SAME skin tone as face
+   - Décolletage/chest (if visible): SAME skin tone as face
+   ZERO visible skin tone difference between face and any other body part.
+   If new model has different skin tone than original, ENTIRE body reflects new tone uniformly.
+
+4. New model must adopt EXACT SAME POSE as original — same body position,
+   arm placement, leg stance, head angle.
+
+5. {keepBackground: "Keep background IDENTICAL" : "Replace background as described"}
+
+6. Clothing-to-body interaction natural on new model's proportions.
+
+7. Maintain same camera angle, framing, professional photography quality.
+
+THINK OF IT THIS WAY: Imagine photographing a COMPLETELY DIFFERENT PERSON wearing the exact same
+outfit in the exact same pose. Result should look like a fresh photograph — not old photo with face pasted on.
+```
+
+---
+
+## Critical Rules for Prompt Modifications
+
+### Clothing-Specific
+- **Fit Override**: User's explicit fit selection is AUTHORITATIVE. If user selects "regular", the prompt MUST say "regular fit" even if the garment image looks oversized. Only if fit is null does the AI determine fit from images.
+- **Product-Description Approach**: The clothing prompt asks Gemini Pro to analyze and describe every garment detail in text. This works because clothing detail preservation is best achieved through explicit textual description.
+- **8 Critical Accuracy Requirements**: Never remove or weaken these — they're the backbone of clothing fidelity.
+- **Garment Type Emphasis**: The hero garment (topwear/bottomwear/onepiece) gets maximum description detail; complementary items are secondary.
+
+### Footwear-Specific
+- **Scene-Focused, Images-First**: The footwear prompt DELIBERATELY does not describe product details. Gemini Pro must NOT describe specific colors, patterns, logos, or construction — doing so causes the image generator to follow text over photos, losing fidelity.
+- **Brand-Blind**: NEVER name the brand in any prompt. The image generator will hallucinate incorrect logo variants from its world knowledge if it recognizes a brand name. All branding described as abstract visual shapes.
+- **Images-First Architecture**: In `generateVTONImage()`, footwear reference images come FIRST in the content array, followed by other images, with text LAST. Less text = model pays more attention to images.
+- **Product-Only Shots**: Model image is NOT passed. Prompt says "no human model". `requiresModel: false` on the pose.
+
+### Model Swap-Specific
+- **Full-Body Replacement**: The #1 failure mode is face-only swap with skin tone mismatch. Every instruction hammers "ENTIRE person, not just face".
+- **Skin Tone Uniformity**: Repeated 4+ times in the prompt — face, neck, arms, hands, legs, feet must ALL match the new model's skin tone.
+- **Clothing Preservation**: The clothing must remain pixel-perfect identical — zero changes to any garment attribute.
+- **Pose Preservation**: The new model must adopt the exact same pose.
+- **Background Handling**: `keep-same` preserves everything; `new-background` supports inspiration image, text, or default studio.
+
+### Cross-Cutting Rules
+- **Gender Context**: Always passed and used to inform garment analysis (male=broader shoulders/straighter cuts; female=varied necklines/darting; unisex=relaxed proportions).
+- **View Angle**: Prompt describes ONLY details visible from the specified camera angle.
+- **Framing**: Crop boundary is strict. "product-only" = NO human body. "waist-up" = NO lower body.
+- **Model Reference**: When provided, prompt instructs "EXACT same person" reproduction. Skipped for product-only shots.
+- **Accessories**: Two types — AI-chosen (no image, AI picks best match) and exact reference (with uploaded image, must match precisely).
+- **Background**: Three modes — inspiration image, text description, or default studio.
+- **All Prompts Live in gemini.ts**: Never scatter AI prompts across components.
