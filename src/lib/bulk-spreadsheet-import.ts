@@ -2,8 +2,11 @@ import Papa from "papaparse";
 import type {
   BulkSpreadsheetMapping,
   BulkSpreadsheetNormalizedRow,
+  BottomwearLength,
   FitType,
   ProductFolder,
+  SleeveLength,
+  TopwearLength,
 } from "@/lib/types";
 import { BULK_SPREADSHEET_FILTER_ALL } from "@/lib/types";
 
@@ -26,6 +29,73 @@ export function normalizeFitValue(raw: string): FitType | null {
     bodycon: "bodycon",
     boxy: "boxy",
     boxyfit: "boxy",
+  };
+  return mapping[lower] ?? null;
+}
+
+export function normalizeSleeveLengthValue(raw: string): SleeveLength | null {
+  if (!raw) return null;
+  const lower = raw.trim().toLowerCase().replace(/[\s_/]+/g, "");
+  const mapping: Record<string, SleeveLength> = {
+    full: "full",
+    fullsleeve: "full",
+    longsleeve: "full",
+    long: "full",
+    threequarter: "three-quarter",
+    threequarters: "three-quarter",
+    threequarterssleeve: "three-quarter",
+    "34": "three-quarter",
+    "34sleeve": "three-quarter",
+    half: "half",
+    shortsleeve: "half",
+    halfsleeve: "half",
+    short: "half",
+    sleeveless: "sleeveless",
+    nosleeve: "sleeveless",
+  };
+  return mapping[lower] ?? null;
+}
+
+export function normalizeTopwearLengthValue(raw: string): TopwearLength | null {
+  if (!raw) return null;
+  const lower = raw.trim().toLowerCase().replace(/[\s_/]+/g, "");
+  const mapping: Record<string, TopwearLength> = {
+    full: "full",
+    shin: "full",
+    tunic: "full",
+    maxi: "full",
+    fulllengthtop: "full",
+    threequarter: "three-quarter",
+    knee: "three-quarter",
+    kneelength: "three-quarter",
+    "34": "three-quarter",
+    midthigh: "mid-thigh",
+    midhigh: "mid-thigh",
+    longline: "mid-thigh",
+    thigh: "mid-thigh",
+    half: "half",
+    waist: "half",
+    waistlength: "half",
+    croppedtop: "half",
+  };
+  return mapping[lower] ?? null;
+}
+
+export function normalizeBottomwearLengthValue(raw: string): BottomwearLength | null {
+  if (!raw) return null;
+  const lower = raw.trim().toLowerCase().replace(/[\s_/]+/g, "");
+  const mapping: Record<string, BottomwearLength> = {
+    full: "full",
+    ankle: "full",
+    fulllength: "full",
+    pants: "full",
+    threequarter: "three-quarter",
+    capri: "three-quarter",
+    cropped: "three-quarter",
+    "34": "three-quarter",
+    shorts: "shorts",
+    short: "shorts",
+    shortpants: "shorts",
   };
   return mapping[lower] ?? null;
 }
@@ -388,20 +458,56 @@ export function validateMapping(mapping: BulkSpreadsheetMapping, headers: string
   if (imgSet.has(mapping.productNameColumn)) {
     return "Product name column must not be one of the image URL columns.";
   }
+  const optionalCols = [
+    mapping.fitColumn,
+    mapping.sleeveLengthColumn,
+    mapping.topwearLengthColumn,
+    mapping.bottomwearLengthColumn,
+    mapping.filterColumn,
+  ].filter((c): c is string => c != null && c !== "");
+
+  const colSet = new Set(optionalCols);
+  if (colSet.size !== optionalCols.length) {
+    return "Fit, sleeve length, top hemline, bottomwear length, and filter columns must all be different when set.";
+  }
+
   if (mapping.fitColumn) {
     if (!valid.has(mapping.fitColumn)) return "Invalid fit column.";
     if (mapping.fitColumn === mapping.productNameColumn || imgSet.has(mapping.fitColumn)) {
       return "Fit column must be different from product name and image columns.";
     }
   }
+  if (mapping.sleeveLengthColumn) {
+    if (!valid.has(mapping.sleeveLengthColumn)) return "Invalid sleeve length column.";
+    if (
+      mapping.sleeveLengthColumn === mapping.productNameColumn ||
+      imgSet.has(mapping.sleeveLengthColumn)
+    ) {
+      return "Sleeve length column must be different from product name and image columns.";
+    }
+  }
+  if (mapping.topwearLengthColumn) {
+    if (!valid.has(mapping.topwearLengthColumn)) return "Invalid top hemline column.";
+    if (
+      mapping.topwearLengthColumn === mapping.productNameColumn ||
+      imgSet.has(mapping.topwearLengthColumn)
+    ) {
+      return "Top hemline column must be different from product name and image columns.";
+    }
+  }
+  if (mapping.bottomwearLengthColumn) {
+    if (!valid.has(mapping.bottomwearLengthColumn)) return "Invalid bottomwear length column.";
+    if (
+      mapping.bottomwearLengthColumn === mapping.productNameColumn ||
+      imgSet.has(mapping.bottomwearLengthColumn)
+    ) {
+      return "Bottomwear length column must be different from product name and image columns.";
+    }
+  }
   if (mapping.filterColumn) {
     if (!valid.has(mapping.filterColumn)) return "Invalid filter column.";
-    if (
-      mapping.filterColumn === mapping.productNameColumn ||
-      imgSet.has(mapping.filterColumn) ||
-      mapping.filterColumn === mapping.fitColumn
-    ) {
-      return "Filter column must be different from other mapped columns.";
+    if (mapping.filterColumn === mapping.productNameColumn || imgSet.has(mapping.filterColumn)) {
+      return "Filter column must be different from product name and image columns.";
     }
   }
   return null;
@@ -425,6 +531,17 @@ export function buildNormalizedRows(
     const fitRaw = mapping.fitColumn ? record[mapping.fitColumn] || "" : "";
     const fit = mapping.fitColumn ? normalizeFitValue(fitRaw) : null;
 
+    const sleeveRaw = mapping.sleeveLengthColumn ? record[mapping.sleeveLengthColumn] || "" : "";
+    const sleeveLength = mapping.sleeveLengthColumn ? normalizeSleeveLengthValue(sleeveRaw) : null;
+
+    const topRaw = mapping.topwearLengthColumn ? record[mapping.topwearLengthColumn] || "" : "";
+    const topwearLength = mapping.topwearLengthColumn ? normalizeTopwearLengthValue(topRaw) : null;
+
+    const bottomRaw = mapping.bottomwearLengthColumn ? record[mapping.bottomwearLengthColumn] || "" : "";
+    const bottomwearLength = mapping.bottomwearLengthColumn
+      ? normalizeBottomwearLengthValue(bottomRaw)
+      : null;
+
     const imageUrls: string[] = [];
     for (const col of mapping.imageUrlColumns) {
       const url = normalizeImportedImageUrl(record[col] || "");
@@ -440,7 +557,15 @@ export function buildNormalizedRows(
       ? normalizeSpreadsheetFilterValue(record[mapping.filterColumn])
       : null;
 
-    rows.push({ productName, imageUrls, fit, filterValue });
+    rows.push({
+      productName,
+      imageUrls,
+      fit,
+      sleeveLength,
+      topwearLength,
+      bottomwearLength,
+      filterValue,
+    });
   }
 
   return { rows, errors };
@@ -469,20 +594,48 @@ export function uniqueFilterValuesFromRecords(
 function groupRowsForImport(
   rows: BulkSpreadsheetNormalizedRow[],
   filter: string
-): Map<string, { fit: FitType | null; urls: string[] }> {
+): Map<
+  string,
+  {
+    fit: FitType | null;
+    sleeveLength: SleeveLength | null;
+    topwearLength: TopwearLength | null;
+    bottomwearLength: BottomwearLength | null;
+    urls: string[];
+  }
+> {
   const filtered =
     filter === BULK_SPREADSHEET_FILTER_ALL
       ? rows
       : rows.filter((r) => r.filterValue === filter);
 
-  const styleMap = new Map<string, { fit: FitType | null; urls: string[] }>();
+  const styleMap = new Map<
+    string,
+    {
+      fit: FitType | null;
+      sleeveLength: SleeveLength | null;
+      topwearLength: TopwearLength | null;
+      bottomwearLength: BottomwearLength | null;
+      urls: string[];
+    }
+  >();
   for (const row of filtered) {
     const existing = styleMap.get(row.productName);
     if (existing) {
       existing.urls.push(...row.imageUrls);
       if (row.fit && !existing.fit) existing.fit = row.fit;
+      if (row.sleeveLength && !existing.sleeveLength) existing.sleeveLength = row.sleeveLength;
+      if (row.topwearLength && !existing.topwearLength) existing.topwearLength = row.topwearLength;
+      if (row.bottomwearLength && !existing.bottomwearLength)
+        existing.bottomwearLength = row.bottomwearLength;
     } else {
-      styleMap.set(row.productName, { fit: row.fit, urls: [...row.imageUrls] });
+      styleMap.set(row.productName, {
+        fit: row.fit,
+        sleeveLength: row.sleeveLength,
+        topwearLength: row.topwearLength,
+        bottomwearLength: row.bottomwearLength,
+        urls: [...row.imageUrls],
+      });
     }
   }
   return styleMap;
@@ -501,7 +654,7 @@ export async function downloadSpreadsheetProductFolders(
   let downloadedCount = 0;
   const folders: ProductFolder[] = [];
 
-  for (const [productName, { fit, urls }] of styleMap) {
+  for (const [productName, { fit, sleeveLength, topwearLength, bottomwearLength, urls }] of styleMap) {
     const images: ProductFolder["images"] = [];
 
     const batchSize = 4;
@@ -531,6 +684,9 @@ export async function downloadSpreadsheetProductFolders(
         name: productName,
         images,
         fit,
+        sleeveLength,
+        topwearLength,
+        bottomwearLength,
         bulkImportSessionId: sessionId,
       });
     } else {

@@ -4,6 +4,7 @@ import {
   AIModel,
   AspectRatio,
   BackgroundConfig,
+  BottomwearLength,
   ComplementaryImage,
   CustomPose,
   EditHistoryEntry,
@@ -12,15 +13,18 @@ import {
   GarmentImage,
   GarmentType,
   Gender,
+  ImageGenModel,
   ModelImage,
   ModelSwapBackgroundMode,
   Pose,
   ProductCategory,
   SetLayoutStyle,
   SetVariantFolder,
+  SleeveLength,
   StepCost,
   SwatchShape,
   TokenUsage,
+  TopwearLength,
   UGCScene,
   UGCShotType,
   ValidationResult,
@@ -29,7 +33,14 @@ import {
   RoomStyle,
   ProductShape,
 } from "./types";
-import { ACCESSORY_CATEGORIES, FIT_OPTIONS, FOOTWEAR_TYPE_OPTIONS } from "./constants";
+import {
+  ACCESSORY_CATEGORIES,
+  BOTTOMWEAR_LENGTH_OPTIONS,
+  FIT_OPTIONS,
+  FOOTWEAR_TYPE_OPTIONS,
+  SLEEVE_LENGTH_OPTIONS,
+  TOPWEAR_LENGTH_OPTIONS,
+} from "./constants";
 
 // Pricing per 1M tokens (USD)
 // Image generation models use flat per-image pricing for output (handled separately).
@@ -141,6 +152,83 @@ If the user's ADDITIONAL INSTRUCTIONS field (see SCENE PARAMETERS below) contain
 `;
 
 /**
+ * Builds the EXTRACTION RULES block used by `generateVTONPrompt` when a custom
+ * pose is configured with `referenceMode: "image"`. In this mode the reference
+ * image is treated as a HOLISTIC compositional inspiration — pose, scene,
+ * lighting, mood, and an adapted color palette are extracted in a
+ * product-agnostic manner, and the background palette is intentionally tuned
+ * to contrast with and highlight the user's actual product.
+ *
+ * Designed for the Gemini 3.1 Pro meta-prompter: dense, photographer-grade,
+ * and self-contained because the downstream image generator never receives
+ * the reference image — every relevant detail must be translated into text.
+ */
+function buildCustomPoseImageReferenceExtractionBlock({
+  isProductOnlyShot,
+  referenceImageCount,
+  productLabel,
+  productNoun,
+}: {
+  isProductOnlyShot: boolean;
+  referenceImageCount: number;
+  /** Specific product label, e.g. "running shoes", "topwear garment" */
+  productLabel: string;
+  /** Generic product noun, e.g. "footwear", "garment" */
+  productNoun: string;
+}): string {
+  const plural = referenceImageCount > 1;
+  return `═══ HOLISTIC IMAGE REFERENCE — EXTRACTION RULES ═══
+The user has chosen IMAGE REFERENCE MODE for this custom ${isProductOnlyShot ? "arrangement" : "pose"}. The reference image${plural ? "s" : ""} below ${plural ? "are" : "is"} a COMPLETE compositional inspiration — NOT a strict pose-only reference. Extract pose, scene, lighting, mood, and a product-aware color palette in a ${productNoun}-AGNOSTIC manner so the description works for ANY ${productLabel} the user provides.
+
+★★★ CRITICAL CHANNEL NOTICE ★★★
+The reference image${plural ? "s are" : " is"} visible to YOU ONLY. The downstream image generator will NOT receive ${plural ? "them" : "it"}. Your generated text prompt is the ONLY channel that carries scene information. Translate every relevant detail into explicit, photographer-grade English. If a detail is not in your text, the image generator cannot know it.
+
+EXTRACT and DESCRIBE the following aspects:
+
+1. ${isProductOnlyShot ? "PRODUCT ARRANGEMENT & GEOMETRY" : "POSE & SUBJECT GEOMETRY"}:
+${isProductOnlyShot
+    ? `   - Product orientation and tilt expressed in degrees, arrangement (single, paired, stacked, leaning, suspended), surface contact behavior, relative spacing
+   - Camera angle in degrees, camera distance, framing/crop boundaries (what enters the frame at top/bottom/left/right edges)`
+    : `   - Body position, weight distribution, hip angle, torso tilt, shoulder line, head/gaze direction, arm/hand placement, foot placement (with feet directions in degrees relative to camera)
+   - Camera angle in degrees (e.g., "30-degree low angle"), camera distance, framing/crop boundaries (what enters the frame at top/bottom/left/right edges)`}
+
+2. SCENE & ENVIRONMENT (describe in product-agnostic terms — replace any literal ${productNoun} or product-specific element from the reference with neutral compositional language):
+   - Background type (studio cyclorama, outdoor location, indoor environment, abstract surface, architectural setting, etc.)
+   - Surfaces, textures, materials, depth of field, atmospheric character (haze, glare, bloom, fog, dust, grain)
+   - Compositional props (only as anchors — never as product-specific elements)
+
+3. LIGHTING & MOOD:
+   - Direction of key light, fill, rim/back lights (e.g., "high three-quarter key from camera-left, soft fill camera-right, subtle rim from behind")
+   - Quality (hard, soft, diffused, dappled), color temperature (Kelvin range if inferable), time-of-day cue
+   - Shadow behavior (long, soft, hard-edged, multiple, none)
+   - Overall mood (editorial, lifestyle, gritty, dreamy, minimalist, cinematic, golden-hour, blue-hour, etc.)
+
+4. COMPOSITION & STYLING:
+   - Subject placement (rule-of-thirds, golden ratio, centered, off-center) and how the subject fills the frame
+   - Negative space distribution, leading lines, layering, visual rhythm
+
+5. COLOR PALETTE — CRITICAL THREE-STEP ANALYSIS (this is the single most important step in IMAGE REFERENCE MODE):
+   STEP 5A — REFERENCE PALETTE: Inspect the reference image and list its 4-6 dominant colors as exact hex codes with role labels. Format: "background-primary: #RRGGBB, mid-tone: #RRGGBB, accent: #RRGGBB, highlight: #RRGGBB, shadow: #RRGGBB".
+   STEP 5B — PRODUCT PALETTE: Look at the user's PRODUCT reference photo(s) elsewhere in this conversation. Segment ONLY the product itself (ignore the photo's own background, the model, props, or any other element) and list the product's 3-5 dominant colors as exact hex codes with role labels: "product-primary: #RRGGBB, product-secondary: #RRGGBB, product-accent: #RRGGBB".
+   STEP 5C — ADAPTED BACKGROUND PALETTE (THIS is what goes into the output prompt): Construct a NEW palette of 4-6 hex codes that:
+      • Is HEAVILY INSPIRED by the reference's mood, harmony, color temperature, and tonal hierarchy — preserve the atmosphere (if the reference is a moody dusk, the adapted palette stays dusk-toned; if the reference is a sun-drenched editorial, the adapted palette stays sun-drenched).
+      • Is intentionally tuned to CONTRAST with and HIGHLIGHT the product palette so the viewer's eye is drawn to the product:
+         — HUE: lean the background's hue family AWAY from the product's dominant hue (warm product → cooler/neutral background; cool product → warmer/neutral background; multi-hued product → a neutral-leaning background). Avoid any background hue within ΔH ≤ 20° of the product's dominant hue (would camouflage the product).
+         — VALUE: ensure clear figure-ground separation (light product → mid-to-darker background; dark product → lighter background; mid-value product → push the background to one tonal pole, not both).
+         — CHROMA: when the product is highly saturated, lower background chroma to mostly desaturated tones with at most one restrained accent; when the product is muted, allow a single low-saturation accent to give visual interest without competing.
+      • Maintains the reference's overall aesthetic in mood and harmony — even though the literal hex codes differ from the reference's, the FEEL of the resulting image must read as the same world.
+   List the adapted palette as 4-6 hex codes with role labels (e.g., "background-primary: #2A3A4D, mid-tone: #4A5A6D, accent: #C2A878, highlight: #E8DFD0") and USE THESE EXACT HEX CODES VERBATIM in the BACKGROUND section of your output prompt. Lock these codes for every output of this batch — do NOT re-derive them between poses.
+
+DO NOT TRANSFER from the reference (these come from elsewhere or are intentionally replaced):
+- The specific ${productLabel} or any other product visible in the reference — the user's actual product replaces it entirely
+- Any branding, logos, prints, cuts, or product-specific design details
+- The reference's literal color palette (use only as inspiration; the FINAL background palette is the ADAPTED palette from STEP 5C)
+- The specific person's identity (the user's model selection / model reference photo is the source of truth for the person)
+
+Your extracted description must work identically for ANY ${productLabel} placed into this composition. The output prompt must read as a complete, self-contained scene description that a photographer could reproduce without ever seeing the reference image.`;
+}
+
+/**
  * Step 1: Use Gemini 3.1 Pro to generate a detailed VTON prompt
  */
 export async function generateVTONPrompt({
@@ -151,6 +239,9 @@ export async function generateVTONPrompt({
   garmentType,
   footwearType,
   fit,
+  sleeveLength = null,
+  topwearLength = null,
+  bottomwearLength = null,
   complementaryImages,
   accessories,
   background,
@@ -162,6 +253,7 @@ export async function generateVTONPrompt({
   additionalInfo,
   productInfo,
   applyAccessoriesToAllPoses = false,
+  targetImageModel = "gemini",
 }: {
   apiKey: string;
   productCategory?: ProductCategory;
@@ -170,6 +262,9 @@ export async function generateVTONPrompt({
   garmentType: GarmentType;
   footwearType?: FootwearType;
   fit: FitType | null;
+  sleeveLength?: SleeveLength | null;
+  topwearLength?: TopwearLength | null;
+  bottomwearLength?: BottomwearLength | null;
   complementaryImages: ComplementaryImage[];
   accessories: AccessoryItem[];
   background: BackgroundConfig;
@@ -183,6 +278,12 @@ export async function generateVTONPrompt({
   productInfo?: string;
   /** When true, the same accessories are applied to all poses — enforce visual consistency */
   applyAccessoriesToAllPoses?: boolean;
+  /**
+   * Which image generator will consume the enriched prompt.
+   * Only affects the FOOTWEAR branch (where we currently offer gpt-image-2 as an
+   * alternative backend). Defaults to Nano Banana 2 / Gemini.
+   */
+  targetImageModel?: ImageGenModel;
 }): Promise<{ text: string; cost: StepCost }> {
   const ai = new GoogleGenAI({ apiKey });
 
@@ -193,6 +294,14 @@ export async function generateVTONPrompt({
   const isProductOnlyShot = customPose ? !customPose.isModelShot : pose.requiresModel === false;
   const isGhostMannequin = pose.framing === "ghost-mannequin";
   const isCustomPose = !!customPose;
+  /**
+   * True when the user has chosen IMAGE REFERENCE mode for this custom pose AND
+   * has actually attached at least one reference image. Without a reference
+   * image there is nothing to extract holistically, so we silently fall back to
+   * the standard pose-mode behavior.
+   */
+  const isCustomPoseImageMode =
+    !!customPose && customPose.referenceMode === "image" && customPose.referenceImages.length > 0;
 
   // Determine what garment details to emphasize based on pose view angle, framing, and garment type
   const viewAngle = pose.viewAngle;
@@ -703,28 +812,110 @@ Both upper and lower portions of the garment must be described with equal precis
   // Gender context for prompt analysis
   const genderLabel = gender === "male" ? "men's / masculine" : gender === "female" ? "women's / feminine" : "unisex / gender-neutral";
 
+  // === AUTHORITATIVE GARMENT LENGTH OVERRIDES (USER-SPECIFIED) ===
+  // For clothing only. When the user has selected a sleeve / topwear-hemline / bottomwear-outseam
+  // length, that selection is authoritative and supersedes any visual inference from the
+  // reference garment photos (which may be flat-lay / dress-form / shot on a different body).
+  // The block below is injected into the Gemini-3-Pro meta-prompt so the generated image-prompt
+  // contains a deterministic anatomical anchor for the chosen length.
+  let lengthOverridesBlock = "";
+  if (!isFootwear) {
+    const sleeveOpt =
+      sleeveLength && (garmentType === "topwear" || garmentType === "onepiece")
+        ? SLEEVE_LENGTH_OPTIONS.find((o) => o.value === sleeveLength)
+        : undefined;
+    const topwearOpt =
+      topwearLength && (garmentType === "topwear" || garmentType === "onepiece")
+        ? TOPWEAR_LENGTH_OPTIONS.find((o) => o.value === topwearLength)
+        : undefined;
+    const bottomwearOpt =
+      bottomwearLength && (garmentType === "bottomwear" || garmentType === "onepiece")
+        ? BOTTOMWEAR_LENGTH_OPTIONS.find((o) => o.value === bottomwearLength)
+        : undefined;
+
+    if (sleeveOpt || topwearOpt || bottomwearOpt) {
+      const lines: string[] = [];
+      if (sleeveOpt) {
+        lines.push(
+          `- SLEEVE LENGTH (authoritative): "${sleeveOpt.promptLabel}". The output image-prompt MUST describe the sleeve as "${sleeveOpt.promptLabel}" and MUST contain a verbatim positive anatomical-anchor sentence stating that ${sleeveOpt.anatomicalAnchor}. Do NOT use any conflicting sleeve descriptor (e.g., do not write "long sleeve" or "full sleeve" if the user selected a shorter option; do not write "sleeveless" if the user selected any sleeve length). This OVERRIDES item #1 (SLEEVE LENGTH) of the CRITICAL ACCURACY REQUIREMENTS below — preserve every OTHER sleeve detail (cuff style, sleeve construction, fabric, color, trim) exactly as shown in the reference images, only the LENGTH is fixed by this override.`,
+        );
+      }
+      if (topwearOpt) {
+        lines.push(
+          `- TOP HEMLINE / BODY LENGTH (authoritative): "${topwearOpt.promptLabel}". The output image-prompt MUST describe the top's hemline as "${topwearOpt.promptLabel}" and MUST contain a verbatim positive anatomical-anchor sentence stating that ${topwearOpt.anatomicalAnchor}. Do NOT use any conflicting length descriptor (e.g., do not write "cropped" or "waist-length" if the user selected a longer option; do not write "tunic" or "knee-length" if the user selected a shorter option). This OVERRIDES the topwear portion of item #3 (HEMLINE & LENGTH) of the CRITICAL ACCURACY REQUIREMENTS below — preserve every OTHER hemline detail (hem shape, slits, vents, finish, trim) exactly as shown in the reference images, only the LENGTH is fixed by this override.`,
+        );
+      }
+      if (bottomwearOpt) {
+        lines.push(
+          `- BOTTOMWEAR OUTSEAM / LEG LENGTH (authoritative): "${bottomwearOpt.promptLabel}". The output image-prompt MUST describe the leg hem as "${bottomwearOpt.promptLabel}" and MUST contain a verbatim positive anatomical-anchor sentence stating that ${bottomwearOpt.anatomicalAnchor}. Do NOT use any conflicting length descriptor (e.g., do not write "ankle-length" or "full-length" if the user selected "shorts"; do not write "shorts" or "capri" if the user selected "full length"). This OVERRIDES the bottomwear portion of item #3 (HEMLINE & LENGTH) of the CRITICAL ACCURACY REQUIREMENTS below — preserve every OTHER hem detail (cuff, raw hem, taper, wash, stitching) exactly as shown in the reference images, only the LENGTH is fixed by this override.`,
+        );
+      }
+
+      lengthOverridesBlock = `
+═══ AUTHORITATIVE GARMENT LENGTH OVERRIDES (USER-SPECIFIED — HIGHEST PRIORITY) ═══
+The user has explicitly chosen the following garment length(s). These selections are AUTHORITATIVE and OVERRIDE any length you might infer from the reference garment images. Reference garment photos are often flat-lay, dress-form, or worn by a body with different proportions — you CANNOT reliably read the intended on-model length from them. You MUST describe the garment with the exact length(s) below, and you MUST instruct the image generator to render the garment at this exact length on the model's body using the anatomical anchor sentence(s) provided.
+
+${lines.join("\n")}
+
+Frame these overrides POSITIVELY in the output prompt (describe what IS, using anatomical landmarks) — do NOT use negative phrasing like "no long sleeves" or "without full pants". For any length dimension NOT listed above, follow the standard CRITICAL ACCURACY REQUIREMENTS below and infer from the reference images.
+═══`;
+    }
+  }
+
+  // Language tailored to whichever image model will consume the enriched prompt.
+  // - Gemini/Nano Banana 2 reads per-image text captions inline and has its own
+  //   output-size header; we keep the existing "8K resolution" verbatim clause.
+  // - gpt-image-2 receives unlabeled multipart image[] entries and renders at the
+  //   explicit WxH we pass via the API, so the resolution keyword is dropped.
+  // Only consumed by the footwear branches below; the clothing branch is
+  // Gemini-only today.
+  const isGptTarget = isFootwear && targetImageModel === "gpt-image-2";
+  const modelAudience = isGptTarget
+    ? "GPT-Image-2 (Azure OpenAI)"
+    : "Nano Banana 2 (gemini-3.1-flash-image-preview)";
+  const modelAudienceShort = isGptTarget
+    ? "GPT-Image-2"
+    : "gemini-3.1-flash-image-preview";
+  const closingStyleClause = isGptTarget
+    ? "High-end commercial product photography, photorealistic, ultra-sharp focus, macro-level texture detail, crisp edges, professional studio lighting aesthetic."
+    : "High-end commercial product photography, 8K resolution, photorealistic, ultra-sharp focus, macro-level texture detail, crisp edges, professional lighting aesthetic.";
+  const closingStyleClauseFull = isGptTarget
+    ? "High-end commercial product photography, photorealistic, ultra-sharp focus, macro-level texture detail, crisp edges, minimalist, professional studio lighting aesthetic."
+    : "High-end commercial product photography, 8K resolution, photorealistic, ultra-sharp focus, macro-level texture detail, crisp edges, minimalist, professional studio lighting aesthetic.";
+  const closingReminder = isGptTarget
+    ? "High-end commercial product photography, photorealistic, ultra-sharp focus, macro-level texture detail, crisp edges."
+    : "High-end commercial product photography, 8K resolution, photorealistic, ultra-sharp focus, macro-level texture detail, crisp edges.";
+
   // Build the system prompt differently for footwear vs clothing
   if (isFootwear) {
     const fwLabel = FOOTWEAR_TYPE_OPTIONS.find((f) => f.value === footwearType)?.label || footwearType;
 
     if (isCustomPose) {
       parts.push({
-        text: `You are an expert e-commerce footwear photographer and prompt engineer. Your job is to analyze a custom pose/arrangement reference and write a PRECISE, DETERMINISTIC image generation prompt for Nano Banana 2 (gemini-3.1-flash-image-preview).
+        text: `You are an expert e-commerce footwear photographer and prompt engineer. Your job is to analyze a custom pose/arrangement reference and write a PRECISE, DETERMINISTIC image generation prompt for ${modelAudience}.
 
 THE MODEL: The downstream image generator receives your text prompt AND the actual footwear product reference photos — but NOT the pose reference image${customPose.referenceImages.length > 1 ? "s" : ""}. Use clear, photographer-style sentences; lock the backdrop and relighting to the user's SCENE PARAMETERS so every output shares one consistent stage (no clutter bleeding from product photos).
 
 ${customPose.referenceImages.length > 0 ? `★★★ CRITICAL CHANNEL NOTICE ★★★
-The pose reference image${customPose.referenceImages.length > 1 ? "s" : ""} provided below ${customPose.referenceImages.length > 1 ? "are" : "is"} visible to YOU ONLY. The image generator will NOT receive ${customPose.referenceImages.length > 1 ? "them" : "it"}. Your generated text prompt is the ONLY channel that carries pose, orientation, and composition information to the image generator. Therefore you MUST translate every relevant detail of the pose reference into explicit, measurable, photographer-grade English in your output prompt. If a detail is not in your text, the image generator cannot know it.
+The reference image${customPose.referenceImages.length > 1 ? "s" : ""} provided below ${customPose.referenceImages.length > 1 ? "are" : "is"} visible to YOU ONLY. The image generator will NOT receive ${customPose.referenceImages.length > 1 ? "them" : "it"}. Your generated text prompt is the ONLY channel that carries scene information to the image generator. Therefore you MUST translate every relevant detail of the reference into explicit, measurable, photographer-grade English in your output prompt. If a detail is not in your text, the image generator cannot know it.
 
 ` : ""}PRODUCT: ${fwLabel} (${genderLabel} footwear)
 SHOT TYPE: ${isProductOnlyShot ? "PRODUCT SHOT — No human model. The image shows ONLY the footwear product." : "MODEL SHOT — The footwear is shown being worn by a human model."}
+REFERENCE MODE: ${isCustomPoseImageMode ? "IMAGE REFERENCE — holistic compositional inspiration (pose + scene + lighting + adapted color palette tuned to highlight the product)" : "POSE REFERENCE — strict pose-only reference (only body geometry and image framing are extracted; everything else is ignored)"}
 
 ═══ CUSTOM ${isProductOnlyShot ? "PRODUCT ARRANGEMENT" : "POSE"} ═══
 ${customPose.name ? `Name: "${customPose.name}"` : ""}
 Description: "${customPose.description}"
 ${customPose.referenceImages.length > 0 ? `${customPose.referenceImages.length} reference image${customPose.referenceImages.length > 1 ? "s" : ""} provided below (for YOUR analysis only — not forwarded to the image generator).` : ""}
 
-═══ CRITICAL: POSE EXTRACTION RULES ═══
+${isCustomPoseImageMode
+  ? buildCustomPoseImageReferenceExtractionBlock({
+      isProductOnlyShot,
+      referenceImageCount: customPose.referenceImages.length,
+      productLabel: `${fwLabel} (footwear)`,
+      productNoun: "footwear",
+    })
+  : `═══ CRITICAL: POSE EXTRACTION RULES ═══
 ${customPose.referenceImages.length > 0 ? `You must analyze the custom pose reference image${customPose.referenceImages.length > 1 ? "s" : ""} and extract a FOOTWEAR-AGNOSTIC and BACKGROUND-AGNOSTIC description. Because the image generator will not see the reference, your extracted description MUST be exhaustive and self-contained — reading your prompt alone, the generator should be able to reconstruct the exact pose/orientation without seeing the reference at all.
 
 EXTRACT AND DESCRIBE (copy these from the reference, in dense detail):
@@ -744,7 +935,7 @@ DO NOT TRANSFER (ignore these in the reference):
 - Any branding, colors, patterns, or design elements of the reference product
 - The specific model's identity (use the user's model selection instead)
 
-Your extracted pose description must work identically for ANY footwear product placed into this composition, and must be detailed enough that a photographer could reproduce the shot from the text alone.` : "Use the text description above to determine the pose/arrangement. Specify all angles in degrees and describe the geometry exhaustively so the image generator can reproduce it from text alone."}
+Your extracted pose description must work identically for ANY footwear product placed into this composition, and must be detailed enough that a photographer could reproduce the shot from the text alone.` : "Use the text description above to determine the pose/arrangement. Specify all angles in degrees and describe the geometry exhaustively so the image generator can reproduce it from text alone."}`}
 
 ═══ MANDATORY PROMPT STRUCTURE ═══
 
@@ -757,12 +948,12 @@ Your extracted pose description must work identically for ANY footwear product p
 
 4. LIGHTING & SHADOW: Describe a clean, intentional relight (professional studio terms) that matches the USER's background from SCENE PARAMETERS — neutralize any color cast or messy shadow character from cluttered source product photos. Do not preserve on-location lighting cues from the product reference images.
 
-5. BACKGROUND: Reproduce the user's background specification from SCENE PARAMETERS exactly and literally — same colors (repeat hex codes verbatim, e.g. #FFFFFF), same seamless/environmental intent. The pose reference background, the product photo backdrop, and any incidental environment in uploads must NOT appear. State clearly that the only valid environment is the user's specification.
+5. BACKGROUND: Reproduce the user's background specification from SCENE PARAMETERS exactly and literally — same colors (repeat every hex/RGB code verbatim, whatever it is), same materials, same seamless/environmental intent. Do NOT substitute, default toward, or drift to white (or any other color) when the user has specified something different; the user's Background line is the SOLE source of truth for the scene environment. The pose reference background, the product photo backdrop, and any incidental environment in uploads must NOT appear. State clearly that the only valid environment is the user's specification.
 
 ${!isProductOnlyShot ? `6. MODEL & BODY POSITION: A DENSE paragraph capturing the exact body position, stance, weight distribution, leg angles, foot placement, and how the footwear meets the ground — extracted from the pose reference and written as complete text so the image generator needs no visual reference.` : ""}
 
 ${!isProductOnlyShot ? "7" : "6"}. STYLE & QUALITY (verbatim):
-   "High-end commercial product photography, 8K resolution, photorealistic, ultra-sharp focus, macro-level texture detail, crisp edges, professional lighting aesthetic."
+   "${closingStyleClause}"
 
 ═══ RULES ═══
 - Do NOT name any brand — the model will hallucinate incorrect logos
@@ -772,7 +963,8 @@ ${!isProductOnlyShot ? "7" : "6"}. STYLE & QUALITY (verbatim):
 - Product reference images may show cluttered real-world backgrounds — treat all non-footwear pixels as forbidden in the final scene; never transfer floors, props, walls, or color spill
 - Use precise, measurable language: angles in degrees, positions as frame percentages
 - Include verbatim: "Reproduce the footwear EXACTLY as shown in the reference images — every color, pattern, texture, material, construction detail, shape, and visual mark must be an exact copy."
-${!isProductOnlyShot ? `- FOOTWEAR SCALE & FIT (MANDATORY — include this clause verbatim in the ANGLE & ORIENTATION or MODEL & BODY POSITION section of your output prompt): "The footwear must fit the model's feet with natural, realistic proportions — neither oversized nor undersized relative to the model's foot. The shoe length, width, and opening must match the model's foot size exactly, with the heel seated flush against the heel counter, the toes reaching the toe box naturally, and the upper wrapping the foot without gapping, bulging, or slippage. The ground contact and ankle line must look anatomically correct."` : ""}
+${!isProductOnlyShot ? `- FOOTWEAR SCALE, FIT & PROPORTION LOCK (MANDATORY — this is the #1 footwear failure mode; give it maximum weight and include the following dense paragraph VERBATIM inside the MODEL & BODY POSITION section of your output prompt):
+   "Render the footwear at the exact real-world scale of a normal shoe worn by THIS specific model, anchored to the model's own anatomy. The outsole spans from the back of the model's heel to the tip of their longest toe and no further — one shoe length equals one foot length, not more. The collar/topline hugs the ankle with the heel seated flush against the heel counter, the upper wrapping the forefoot smoothly, and the tongue sitting naturally over the instep — fit is clean and contoured with no gapping, bulging, tenting, cavernous opening, or slippage. PROPORTION LOCK (copy these attributes PIXEL-FOR-PIXEL from the product reference photos, never invent or exaggerate them): SOLE THICKNESS, midsole stack height, toe-spring, heel height, toe-box volume and depth, collar height, upper-to-sole ratio, and outsole length-to-width ratio are identical to the reference product. The shoe's overall silhouette on the foot reads as a true-to-life commercial e-commerce product photograph of the exact reference product — keep it slim when the reference is slim, keep it flat when the reference is flat. The ground contact is flat and stable and the ankle line is anatomically correct."` : ""}
 
 ${isProductOnlyShot ? "IMPORTANT: This is a PRODUCT-ONLY shot. Do NOT include any human model, feet, or body parts." : modelImage ? "A reference photo of the model is provided. Include: 'Use the EXACT person shown in the model reference image — same face, skin tone, hair, and body proportions.'" : ""}
 
@@ -780,13 +972,13 @@ Output ONLY the generation prompt text following the mandatory structure.`,
       });
     } else {
     parts.push({
-      text: `You are an expert e-commerce footwear photographer and prompt engineer. Your job is to write a PRECISE, DETERMINISTIC image generation prompt for an AI model (Nano Banana 2 / gemini-3.1-flash-image-preview).
+      text: `You are an expert e-commerce footwear photographer and prompt engineer. Your job is to write a PRECISE, DETERMINISTIC image generation prompt for an AI model (${modelAudience}).
 
 THE MODEL: The image generator is a multimodal model that receives BOTH your text prompt AND the actual footwear reference photos simultaneously. Your text prompt guides the scene, composition, and camera work while the reference photos define the product appearance.
 
 YOUR GOAL: Write a generation prompt that will produce the EXACT same image every time it is run — no ambiguity, no creative latitude, no subjective interpretation. Every sentence must be precise and measurable.
 
-PROMPTING FOR gemini-3.1-flash-image-preview (multimodal image): Use tight, photographer-style sentences per section — clear scene intent beats keyword dumps. For BACKGROUND and LIGHTING, be specific enough that every shoe in a batch gets the same stage (identical backdrop color/temperature, same shadow policy); match light quality and color temperature to the stated environment so the subject looks photographed IN that environment, not cut out of an old one.
+PROMPTING FOR ${modelAudienceShort} (multimodal image): Use tight, photographer-style sentences per section — clear scene intent beats keyword dumps. For BACKGROUND and LIGHTING, be specific enough that every shoe in a batch gets the same stage (identical backdrop color/temperature, same shadow policy); match light quality and color temperature to the stated environment so the subject looks photographed IN that environment, not cut out of an old one.
 
 PRODUCT: ${fwLabel} (${genderLabel} footwear)
 ${isProductOnlyShot ? "SHOT TYPE: PRODUCT-ONLY — No human model. The image shows ONLY the footwear product." : `SHOT TYPE: ON-MODEL — The footwear is shown being worn by a ${model ? model.name + " (" + model.description + ")" : modelImage ? "the provided model reference" : gender === "unisex" ? "model" : gender + " model"}.`}
@@ -810,7 +1002,7 @@ Your output prompt MUST follow this EXACT labeled structure. Do not skip, merge,
 
 3. FRAMING & COMPOSITION:
    - Specify exact placement in frame (dead center, offset left by rule-of-thirds, etc.)
-   - Specify negative space: "generous pure white negative space around the entire product" or "product fills 85% of frame"
+   - Specify negative space as a FRAME PROPORTION only (e.g., "generous negative space surrounds the product" or "product fills 60-85% of frame") — the COLOR, MATERIAL, and TEXTURE of that negative space MUST be inherited from the BACKGROUND section below; do NOT hardcode white or any other default color at this step
    - Describe the minimalist/commercial composition approach
    - Specify what is included and excluded from the frame
 
@@ -822,9 +1014,9 @@ Your output prompt MUST follow this EXACT labeled structure. Do not skip, merge,
    - Specify what must be eliminated (e.g., "eliminate harsh shadows on the product itself")
 
 5. BACKGROUND:
-   - Copy the user's background specification from SCENE PARAMETERS verbatim for any color values (e.g. repeat #FFFFFF exactly if given) — use the SAME backdrop description across every pose in this job so all outputs match
-   - For studio: specify the EXACT background (e.g., "Pure, seamless, pristine white background (#FFFFFF). Absolutely no props, no scenery, and no context.")
-   - For environmental: describe every element with precision — surface material, colors, atmosphere, depth of field
+   - The USER's BACKGROUND line in SCENE PARAMETERS is the SOLE source of truth for the scene environment. Copy it VERBATIM for every surface, color, material, and atmospheric cue — repeat every hex/RGB value exactly as the user wrote it, whatever that value is. Do NOT substitute, default, or drift toward white (or any other color) when the user has specified something different. Use the SAME backdrop description across every pose in this job so all outputs match
+   - For studio backdrops: reproduce the EXACT color, material, and texture from the user's specification (e.g. seamless paper, cyclorama, textured wall — in the user's stated color). Only describe a "pure, seamless, pristine white (#FFFFFF)" cyclorama if (a) the user's specification explicitly calls for white, or (b) the user provided NO background information at all and the Background line tells you to use the default studio fallback
+   - For environmental backdrops: describe every element with precision — surface material, colors, atmosphere, depth of field — all drawn from the user's specification and/or the provided inspiration image
    - Include SEMANTIC NEGATIVES: forbid any element from the original product photo's setting (old floor texture, shelves, outdoor ground, props, horizon clutter). The only valid environment is the user's specification
 
 ${!isProductOnlyShot ? `6. MODEL & ON-FOOT DETAILS:
@@ -833,7 +1025,7 @@ ${!isProductOnlyShot ? `6. MODEL & ON-FOOT DETAILS:
    - Describe how the footwear interacts with the ground/surface` : ""}
 
 ${!isProductOnlyShot ? "7" : "6"}. STYLE & QUALITY (include this verbatim as the closing):
-   "High-end commercial product photography, 8K resolution, photorealistic, ultra-sharp focus, macro-level texture detail, crisp edges, minimalist, professional studio lighting aesthetic."
+   "${closingStyleClauseFull}"
 
 ═══ RULES ═══
 - Do NOT name any brand (Nike, Adidas, Puma, New Balance, etc.) — the model will hallucinate incorrect logos
@@ -844,7 +1036,8 @@ ${!isProductOnlyShot ? "7" : "6"}. STYLE & QUALITY (include this verbatim as the
 - Keep each section to 1-2 focused sentences — total prompt should be concise and directive, not flowery
 - Do NOT add creative flourishes, artistic interpretations, or variable/random elements
 - Every detail you specify must be reproducible across multiple generations
-${!isProductOnlyShot ? `- FOOTWEAR SCALE & FIT (MANDATORY — include this clause verbatim in the ANGLE & ORIENTATION or MODEL & ON-FOOT DETAILS section of your output prompt): "The footwear must fit the model's feet with natural, realistic proportions — neither oversized nor undersized relative to the model's foot. The shoe length, width, and opening must match the model's foot size exactly, with the heel seated flush against the heel counter, the toes reaching the toe box naturally, and the upper wrapping the foot without gapping, bulging, or slippage. The ground contact and ankle line must look anatomically correct."` : ""}
+${!isProductOnlyShot ? `- FOOTWEAR SCALE, FIT & PROPORTION LOCK (MANDATORY — this is the #1 footwear failure mode; give it maximum weight and include the following dense paragraph VERBATIM inside the MODEL & ON-FOOT DETAILS section of your output prompt):
+   "Render the footwear at the exact real-world scale of a normal shoe worn by THIS specific model, anchored to the model's own anatomy. The outsole spans from the back of the model's heel to the tip of their longest toe and no further — one shoe length equals one foot length, not more. The collar/topline hugs the ankle with the heel seated flush against the heel counter, the upper wrapping the forefoot smoothly, and the tongue sitting naturally over the instep — fit is clean and contoured with no gapping, bulging, tenting, cavernous opening, or slippage. PROPORTION LOCK (copy these attributes PIXEL-FOR-PIXEL from the product reference photos, never invent or exaggerate them): SOLE THICKNESS, midsole stack height, toe-spring, heel height, toe-box volume and depth, collar height, upper-to-sole ratio, and outsole length-to-width ratio are identical to the reference product. The shoe's overall silhouette on the foot reads as a true-to-life commercial e-commerce product photograph of the exact reference product — keep it slim when the reference is slim, keep it flat when the reference is flat. The ground contact is flat and stable and the ankle line is anatomically correct."` : ""}
 
 ${!isProductOnlyShot && modelImage ? "A reference photo of the model is provided. Include in your prompt: 'Use the EXACT person shown in the model reference image — same face, skin tone, hair, and body proportions.'" : ""}
 
@@ -865,18 +1058,35 @@ SHOT TYPE: ${isGhostMannequin ? "GHOST MANNEQUIN SHOT — This is a GHOST/INVISI
 The user has described a CUSTOM ${isProductOnlyShot ? "PRODUCT ARRANGEMENT" : "POSE"} instead of selecting a preset. Use their description as the primary ${isProductOnlyShot ? "product arrangement and camera" : "pose and camera"} direction.
 ${customPose.name ? `${isProductOnlyShot ? "Arrangement" : "Pose"} Name: "${customPose.name}"` : ""}
 ${isProductOnlyShot ? "Product Arrangement" : "Pose"} Description: "${customPose.description}"
-${customPose.referenceImages.length > 0 ? `\nReference images for this custom ${isProductOnlyShot ? "arrangement" : "pose"} are provided below. Analyze them carefully to understand the exact ${isProductOnlyShot ? "product placement, styling, camera angle, and composition" : "body position, camera angle, framing, and composition"} the user wants. Replicate the ${isProductOnlyShot ? "arrangement" : "pose"} from the reference images as closely as possible.
+REFERENCE MODE: ${isCustomPoseImageMode ? "IMAGE REFERENCE — holistic compositional inspiration (pose + scene + lighting + adapted color palette tuned to highlight the product)" : "POSE REFERENCE — strict pose-only reference (only body geometry and image framing are extracted; everything else is ignored)"}
+${customPose.referenceImages.length > 0 ? `\n${customPose.referenceImages.length} reference image${customPose.referenceImages.length > 1 ? "s are" : " is"} provided below for YOUR analysis only — they are NOT forwarded to the image generator.` : ""}
+
+${isCustomPoseImageMode
+  ? buildCustomPoseImageReferenceExtractionBlock({
+      isProductOnlyShot,
+      referenceImageCount: customPose.referenceImages.length,
+      productLabel: `${garmentType || "topwear"} garment`,
+      productNoun: "garment",
+    })
+  : `${customPose.referenceImages.length > 0 ? `Reference images for this custom ${isProductOnlyShot ? "arrangement" : "pose"} are provided below. Analyze them carefully to understand the exact ${isProductOnlyShot ? "product placement, styling, camera angle, and composition" : "body position, camera angle, framing, and composition"} the user wants. Replicate the ${isProductOnlyShot ? "arrangement" : "pose"} from the reference images as closely as possible.
 
 ★★★ CRITICAL CHANNEL NOTICE ★★★
-The pose reference image${customPose.referenceImages.length > 1 ? "s" : ""} ${customPose.referenceImages.length > 1 ? "are" : "is"} visible to YOU ONLY. The downstream image generator will NOT receive ${customPose.referenceImages.length > 1 ? "them" : "it"}. Your generated text prompt is the ONLY channel that carries pose, orientation, and composition information to the image generator. Therefore you MUST translate every relevant detail of the pose reference into explicit, measurable, photographer-grade English in your output prompt. If a detail is not in your text, the image generator cannot know it. Produce a dense, self-contained ${isProductOnlyShot ? "arrangement" : "pose"} paragraph that a photographer could reproduce from the text alone — exact camera angle in degrees, camera distance/framing, body/product geometry, limb angles, weight distribution, head/gaze direction, foot placement, and how the subject fills the frame.` : ""}
+The pose reference image${customPose.referenceImages.length > 1 ? "s" : ""} ${customPose.referenceImages.length > 1 ? "are" : "is"} visible to YOU ONLY. The downstream image generator will NOT receive ${customPose.referenceImages.length > 1 ? "them" : "it"}. Your generated text prompt is the ONLY channel that carries pose, orientation, and composition information to the image generator. Therefore you MUST translate every relevant detail of the pose reference into explicit, measurable, photographer-grade English in your output prompt. If a detail is not in your text, the image generator cannot know it. Produce a dense, self-contained ${isProductOnlyShot ? "arrangement" : "pose"} paragraph that a photographer could reproduce from the text alone — exact camera angle in degrees, camera distance/framing, body/product geometry, limb angles, weight distribution, head/gaze direction, foot placement, and how the subject fills the frame.
+
+DO NOT TRANSFER from the reference (these are the user's choices and live elsewhere in this prompt):
+- The specific garment / topwear / clothing visible (the user's ACTUAL garment replaces it entirely)
+- The specific background / environment (use the user's background specification in SCENE PARAMETERS)
+- Any branding, colors, prints, or design elements of the reference's clothing
+- The specific person's identity (use the user's model selection / model reference photo)` : ""}
 
 Based on the custom ${isProductOnlyShot ? "arrangement" : "pose"} description${customPose.referenceImages.length > 0 ? " and reference images" : ""}, determine:
 - The camera angle (front, side, back, three-quarter, top-down, etc. — specify in degrees)
 - The framing (${isProductOnlyShot ? "full product, close-up detail, etc." : "full-body, waist-up, etc."})
 - Which garment details would be most visible from this angle and framing
-Then describe those visible garment details with maximum precision. Describe the pose/arrangement geometry itself with equal precision so the image generator can reconstruct it from the text alone.
+Then describe those visible garment details with maximum precision. Describe the pose/arrangement geometry itself with equal precision so the image generator can reconstruct it from the text alone.`}
 
 ${garmentTypeInstruction}
+${lengthOverridesBlock}
 
 CRITICAL ACCURACY REQUIREMENTS - Your prompt MUST describe these garment details with EXACT precision based on the provided images:
 1. SLEEVE LENGTH: Describe the exact sleeve length as observed (sleeveless, cap sleeve, short sleeve, elbow length, three-quarter, full length, etc.). DO NOT change or assume the sleeve length.
@@ -888,18 +1098,17 @@ CRITICAL ACCURACY REQUIREMENTS - Your prompt MUST describe these garment details
 7. FIT: ${fit ? `**CRITICAL OVERRIDE** - The user has explicitly selected "${fit}" fit. DO NOT infer or guess the fit from the garment images. You MUST describe the garment as "${fit}" fit in the prompt regardless of how the garment appears in the reference photos. The "${fit}" fit means: "${FIT_OPTIONS.find(f => f.value === fit)?.description || fit}". Use this exact fit description - never substitute words like "oversized", "loose", "slim", etc. unless that is the user's actual selected fit.` : `No specific fit was selected by the user. Analyze the garment images and determine the most appropriate fit description (slim, regular, relaxed, oversized, tailored, loose, bodycon, boxy, etc.) based on what you observe in the reference photos.`}
 8. SILHOUETTE: Overall shape and drape of the garment
 
-LIGHTING DIRECTIVE (MANDATORY — apply to ALL clothing VTON outputs):
-Unless the user's background description explicitly calls for different lighting, the output prompt MUST include this exact lighting description:
-"Shot with high-key commercial studio lighting — flat, even illumination directly facing the subject. Strong fill lighting lifts all shadows, producing a low-contrast, bright, airy look with extremely soft shadow roll-off and absolutely no harsh shadows under the chin, on the face, neck, body, or garment. The overall feel is clean, bright, and evenly lit."
-- Do NOT deviate from this high-key flat lighting description across poses — every output must use the same lighting language.
-- Do NOT mention specific lighting equipment names (softbox, octabox, reflector, strobe, ring light, beauty dish, etc.) — describe ONLY the resulting light quality.
+LIGHTING DIRECTIVE (apply to ALL clothing VTON outputs):
+Derive the lighting description entirely from the user's background description in SCENE PARAMETERS — match the light quality, direction, color temperature, and atmosphere to the environment the user has asked for. Describe the lighting in positive, photographer-style terms (what the scene looks like), never in negative terms such as "no X" or "without X".
+Shadow behavior must be USER-DRIVEN: include shadow language in the output prompt ONLY IF the user's background description explicitly calls for shadows (e.g., "long cast shadows", "dramatic shadows", "chiaroscuro", "moody shadows"). If the user's background description does not call for shadows, do NOT introduce, reference, negate, or describe shadows in the output prompt in any form.
+Do NOT mention specific lighting equipment names (softbox, octabox, reflector, strobe, ring light, beauty dish, etc.) — describe ONLY the resulting light quality.
 
 ${!isProductOnlyShot && !isGhostMannequin ? CLOTHING_VTON_REALISM_DIRECTIVE : ""}
 
 ${!isProductOnlyShot && !isGhostMannequin ? CLOTHING_VTON_POSING_DIRECTIVE : ""}
 
 ${fit ? `The prompt MUST instruct the image generator to faithfully reproduce every visual detail from the provided garment images (sleeve length, neckline, color, pattern, fabric texture, construction details). However, the FIT/SIZING of the garment${isProductOnlyShot ? "" : " on the model's body"} MUST follow the user's selection of "${fit}" fit, NOT your visual interpretation of the images.` : `The prompt MUST instruct the image generator to faithfully reproduce every detail from the provided garment images. Emphasize that the garment details must match the reference images exactly.`}
-
+${lengthOverridesBlock ? `\nLENGTH OVERRIDE REMINDER: The user-specified garment length(s) listed in the AUTHORITATIVE GARMENT LENGTH OVERRIDES block above are MANDATORY. The output prompt MUST describe each user-specified length using the exact phrase and the anatomical-anchor sentence given for that length. Do NOT default to the visual interpretation of the reference images for those dimensions, and do NOT use any conflicting length descriptor anywhere in the output.\n` : ""}
 ${isProductOnlyShot ? "IMPORTANT: This is a PRODUCT-ONLY shot. Do NOT include any human model, mannequin body, or person in the generated image. Show ONLY the garment product." : modelImage ? "A reference photo of the model is provided. The prompt must instruct the generator to use the EXACT same person from this reference photo - same face, skin tone, hair, and body proportions." : ""}
 
 Output ONLY the generation prompt text, nothing else. The prompt should be 3-5 paragraphs, extremely descriptive, suitable for professional e-commerce fashion photography.`,
@@ -914,6 +1123,7 @@ THE POSE VIEW ANGLE IS: "${viewAngle}" (${pose.name} - ${pose.description})
 This means the camera will capture the garment from the ${viewAngle === "ghost" ? "specified ghost mannequin" : viewAngle.replace("-", " ")} perspective. Your prompt MUST describe the garment details that would be VISIBLE from this specific angle.
 ${framingInstruction}
 ${garmentTypeInstruction}
+${lengthOverridesBlock}
 
 CRITICAL ACCURACY REQUIREMENTS - Your prompt MUST describe these garment details with EXACT precision based on the provided images:
 1. SLEEVE LENGTH: Describe the exact sleeve length as observed (sleeveless, cap sleeve, short sleeve, elbow length, three-quarter, full length, etc.). DO NOT change or assume the sleeve length.
@@ -930,16 +1140,15 @@ IMPORTANT FRAMING RULE: The image MUST be framed exactly as specified in the FRA
 
 ${!isProductOnlyShot && !isGhostMannequin ? CLOTHING_VTON_POSING_DIRECTIVE : ""}
 
-LIGHTING DIRECTIVE (MANDATORY — apply to ALL clothing VTON outputs):
-Unless the user's background description explicitly calls for different lighting, the output prompt MUST include this exact lighting description:
-"Shot with high-key commercial studio lighting — flat, even illumination directly facing the subject. Strong fill lighting lifts all shadows, producing a low-contrast, bright, airy look with extremely soft shadow roll-off and absolutely no harsh shadows under the chin, on the face, neck, body, or garment. The overall feel is clean, bright, and evenly lit."
-- Do NOT deviate from this high-key flat lighting description across poses — every output must use the same lighting language.
-- Do NOT mention specific lighting equipment names (softbox, octabox, reflector, strobe, ring light, beauty dish, etc.) — describe ONLY the resulting light quality.
+LIGHTING DIRECTIVE (apply to ALL clothing VTON outputs):
+Derive the lighting description entirely from the user's background description in SCENE PARAMETERS — match the light quality, direction, color temperature, and atmosphere to the environment the user has asked for. Describe the lighting in positive, photographer-style terms (what the scene looks like), never in negative terms such as "no X" or "without X".
+Shadow behavior must be USER-DRIVEN: include shadow language in the output prompt ONLY IF the user's background description explicitly calls for shadows (e.g., "long cast shadows", "dramatic shadows", "chiaroscuro", "moody shadows"). If the user's background description does not call for shadows, do NOT introduce, reference, negate, or describe shadows in the output prompt in any form.
+Do NOT mention specific lighting equipment names (softbox, octabox, reflector, strobe, ring light, beauty dish, etc.) — describe ONLY the resulting light quality.
 
 ${!isProductOnlyShot && !isGhostMannequin ? CLOTHING_VTON_REALISM_DIRECTIVE : ""}
 
 ${fit ? `The prompt MUST instruct the image generator to faithfully reproduce every visual detail from the provided garment images (sleeve length, neckline, color, pattern, fabric texture, construction details). However, the FIT/SIZING of the garment on the model's body MUST follow the user's selection of "${fit}" fit, NOT your visual interpretation of the images. The garment images are flat-lay or mannequin shots - you cannot reliably determine intended body fit from them. Always use the user-specified fit: "${fit}".` : `The prompt MUST instruct the image generator to faithfully reproduce every detail from the provided garment images. Emphasize that the garment details must match the reference images exactly - no modifications to sleeve length, neckline, color, pattern, or any construction detail. For the fit, use your best judgment based on what you observe in the garment images.`}
-
+${lengthOverridesBlock ? `\nLENGTH OVERRIDE REMINDER: The user-specified garment length(s) listed in the AUTHORITATIVE GARMENT LENGTH OVERRIDES block above are MANDATORY. The output prompt MUST describe each user-specified length using the exact phrase and the anatomical-anchor sentence given for that length. The garment reference images are typically flat-lay / dress-form / shot on a different body — they CANNOT be used to override the user's length selection. Do NOT use any conflicting length descriptor anywhere in the output.\n` : ""}
 ${modelImage ? "A reference photo of the model is provided. The prompt must instruct the generator to use the EXACT same person from this reference photo - same face, skin tone, hair, and body proportions." : ""}
 
 Output ONLY the generation prompt text, nothing else. The prompt should be 3-5 paragraphs, extremely descriptive, suitable for professional e-commerce fashion photography.`,
@@ -1143,10 +1352,17 @@ For reference-image accessories: reproduce the exact same accessory across all p
     }
   }
 
-  // Background details — per-pose custom background overrides the global setting
+  // Background details — precedence:
+  //   (1) per-pose customBackground (explicit text override)
+  //   (2) image-reference mode (adapted palette derived from the holistic reference image)
+  //   (3) global inspiration image
+  //   (4) global text description
+  //   (5) default fallback
   let bgInstruction = "";
   if (customPose?.customBackground) {
     bgInstruction = `Background/environment description (CUSTOM FOR THIS POSE — DETERMINISTIC): ${customPose.customBackground}\nBACKGROUND LOCK: Reproduce this description VERBATIM in every output prompt — identical wording, identical colors, identical elements. Do NOT paraphrase, add synonyms, introduce creative variations, or reinterpret. If colors are specified, repeat them as exact hex/RGB values. Every pose in this batch must share a pixel-identical backdrop.`;
+  } else if (isCustomPoseImageMode) {
+    bgInstruction = `Background/environment description (DERIVED FROM HOLISTIC IMAGE REFERENCE — DETERMINISTIC):\nThe background for this custom pose is NOT taken from the global SCENE PARAMETERS. Instead, derive it from the HOLISTIC IMAGE REFERENCE — EXTRACTION RULES block above. Specifically:\n  • Use the SCENE & ENVIRONMENT, LIGHTING & MOOD, and COMPOSITION & STYLING extracted from the reference (rendered in product-agnostic language).\n  • Use the ADAPTED BACKGROUND PALETTE (STEP 5C) as the literal color specification — write its 4-6 hex codes verbatim into the BACKGROUND section of your output prompt with their role labels intact.\n  • Maintain the reference image's mood and atmospheric character; the adapted palette only retunes hue/value/chroma to highlight the user's product, never the underlying mood.\nBACKGROUND LOCK: Once derived, lock the resulting backdrop description and the adapted hex codes for the entire batch. Reuse the SAME description and the SAME hex codes word-for-word across every pose so all outputs share one pixel-consistent stage. Do NOT re-derive between poses, do NOT introduce synonym swaps, do NOT drift toward white or any other unspecified color.`;
   } else if (background.mode === "inspiration" && background.inspirationImage) {
     parts.push({
       text: `\n\nHere is the inspiration image for the background/environment:`,
@@ -1163,8 +1379,8 @@ For reference-image accessories: reproduce the exact same accessory across all p
     bgInstruction = `Background/environment description (DETERMINISTIC — reproduce EXACTLY): ${background.textDescription}\nBACKGROUND LOCK: This text is a FIXED SPECIFICATION — copy it into every output prompt VERBATIM. Do NOT paraphrase, swap synonyms, add creative embellishments, or reinterpret the scene. If colors are mentioned (e.g. "warm beige", "soft grey"), lock them to specific hex values (e.g. warm beige → #F5F0E8, soft grey → #E8E8E8) and reuse those EXACT hex codes in every pose. Every image in this batch must render the SAME backdrop.`;
   } else {
     bgInstruction = isFootwear
-      ? "Use a clean e-commerce studio background: seamless cyclorama, no props or location clutter. Default to seamless pure white (#FFFFFF) unless the user specifies a different backdrop in Additional Instructions or Product Info."
-      : "Use a clean, professional e-commerce photography studio background.";
+      ? "Background/environment (DEFAULT FALLBACK — USER PROVIDED NO BACKGROUND INFORMATION): Use a pure, seamless, pristine white (#FFFFFF) e-commerce studio cyclorama — clean, no props, no scenery, no location clutter. This default applies ONLY because the user supplied no background description, no inspiration image, and no per-pose custom background. If the user had specified any backdrop, that specification would be the SOLE source of truth and you would not default to white here."
+      : "Background/environment (DEFAULT FALLBACK — USER PROVIDED NO BACKGROUND INFORMATION): Use a clean, professional e-commerce photography studio background. This default applies ONLY because the user supplied no background information.";
   }
 
   if (isFootwear) {
@@ -1216,16 +1432,23 @@ ${productInfo ? `Product Info: ${productInfo}` : ""}
 ${additionalInfo ? `Additional Instructions: ${additionalInfo}` : ""}
 
 ═══ BACKGROUND LOCK (FOOTWEAR — READ CAREFULLY) ═══
+BACKGROUND PRECEDENCE (ABSOLUTE, IN THIS ORDER):
+  (a) If a per-pose CUSTOM POSE background is given, it is the SOLE source of truth — use it verbatim.
+  (b) Otherwise, if the custom pose is in IMAGE REFERENCE MODE, the SOLE source of truth is the holistic extraction above — specifically the SCENE / LIGHTING / COMPOSITION descriptors plus the ADAPTED BACKGROUND PALETTE (STEP 5C, hex codes verbatim). Do NOT mix in the global SCENE PARAMETERS background in this case.
+  (c) Otherwise, if the user provided a BACKGROUND inspiration image or text description in SCENE PARAMETERS, that specification is the SOLE source of truth — use it verbatim with every color/hex/material/atmospheric cue exactly as the user wrote it.
+  (d) ONLY if the user provided NO background information of any kind (no text, no inspiration image, no per-pose custom background, not in image-reference mode) — i.e. the Background line above is explicitly labeled as a DEFAULT FALLBACK — may you render a pure white (#FFFFFF) studio cyclorama. In every other case, you MUST NOT substitute, default toward, or drift to white (or any other color) that the user did not ask for.
+
 The product reference photos may be taken on cluttered floors, shelves, or outdoor surfaces. That is NOISE: your output prompt must instruct the image generator to extract ONLY the footwear and to build a brand-new scene where the ENTIRE environment (backdrop, floor plane, walls, air, global light) matches ONLY the background line above (or the inspiration image if one was provided). Repeat any hex/RGB color the user gave verbatim in the Background section. For one generation batch, use identical backdrop wording for every pose — no synonym swapping, no "creative variation" between images.
 
 ═══ FINAL REMINDERS ═══
 1. Follow the MANDATORY PROMPT STRUCTURE: your output must contain labeled sections (Angle & Orientation, Framing & Composition, Lighting & Shadow, Background, ${!isProductOnlyShot ? "Model & Body Position, " : ""}Style & Quality).
 2. Use DETERMINISTIC language: specific angles in degrees, exact positions, photography terminology, color codes for backgrounds.
 3. The OPENING LINE must be verbatim: "A professional e-commerce product photograph of the exact footwear shown in the provided reference images. CRITICAL: Preserve the exact colors, materials, branding, shape, and design details of the provided input footwear."
-4. The CLOSING must include verbatim: "High-end commercial product photography, 8K resolution, photorealistic, ultra-sharp focus, macro-level texture detail, crisp edges."
+4. The CLOSING must include verbatim: "${closingReminder}"
 5. Do NOT describe specific product details (colors, logos, patterns) — the image generator has the actual photos.
 6. Do NOT name any brand.
 7. In LIGHTING and BACKGROUND, explicitly forbid importing any pixel of the original product-photo setting (old surfaces, props, color spill).
+8. BACKGROUND PRECEDENCE (non-negotiable): If the Background line above is a user-provided text description, inspiration image, per-pose custom background, OR a derivation from a holistic image reference, that is the ONLY valid environment — do NOT override it, soften it, or blend it with a white/neutral default. A pure white (#FFFFFF) studio cyclorama is permitted ONLY when the Background line above is explicitly tagged as the "DEFAULT FALLBACK — USER PROVIDED NO BACKGROUND INFORMATION".
 ${accessories.length > 0 ? `\nACCESSORY NOTE: For accessories with reference images, instruct exact reproduction. For AI-chosen accessories, analyze the footwear style and select accessories that are STYLISTICALLY COHERENT (e.g., formal shoes pair with refined accessories, athletic shoes with sporty gear, ethnic footwear with traditional items). Describe each AI-chosen accessory with specific material, color, and style details.${applyAccessoriesToAllPoses ? " CONSISTENCY: Use IDENTICAL accessory descriptions word-for-word — no creative variation between poses." : ""}${accessories.some((a) => a.category === "custom") ? " For custom-described accessories, follow the user's description precisely while ensuring garment-style coherence." : ""}` : ""}
 
 Now write the footwear image generation prompt following the mandatory structure.`,
@@ -1239,6 +1462,9 @@ Now write the footwear image generation prompt following the mandatory structure
 Gender: ${genderLabel}
 Garment Type: ${garmentType}
 Garment Fit: ${fit ? `${fit} (${FIT_OPTIONS.find(f => f.value === fit)?.label || fit} - ${FIT_OPTIONS.find(f => f.value === fit)?.description || fit}) — USE THIS FIT, do NOT override with your own visual assessment` : "Not specified — analyze the garment images and determine the most appropriate fit"}
+${(sleeveLength && (garmentType === "topwear" || garmentType === "onepiece")) ? `Sleeve Length (USER OVERRIDE — AUTHORITATIVE): ${SLEEVE_LENGTH_OPTIONS.find(o => o.value === sleeveLength)?.label || sleeveLength} — describe the sleeve as "${SLEEVE_LENGTH_OPTIONS.find(o => o.value === sleeveLength)?.promptLabel}" and include the anatomical anchor: ${SLEEVE_LENGTH_OPTIONS.find(o => o.value === sleeveLength)?.anatomicalAnchor}. Do NOT infer sleeve length from images.` : "Sleeve Length: Not specified — infer from garment images"}
+${(topwearLength && (garmentType === "topwear" || garmentType === "onepiece")) ? `Top Hemline / Body Length (USER OVERRIDE — AUTHORITATIVE): ${TOPWEAR_LENGTH_OPTIONS.find(o => o.value === topwearLength)?.label || topwearLength} — describe the hemline as "${TOPWEAR_LENGTH_OPTIONS.find(o => o.value === topwearLength)?.promptLabel}" and include the anatomical anchor: ${TOPWEAR_LENGTH_OPTIONS.find(o => o.value === topwearLength)?.anatomicalAnchor}. Do NOT infer top length from images.` : ""}
+${(bottomwearLength && (garmentType === "bottomwear" || garmentType === "onepiece")) ? `Bottomwear Outseam / Leg Length (USER OVERRIDE — AUTHORITATIVE): ${BOTTOMWEAR_LENGTH_OPTIONS.find(o => o.value === bottomwearLength)?.label || bottomwearLength} — describe the leg hem as "${BOTTOMWEAR_LENGTH_OPTIONS.find(o => o.value === bottomwearLength)?.promptLabel}" and include the anatomical anchor: ${BOTTOMWEAR_LENGTH_OPTIONS.find(o => o.value === bottomwearLength)?.anatomicalAnchor}. Do NOT infer bottomwear length from images.` : ""}
 Shot Type: ${isGhostMannequin ? "GHOST MANNEQUIN (no visible model — garment shaped as if worn by invisible person)" : isProductOnlyShot ? "PRODUCT ONLY (no human model)" : "ON-MODEL"}
 ${!isProductOnlyShot ? (model ? `AI Model: ${model.name} - ${model.description}` : "AI Model: Use the provided model reference image as the person") : ""}
 ${!isProductOnlyShot && modelImage ? "Model Reference Image: PROVIDED (use the EXACT person from the reference photo - same face, skin tone, hair, body type)" : ""}
@@ -1252,7 +1478,7 @@ ${additionalInfo ? `Additional Instructions (AUTHORITATIVE USER INTENT — treat
 
 ★ ADDITIONAL INSTRUCTIONS HANDLING: If the text above contains guidance about posture, stance, gaze, head tilt, arm/hand positioning, facial expression, mood, or styling attitude, you MUST weave those cues DIRECTLY into the pose description in the output prompt (see NATURAL POSING & SUBTLE VARIATION DIRECTIVE). Do NOT paraphrase the intent away; reflect the user's specific words and intent in concrete, descriptive pose language. When the same guidance applies across many products, express it as a mood with subtle per-generation micro-variations in gaze, head tilt, arm/hand position, and expression — so each output reads as a distinct moment within the same mood.` : ""}
 
-IMPORTANT: The generated prompt must explicitly instruct to preserve ALL garment visual details exactly as shown in the reference images (sleeve length, neckline, color, pattern, fabric texture, and all construction details).${fit ? ` For FIT, the prompt MUST describe the garment as "${fit}" fit (${FIT_OPTIONS.find(f => f.value === fit)?.description || fit}). Do NOT use any other fit descriptor (e.g., do not say "oversized" if the user selected "regular", do not say "slim" if the user selected "relaxed"). The user's fit selection is authoritative.` : ` For FIT, use your best judgment based on the garment images to describe how the garment should fit${isProductOnlyShot ? "" : " on the model"}.`}
+IMPORTANT: The generated prompt must explicitly instruct to preserve ALL garment visual details exactly as shown in the reference images (sleeve length, neckline, color, pattern, fabric texture, and all construction details).${fit ? ` For FIT, the prompt MUST describe the garment as "${fit}" fit (${FIT_OPTIONS.find(f => f.value === fit)?.description || fit}). Do NOT use any other fit descriptor (e.g., do not say "oversized" if the user selected "regular", do not say "slim" if the user selected "relaxed"). The user's fit selection is authoritative.` : ` For FIT, use your best judgment based on the garment images to describe how the garment should fit${isProductOnlyShot ? "" : " on the model"}.`}${lengthOverridesBlock ? ` For GARMENT LENGTH (sleeve / top hemline / bottomwear outseam — whichever the user has specified above), the prompt MUST use the exact label and anatomical-anchor sentence given in GENERATION PARAMETERS. The user's length selection is authoritative and OVERRIDES any visual reading of the garment reference images for those dimensions; preserve every OTHER detail of the garment exactly as shown.` : ""}
 ${!isProductOnlyShot && !isGhostMannequin && !accessories.some(a => a.category === "shoes") ? `\nFOOTWEAR COLOR RULE: When footwear is visible in the frame, the shoes/footwear must NEVER be white or off-white. Always use a non-white color (black, tan, brown, navy, grey, etc.) that complements the outfit. This rule is absolute — no white sneakers, no white shoes of any kind.` : ""}
 ${isGhostMannequin ? "\nCRITICAL: This is a GHOST MANNEQUIN shot. The generated image must show the garment shaped as if worn by an invisible person — three-dimensional, filled with natural body volume, but with ZERO visible human body parts, skin, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? "\nCRITICAL: This is a PRODUCT-ONLY shot. The generated image must show ONLY the garment product — NO human model, NO mannequin body, NO person. Focus entirely on the product." : ""}
 ${accessories.length > 0 ? `\nACCESSORY INSTRUCTION: For accessories with reference images, the prompt MUST instruct the image generator to reproduce the EXACT accessory shown - same design, material, color, and proportions. For AI-chosen accessories (no reference image), FIRST analyze the garment's style category (formal, casual, ethnic/traditional, streetwear, sportswear, luxury, bohemian, etc.) and then select accessories that are STYLISTICALLY COHERENT:
@@ -1390,11 +1616,12 @@ export async function buildVTONImageContentParts({
       text: `\n═══ GENERATION INSTRUCTIONS ═══\n${prompt}\n\n` +
         `═══ BACKGROUND & ENVIRONMENT (gemini-3.1-flash-image-preview) ═══\n` +
         `The scene, backdrop, surfaces, atmosphere, and global lighting MUST follow ONLY the generation prompt text above (which encodes the user's intended environment). ` +
+        `Do NOT substitute a white studio backdrop, a neutral grey cyclorama, or any other default environment when the prompt above describes a different scene — the prompt's background description is the SOLE source of truth. Render a pure white (#FFFFFF) cyclorama ONLY if the prompt above itself specifies one. ` +
         `Treat the product reference photos as defining footwear identity only: ZERO transfer of their original location, flooring, walls, props, or spill light from those photos. ` +
         `Relight the footwear so it belongs in that described environment (shadow softness, color temperature, and wrap consistent with that backdrop).\n\n` +
         `═══ MANDATORY PRODUCT FIDELITY REQUIREMENTS ═══\n` +
         `The footwear in the generated image MUST be a pixel-accurate reproduction of the PRODUCT REFERENCE IMAGES provided above. This is non-negotiable:\n\n` +
-        `• SHAPE & SILHOUETTE: Identical overall shape, proportions, toe box form, heel height, sole thickness, toe spring, profile curvature — zero deviation from reference\n` +
+        `• SHAPE, SILHOUETTE & INTERNAL PROPORTIONS: Identical overall shape and silhouette AND identical internal proportions. The SOLE THICKNESS, midsole stack height, toe-box form and depth, heel height, toe-spring, profile curvature, collar height, upper-to-sole ratio, and outsole length-to-width ratio are copied from the reference product with zero deviation. Do NOT thicken the sole, inflate the midsole, bulk up the toe box, heighten the heel, stylize a chunkier/sportier silhouette, or otherwise exaggerate the shoe beyond what the reference photos show — keep it slim when the reference is slim, keep it flat when the reference is flat\n` +
         `• COLORS & COLORWAY: Exact same color scheme, color blocking zones, accent colors, gradients, color transitions — no color shifts, no artistic reinterpretation\n` +
         `• MATERIALS & TEXTURES: Same material types (leather, suede, mesh, canvas, knit, rubber, EVA) with identical grain, weave, sheen, matte/gloss, surface quality\n` +
         `• LOGOS & BRANDING: Every visual mark (swooshes, stripes, symbols, emblems, wordmarks) must be IDENTICAL — same geometric shape, same proportional size relative to the shoe, same exact position on the shoe surface, same orientation angle, same color, same rendering style (embossed, debossed, printed, stitched, rubberized, reflective, perforated). Do NOT use world knowledge of any brand to substitute, resize, reposition, redesign, or "correct" any mark. Copy ONLY what the reference photos show\n` +
@@ -1405,7 +1632,7 @@ export async function buildVTONImageContentParts({
         `• STITCHING: Same stitch color, stitch pattern, stitch density, and placement lines\n` +
         `• MEDIAL / LATERAL / SOLE ORIENTATION: When reference images are tagged with positional labels ([MEDIAL SIDE], [LATERAL SIDE], [SOLE]), the generated shoe MUST respect those labels exactly. Branding, stripes, logos, or panels shown on the MEDIAL image must appear ONLY on the medial (inner, facing the other foot) side of the rendered shoe; those on the LATERAL image ONLY on the lateral (outer) side; sole-only details ONLY on the outsole. Do NOT mirror, swap, flip, or hallucinate side placement across sides\n\n` +
         `Any deviation from the product reference images — even a subtle logo repositioning, color shift, added engraving, or side swap — is a CRITICAL FAILURE that invalidates the entire output.` +
-        `${!isProductOnlyShot ? "\n\n═══ FOOTWEAR SCALE & FIT (ON-MODEL — MANDATORY) ═══\nThe footwear must fit the model's feet with natural, realistic proportions — neither oversized nor undersized relative to the model's foot. The shoe length, width, and opening must match the model's foot size exactly: heel seated flush against the heel counter, toes reaching the toe box naturally, and the upper wrapping the foot without gapping, bulging, or slippage. The sole must make correct ground contact and the ankle line must look anatomically correct. Do NOT render the shoes smaller or larger than the model's actual foot — this is a critical failure mode to avoid." : ""}` +
+        `${!isProductOnlyShot ? "\n\n═══ FOOTWEAR SCALE, FIT & PROPORTION LOCK (ON-MODEL — MANDATORY) ═══\nThis is the single most critical on-model failure mode for footwear. Read and enforce every clause.\n\nSCALE ANCHOR (size the shoe by the model's anatomy): Render the footwear at the exact real-world scale of a shoe worn by THIS specific model. The outsole length equals ONE foot length — from the back of the model's heel to the tip of their longest toe, and no further. The shoe width matches the width of the model's own foot. Render the shoe as it would truly appear in a candid commercial photograph of this model wearing this product, NOT as a detached hero product scaled up for drama.\n\nFIT ANCHOR (positive-framing): The collar/topline hugs the ankle with the heel seated flush against the heel counter; the upper wraps the forefoot smoothly and closely; the tongue sits naturally over the instep; the laces (if any) close the throat cleanly. The fit reads as clean, contoured, and true-to-size — with no gapping, no bulging, no tenting, no cavernous opening around the ankle, and no slippage. The sole makes flat, stable ground contact and the ankle line is anatomically correct.\n\nPROPORTION LOCK (copy these attributes PIXEL-FOR-PIXEL from the PRODUCT REFERENCE IMAGES above — never invent, exaggerate, or stylize them): SOLE THICKNESS, midsole stack height, toe-spring, heel height, toe-box volume and depth, collar height, upper-to-sole height ratio, and outsole length-to-width ratio are all identical to the reference product. Keep the sole slim when the reference sole is slim; keep the midsole flat when the reference midsole is flat; keep the toe box shallow when the reference toe box is shallow. Do NOT thicken the sole, inflate the midsole into a chunkier stack, enlarge the toe box, heighten the heel, or push the shoe toward a sportier/chunkier silhouette than the reference shows. The rendered shoe on the model's foot must look like the EXACT SAME product in the reference photos — just worn on a real foot." : ""}` +
         `${!isProductOnlyShot && modelImage ? "\n\nMODEL IDENTITY: Generate the EXACT same person from the model reference image — same face, skin tone, hair color/style, and body type." : ""}` +
         `${isProductOnlyShot ? "\n\nPRODUCT-ONLY SHOT: No human model, feet, legs, or any body parts should appear in the generated image. Show ONLY the footwear product." : ""}`,
     });

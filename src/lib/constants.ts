@@ -1,8 +1,18 @@
-import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, FeatureMode, FitType, FootwearType, Gender, ModelSwapBackgroundMode, Pose, PoseFraming, ProductCategory, SetLayoutStyle, SwatchShape } from "./types";
+import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, Gender, ImageGenModel, ModelSwapBackgroundMode, Pose, PoseFraming, ProductCategory, SetLayoutStyle, SleeveLength, SwatchShape, TopwearLength } from "./types";
 
 export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; description: string }[] = [
   { value: "clothing", label: "Clothing", description: "Apparel, garments, and fashion items" },
   { value: "footwear", label: "Footwear", description: "Shoes, boots, sandals, and more" },
+];
+
+/**
+ * Image-generation backends the user can pick from.
+ * Currently surfaced only for Footwear VTON (single + bulk); everything else
+ * is fixed to the Gemini backend.
+ */
+export const IMAGE_GEN_MODELS: { value: ImageGenModel; label: string; description: string }[] = [
+  { value: "gemini", label: "Nano Banana 2", description: "Gemini 3.1 Flash Image — default, best overall fidelity" },
+  { value: "gpt-image-2", label: "GPT-Image-2", description: "Azure OpenAI gpt-image-2 — alternative rendering style" },
 ];
 
 export const GENDER_OPTIONS: { value: Gender; label: string; description: string }[] = [
@@ -295,7 +305,7 @@ export const POSES: Pose[] = [
     icon: "🔍",
     viewAngle: "front",
     framing: "bust-up",
-    garmentRelevance: ["topwear"],
+    garmentRelevance: ["topwear", "onepiece"],
   },
   {
     id: "front-neckline-bust",
@@ -304,7 +314,7 @@ export const POSES: Pose[] = [
     icon: "✨",
     viewAngle: "front",
     framing: "bust-up",
-    garmentRelevance: ["topwear"],
+    garmentRelevance: ["topwear", "onepiece"],
   },
 
   // --- Front · Hip-Down / Lower Body (hip to feet) ---
@@ -1735,6 +1745,129 @@ export const FIT_OPTIONS: { value: FitType; label: string; description: string }
   { value: "loose", label: "Loose Fit", description: "Very roomy with lots of drape and flow" },
   { value: "bodycon", label: "Bodycon", description: "Figure-hugging, contours closely to the body" },
   { value: "boxy", label: "Boxy", description: "Wide and straight, minimal waist definition" },
+];
+
+/**
+ * Sleeve length options for topwear / onepiece. `null` (Auto-Detect AI) is the default and is
+ * represented in the UI as the absence of a selection — not as an entry in this list.
+ *
+ * `promptLabel` and `anatomicalAnchor` are the verbatim phrases injected into the Gemini 3 Pro
+ * meta-prompt and forwarded into the Gemini 3 Flash Image generation prompt — they describe the
+ * sleeve hem in concrete anatomical terms so the image generator has a deterministic landmark.
+ */
+export const SLEEVE_LENGTH_OPTIONS: {
+  value: SleeveLength;
+  label: string;
+  description: string;
+  promptLabel: string;
+  anatomicalAnchor: string;
+}[] = [
+  {
+    value: "full",
+    label: "Full Sleeve",
+    description: "Sleeve extends down to the wrist",
+    promptLabel: "full sleeve (long sleeve)",
+    anatomicalAnchor: "the sleeve hem ends exactly at the wrist bone (the ulnar styloid), fully covering the forearm from shoulder to wrist",
+  },
+  {
+    value: "three-quarter",
+    label: "3/4 Sleeve",
+    description: "Sleeve ends mid-forearm, between elbow and wrist",
+    promptLabel: "three-quarter sleeve (3/4 sleeve)",
+    anatomicalAnchor: "the sleeve hem ends roughly mid-forearm — approximately halfway between the elbow crease and the wrist — leaving the lower forearm and wrist exposed",
+  },
+  {
+    value: "half",
+    label: "Half Sleeve",
+    description: "Short sleeve ending around mid-bicep",
+    promptLabel: "half sleeve (short sleeve)",
+    anatomicalAnchor: "the sleeve hem ends roughly mid-bicep — approximately halfway between the shoulder cap and the elbow — leaving the entire forearm and the lower bicep exposed",
+  },
+  {
+    value: "sleeveless",
+    label: "Sleeveless",
+    description: "No sleeve — bare shoulder, arm fully exposed",
+    promptLabel: "sleeveless (no sleeve)",
+    anatomicalAnchor: "there is NO sleeve at all — the armhole opening sits at the shoulder cap and the entire arm (shoulder, bicep, forearm, wrist) is bare and visible",
+  },
+];
+
+/**
+ * Body / hemline length options for topwear (and upper portion of onepiece).
+ * `null` (Auto-Detect AI) is the default; absent from this list.
+ *
+ * Each option anchors the hemline to a specific anatomical landmark to give Nano Banana 2 a
+ * deterministic crop point that does not drift between generations.
+ */
+export const TOPWEAR_LENGTH_OPTIONS: {
+  value: TopwearLength;
+  label: string;
+  description: string;
+  promptLabel: string;
+  anatomicalAnchor: string;
+}[] = [
+  {
+    value: "full",
+    label: "Full (till shin)",
+    description: "Long top — hem reaches the shin (tunic / kurta / maxi-top)",
+    promptLabel: "full length top (shin-length tunic / maxi)",
+    anatomicalAnchor: "the hemline of the top falls all the way down to the shin — roughly halfway between the knee and the ankle — covering the hips, thighs, and knees entirely",
+  },
+  {
+    value: "three-quarter",
+    label: "3/4 (till knee)",
+    description: "Knee-length top — hem reaches the knee",
+    promptLabel: "three-quarter length top (knee-length)",
+    anatomicalAnchor: "the hemline of the top falls to the knee — covering the hips and thighs entirely and ending at the kneecap",
+  },
+  {
+    value: "mid-thigh",
+    label: "Mid-thigh",
+    description: "Long shirt / longline — hem ends mid-thigh",
+    promptLabel: "mid-thigh length top (longline)",
+    anatomicalAnchor: "the hemline of the top falls to mid-thigh — roughly halfway between the hip crease and the knee — covering the hips and the upper half of the thighs",
+  },
+  {
+    value: "half",
+    label: "Half (till waist)",
+    description: "Regular waist-length top — hem ends at the natural waist",
+    promptLabel: "half length top (regular waist-length)",
+    anatomicalAnchor: "the hemline of the top falls at the natural waist — at or just above the navel — and does NOT extend over the hips",
+  },
+];
+
+/**
+ * Outseam length options for bottomwear (and lower portion of onepiece / jumpsuit).
+ * `null` (Auto-Detect AI) is the default; absent from this list.
+ */
+export const BOTTOMWEAR_LENGTH_OPTIONS: {
+  value: BottomwearLength;
+  label: string;
+  description: string;
+  promptLabel: string;
+  anatomicalAnchor: string;
+}[] = [
+  {
+    value: "full",
+    label: "Full Length",
+    description: "Hem reaches the ankle (regular pants / trousers / jeans)",
+    promptLabel: "full length bottomwear (ankle-length)",
+    anatomicalAnchor: "the leg hem of the bottomwear ends at the ankle — covering the entire leg from waistband to ankle bone",
+  },
+  {
+    value: "three-quarter",
+    label: "3/4 Length",
+    description: "Capri / cropped — hem ends mid-calf, below the knee",
+    promptLabel: "three-quarter length bottomwear (capri / cropped)",
+    anatomicalAnchor: "the leg hem of the bottomwear ends mid-calf — clearly below the knee but well above the ankle — exposing the lower calf and ankle",
+  },
+  {
+    value: "shorts",
+    label: "Shorts",
+    description: "Hem ends at or above mid-thigh",
+    promptLabel: "shorts (short bottomwear)",
+    anatomicalAnchor: "the leg hem of the bottomwear ends at or above mid-thigh — leaving the knees and the entire lower leg fully exposed",
+  },
 ];
 
 // --- Infographic Constants ---

@@ -33,9 +33,19 @@ import {
   uniqueFilterValuesFromRecords,
   validateMapping,
 } from "@/lib/bulk-spreadsheet-import";
-import { FIT_OPTIONS, GENDER_OPTIONS, PRODUCT_CATEGORY_OPTIONS, FOOTWEAR_TYPE_OPTIONS, SET_LAYOUT_OPTIONS } from "@/lib/constants";
+import {
+  BOTTOMWEAR_LENGTH_OPTIONS,
+  FIT_OPTIONS,
+  FOOTWEAR_TYPE_OPTIONS,
+  GENDER_OPTIONS,
+  PRODUCT_CATEGORY_OPTIONS,
+  SET_LAYOUT_OPTIONS,
+  SLEEVE_LENGTH_OPTIONS,
+  TOPWEAR_LENGTH_OPTIONS,
+} from "@/lib/constants";
 import type { VTONStore } from "@/store/vton-store";
 import type {
+  BottomwearLength,
   BulkSpreadsheetMapping,
   GarmentType,
   FitType,
@@ -43,6 +53,8 @@ import type {
   ProductFolder,
   SetProductFolder,
   SetVariantFolder,
+  SleeveLength,
+  TopwearLength,
 } from "@/lib/types";
 import { BULK_SPREADSHEET_FILTER_ALL } from "@/lib/types";
 
@@ -51,6 +63,37 @@ const GARMENT_TYPES: { value: GarmentType; label: string; icon: React.ReactNode 
   { value: "bottomwear", label: "Bottom Wear", icon: <Scissors className="w-4 h-4" /> },
   { value: "onepiece", label: "One Piece", icon: <Shirt className="w-4 h-4" /> },
 ];
+
+/** Which per-product override dimension is shown in the folder card tab strip */
+type ProductOverrideTab = "fit" | "sleeve" | "tophem" | "bottomlen";
+
+function productOverrideTabs(garmentType: GarmentType | undefined): ProductOverrideTab[] {
+  switch (garmentType) {
+    case "topwear":
+      return ["fit", "sleeve", "tophem"];
+    case "bottomwear":
+      return ["fit", "bottomlen"];
+    case "onepiece":
+      return ["fit", "sleeve", "tophem", "bottomlen"];
+    default:
+      return ["fit"];
+  }
+}
+
+function tabLabel(t: ProductOverrideTab): string {
+  switch (t) {
+    case "fit":
+      return "Fit";
+    case "sleeve":
+      return "Sleeve";
+    case "tophem":
+      return "Top hem";
+    case "bottomlen":
+      return "Bottom";
+    default:
+      return t;
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /*  Product Folder Card - used in bulk mode                            */
@@ -66,8 +109,15 @@ function ProductFolderCard({
   onProductInfoChange,
   onToggleBackView,
   onSetFootwearSide,
+  garmentType,
   globalFit,
+  globalSleeveLength,
+  globalTopwearLength,
+  globalBottomwearLength,
   onFitChange,
+  onSleeveLengthChange,
+  onTopwearLengthChange,
+  onBottomwearLengthChange,
   isFootwear,
 }: {
   folder: ProductFolder;
@@ -80,13 +130,26 @@ function ProductFolderCard({
   onProductInfoChange?: (folderId: string, info: string) => void;
   onToggleBackView?: (folderId: string, imageId: string) => void;
   onSetFootwearSide?: (folderId: string, imageId: string, side: FootwearSide | null) => void;
+  garmentType?: GarmentType;
   globalFit?: FitType | null;
+  globalSleeveLength?: SleeveLength | null;
+  globalTopwearLength?: TopwearLength | null;
+  globalBottomwearLength?: BottomwearLength | null;
   onFitChange?: (folderId: string, fit: FitType | null) => void;
+  onSleeveLengthChange?: (folderId: string, length: SleeveLength | null) => void;
+  onTopwearLengthChange?: (folderId: string, length: TopwearLength | null) => void;
+  onBottomwearLengthChange?: (folderId: string, length: BottomwearLength | null) => void;
   isFootwear?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(folder.name);
+  const [activeOverrideTab, setActiveOverrideTab] = useState<ProductOverrideTab>("fit");
+
+  const overrideTabs = useMemo(() => productOverrideTabs(garmentType), [garmentType]);
+  const displayOverrideTab = overrideTabs.includes(activeOverrideTab)
+    ? activeOverrideTab
+    : overrideTabs[0] ?? "fit";
 
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -253,48 +316,226 @@ function ProductFolderCard({
         </div>
       )}
 
-      {/* Per-Product Fit Override (clothing only) */}
-      {target === "primary" && onFitChange && !isFootwear && (
-        <div className="px-3 pb-3">
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <Shirt className="w-3 h-3 text-muted-foreground" />
-            <span className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
-              Fit
-            </span>
-            {folder.fit !== undefined && folder.fit !== globalFit && (
-              <Badge variant="outline" className="text-[11px] h-4 px-1.5">Overridden</Badge>
+      {/* Per-product overrides: Fit / Sleeve / Top hem / Bottom (clothing bulk — tab strip) */}
+      {target === "primary" &&
+        onFitChange &&
+        onSleeveLengthChange &&
+        onTopwearLengthChange &&
+        onBottomwearLengthChange &&
+        !isFootwear && (
+          <div className="px-3 pb-3">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Shirt className="w-3 h-3 text-muted-foreground" />
+              <span className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+                Product sizing
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1 mb-2">
+              {overrideTabs.map((tab) => {
+                const overridden =
+                  (tab === "fit" &&
+                    folder.fit !== undefined &&
+                    folder.fit !== globalFit) ||
+                  (tab === "sleeve" &&
+                    folder.sleeveLength !== undefined &&
+                    folder.sleeveLength !== globalSleeveLength) ||
+                  (tab === "tophem" &&
+                    folder.topwearLength !== undefined &&
+                    folder.topwearLength !== globalTopwearLength) ||
+                  (tab === "bottomlen" &&
+                    folder.bottomwearLength !== undefined &&
+                    folder.bottomwearLength !== globalBottomwearLength);
+                return (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setActiveOverrideTab(tab)}
+                    className={cn(
+                      "inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors border",
+                      displayOverrideTab === tab
+                        ? "bg-primary/15 border-primary/50 text-primary"
+                        : "bg-muted/20 border-border text-muted-foreground hover:border-primary/40 hover:text-foreground",
+                    )}
+                  >
+                    {tabLabel(tab)}
+                    {overridden ? (
+                      <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" aria-hidden />
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+
+            {displayOverrideTab === "fit" && (
+              <>
+                <div className="flex flex-wrap gap-1.5">
+                  {FIT_OPTIONS.map((option) => {
+                    const effectiveFit = folder.fit !== undefined ? folder.fit : globalFit;
+                    const isSelected = effectiveFit === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => onFitChange(folder.id, isSelected ? null : option.value)}
+                        className={cn(
+                          "px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors border",
+                          isSelected
+                            ? "bg-primary/10 border-primary/50 text-primary"
+                            : "bg-muted/20 border-border text-muted-foreground hover:border-primary/50 hover:text-foreground",
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {folder.fit !== undefined && folder.fit !== globalFit && (
+                  <button
+                    type="button"
+                    onClick={() => onFitChange(folder.id, globalFit ?? null)}
+                    className="mt-1.5 text-[11px] text-muted-foreground hover:text-primary transition-colors underline"
+                  >
+                    Reset to global ({globalFit ? FIT_OPTIONS.find((f) => f.value === globalFit)?.label : "Auto"})
+                  </button>
+                )}
+              </>
+            )}
+
+            {displayOverrideTab === "sleeve" && (
+              <>
+                <div className="flex flex-wrap gap-1.5">
+                  {SLEEVE_LENGTH_OPTIONS.map((option) => {
+                    const effective =
+                      folder.sleeveLength !== undefined ? folder.sleeveLength : globalSleeveLength;
+                    const isSelected = effective === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() =>
+                          onSleeveLengthChange(folder.id, isSelected ? null : option.value)
+                        }
+                        className={cn(
+                          "px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors border",
+                          isSelected
+                            ? "bg-primary/10 border-primary/50 text-primary"
+                            : "bg-muted/20 border-border text-muted-foreground hover:border-primary/50 hover:text-foreground",
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {folder.sleeveLength !== undefined &&
+                  folder.sleeveLength !== globalSleeveLength && (
+                    <button
+                      type="button"
+                      onClick={() => onSleeveLengthChange(folder.id, globalSleeveLength ?? null)}
+                      className="mt-1.5 text-[11px] text-muted-foreground hover:text-primary transition-colors underline"
+                    >
+                      Reset to global (
+                      {globalSleeveLength
+                        ? SLEEVE_LENGTH_OPTIONS.find((o) => o.value === globalSleeveLength)?.label
+                        : "Auto"}
+                      )
+                    </button>
+                  )}
+              </>
+            )}
+
+            {displayOverrideTab === "tophem" && (
+              <>
+                <div className="flex flex-wrap gap-1.5">
+                  {TOPWEAR_LENGTH_OPTIONS.map((option) => {
+                    const effective =
+                      folder.topwearLength !== undefined ? folder.topwearLength : globalTopwearLength;
+                    const isSelected = effective === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() =>
+                          onTopwearLengthChange(folder.id, isSelected ? null : option.value)
+                        }
+                        className={cn(
+                          "px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors border",
+                          isSelected
+                            ? "bg-primary/10 border-primary/50 text-primary"
+                            : "bg-muted/20 border-border text-muted-foreground hover:border-primary/50 hover:text-foreground",
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {folder.topwearLength !== undefined &&
+                  folder.topwearLength !== globalTopwearLength && (
+                    <button
+                      type="button"
+                      onClick={() => onTopwearLengthChange(folder.id, globalTopwearLength ?? null)}
+                      className="mt-1.5 text-[11px] text-muted-foreground hover:text-primary transition-colors underline"
+                    >
+                      Reset to global (
+                      {globalTopwearLength
+                        ? TOPWEAR_LENGTH_OPTIONS.find((o) => o.value === globalTopwearLength)?.label
+                        : "Auto"}
+                      )
+                    </button>
+                  )}
+              </>
+            )}
+
+            {displayOverrideTab === "bottomlen" && (
+              <>
+                <div className="flex flex-wrap gap-1.5">
+                  {BOTTOMWEAR_LENGTH_OPTIONS.map((option) => {
+                    const effective =
+                      folder.bottomwearLength !== undefined
+                        ? folder.bottomwearLength
+                        : globalBottomwearLength;
+                    const isSelected = effective === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() =>
+                          onBottomwearLengthChange(folder.id, isSelected ? null : option.value)
+                        }
+                        className={cn(
+                          "px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors border",
+                          isSelected
+                            ? "bg-primary/10 border-primary/50 text-primary"
+                            : "bg-muted/20 border-border text-muted-foreground hover:border-primary/50 hover:text-foreground",
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {folder.bottomwearLength !== undefined &&
+                  folder.bottomwearLength !== globalBottomwearLength && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onBottomwearLengthChange(folder.id, globalBottomwearLength ?? null)
+                      }
+                      className="mt-1.5 text-[11px] text-muted-foreground hover:text-primary transition-colors underline"
+                    >
+                      Reset to global (
+                      {globalBottomwearLength
+                        ? BOTTOMWEAR_LENGTH_OPTIONS.find((o) => o.value === globalBottomwearLength)
+                            ?.label
+                        : "Auto"}
+                      )
+                    </button>
+                  )}
+              </>
             )}
           </div>
-          <div className="flex flex-wrap gap-1.5">
-            {FIT_OPTIONS.map((option) => {
-              const effectiveFit = folder.fit !== undefined ? folder.fit : globalFit;
-              const isSelected = effectiveFit === option.value;
-              return (
-                <button
-                  key={option.value}
-                  onClick={() => onFitChange(folder.id, isSelected ? null : option.value)}
-                  className={cn(
-                    "px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors border",
-                    isSelected
-                      ? "bg-primary/10 border-primary/50 text-primary"
-                      : "bg-muted/20 border-border text-muted-foreground hover:border-primary/50 hover:text-foreground"
-                  )}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-          {folder.fit !== undefined && folder.fit !== globalFit && (
-            <button
-              onClick={() => onFitChange(folder.id, globalFit ?? null)}
-              className="mt-1.5 text-[11px] text-muted-foreground hover:text-primary transition-colors underline"
-            >
-              Reset to global ({globalFit ? FIT_OPTIONS.find(f => f.value === globalFit)?.label : "Auto"})
-            </button>
-          )}
-        </div>
-      )}
+        )}
 
       <input
         ref={inputRef}
@@ -509,6 +750,9 @@ function BulkSpreadsheetImportSection({ store }: { store: VTONStore }) {
   const [productCol, setProductCol] = useState("");
   const [imageCols, setImageCols] = useState<Set<string>>(() => new Set());
   const [fitCol, setFitCol] = useState(MAP_NONE);
+  const [sleeveLengthCol, setSleeveLengthCol] = useState(MAP_NONE);
+  const [topwearLengthCol, setTopwearLengthCol] = useState(MAP_NONE);
+  const [bottomwearLengthCol, setBottomwearLengthCol] = useState(MAP_NONE);
   const [filterCol, setFilterCol] = useState(MAP_NONE);
   /** Chosen filter slice when filter column is set (must match normalized labels e.g. "(empty)") */
   const [mappingFilterValue, setMappingFilterValue] = useState("");
@@ -601,6 +845,9 @@ function BulkSpreadsheetImportSection({ store }: { store: VTONStore }) {
         setProductCol(headers[0] ?? "");
         setImageCols(new Set());
         setFitCol(MAP_NONE);
+        setSleeveLengthCol(MAP_NONE);
+        setTopwearLengthCol(MAP_NONE);
+        setBottomwearLengthCol(MAP_NONE);
         setFilterCol(MAP_NONE);
         setMappingFilterValue("");
         setMappingOpen(true);
@@ -618,6 +865,9 @@ function BulkSpreadsheetImportSection({ store }: { store: VTONStore }) {
       productNameColumn: productCol,
       imageUrlColumns: Array.from(imageCols),
       fitColumn: fitCol === MAP_NONE ? null : fitCol,
+      sleeveLengthColumn: sleeveLengthCol === MAP_NONE ? null : sleeveLengthCol,
+      topwearLengthColumn: topwearLengthCol === MAP_NONE ? null : topwearLengthCol,
+      bottomwearLengthColumn: bottomwearLengthCol === MAP_NONE ? null : bottomwearLengthCol,
       filterColumn: filterCol === MAP_NONE ? null : filterCol,
     };
 
@@ -668,6 +918,9 @@ function BulkSpreadsheetImportSection({ store }: { store: VTONStore }) {
     productCol,
     imageCols,
     fitCol,
+    sleeveLengthCol,
+    topwearLengthCol,
+    bottomwearLengthCol,
     filterCol,
     mapHeaders,
     mapRecords,
@@ -829,6 +1082,57 @@ function BulkSpreadsheetImportSection({ store }: { store: VTONStore }) {
               <div className="space-y-2">
                 <Label>Fit column (optional)</Label>
                 <Select value={fitCol} onValueChange={setFitCol}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="None" />
+                  </SelectTrigger>
+                  <SelectContent position="popper" className="max-h-[min(280px,50vh)]">
+                    <SelectItem value={MAP_NONE}>None</SelectItem>
+                    {mapHeaders.map((h) => (
+                      <SelectItem key={h} value={h}>
+                        {h}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Sleeve length column (optional)</Label>
+                <Select value={sleeveLengthCol} onValueChange={setSleeveLengthCol}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="None" />
+                  </SelectTrigger>
+                  <SelectContent position="popper" className="max-h-[min(280px,50vh)]">
+                    <SelectItem value={MAP_NONE}>None</SelectItem>
+                    {mapHeaders.map((h) => (
+                      <SelectItem key={h} value={h}>
+                        {h}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Top hemline length column (optional)</Label>
+                <Select value={topwearLengthCol} onValueChange={setTopwearLengthCol}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="None" />
+                  </SelectTrigger>
+                  <SelectContent position="popper" className="max-h-[min(280px,50vh)]">
+                    <SelectItem value={MAP_NONE}>None</SelectItem>
+                    {mapHeaders.map((h) => (
+                      <SelectItem key={h} value={h}>
+                        {h}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Bottomwear length column (optional)</Label>
+                <Select value={bottomwearLengthCol} onValueChange={setBottomwearLengthCol}>
                   <SelectTrigger className="w-full">
                     <SelectValue placeholder="None" />
                   </SelectTrigger>
@@ -1202,6 +1506,12 @@ export function StepGarments({ store }: StepGarmentsProps) {
     setFootwearType,
     fit,
     setFit,
+    sleeveLength,
+    setSleeveLength,
+    topwearLength,
+    setTopwearLength,
+    bottomwearLength,
+    setBottomwearLength,
     addGarmentImage,
     removeGarmentImage,
     toggleGarmentBackView,
@@ -1222,6 +1532,9 @@ export function StepGarments({ store }: StepGarmentsProps) {
     renamePrimaryFolder,
     updatePrimaryFolderProductInfo,
     updatePrimaryFolderFit,
+    updatePrimaryFolderSleeveLength,
+    updatePrimaryFolderTopwearLength,
+    updatePrimaryFolderBottomwearLength,
     complementaryFolders,
     addComplementaryFolder,
     removeComplementaryFolder,
@@ -1521,6 +1834,150 @@ export function StepGarments({ store }: StepGarmentsProps) {
                   "text-sm font-medium",
                   fit === option.value ? "text-primary" : "text-foreground"
                 )}>
+                  {option.label}
+                </p>
+                <p className="text-[11px] text-muted-foreground leading-tight pr-4">
+                  {option.description}
+                </p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Sleeve Length (clothing topwear / onepiece only) */}
+      {!isFootwear && (garmentType === "topwear" || garmentType === "onepiece") && (
+        <div className="space-y-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-foreground">Sleeve Length</h3>
+              <Badge variant="outline" className="text-xs">
+                Optional
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Lock the sleeve length. Leave unselected (Auto-Detect) to let AI infer it from the garment images.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {SLEEVE_LENGTH_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => setSleeveLength(sleeveLength === option.value ? null : option.value)}
+                className={cn(
+                  "relative flex flex-col items-start gap-0.5 px-3.5 py-3 rounded-lg text-left transition-colors duration-200 border",
+                  sleeveLength === option.value
+                    ? "bg-card border-primary shadow-sm"
+                    : "bg-card border-border hover:border-primary/50 hover:shadow-sm",
+                )}
+              >
+                {sleeveLength === option.value && (
+                  <div className="absolute top-2 right-2 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
+                    <Check className="w-2.5 h-2.5 text-primary-foreground" />
+                  </div>
+                )}
+                <p
+                  className={cn(
+                    "text-sm font-medium",
+                    sleeveLength === option.value ? "text-primary" : "text-foreground",
+                  )}
+                >
+                  {option.label}
+                </p>
+                <p className="text-[11px] text-muted-foreground leading-tight pr-4">
+                  {option.description}
+                </p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Top Hemline Length (clothing topwear / onepiece only) */}
+      {!isFootwear && (garmentType === "topwear" || garmentType === "onepiece") && (
+        <div className="space-y-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-foreground">Top Hemline Length</h3>
+              <Badge variant="outline" className="text-xs">
+                Optional
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Lock how far down the body the top extends. Leave unselected (Auto-Detect) to let AI infer it from the garment images.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {TOPWEAR_LENGTH_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => setTopwearLength(topwearLength === option.value ? null : option.value)}
+                className={cn(
+                  "relative flex flex-col items-start gap-0.5 px-3.5 py-3 rounded-lg text-left transition-colors duration-200 border",
+                  topwearLength === option.value
+                    ? "bg-card border-primary shadow-sm"
+                    : "bg-card border-border hover:border-primary/50 hover:shadow-sm",
+                )}
+              >
+                {topwearLength === option.value && (
+                  <div className="absolute top-2 right-2 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
+                    <Check className="w-2.5 h-2.5 text-primary-foreground" />
+                  </div>
+                )}
+                <p
+                  className={cn(
+                    "text-sm font-medium",
+                    topwearLength === option.value ? "text-primary" : "text-foreground",
+                  )}
+                >
+                  {option.label}
+                </p>
+                <p className="text-[11px] text-muted-foreground leading-tight pr-4">
+                  {option.description}
+                </p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Bottomwear Outseam Length (clothing bottomwear / onepiece only) */}
+      {!isFootwear && (garmentType === "bottomwear" || garmentType === "onepiece") && (
+        <div className="space-y-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-foreground">Bottomwear Length</h3>
+              <Badge variant="outline" className="text-xs">
+                Optional
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Lock how far down the leg the bottomwear extends. Leave unselected (Auto-Detect) to let AI infer it from the garment images.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {BOTTOMWEAR_LENGTH_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => setBottomwearLength(bottomwearLength === option.value ? null : option.value)}
+                className={cn(
+                  "relative flex flex-col items-start gap-0.5 px-3.5 py-3 rounded-lg text-left transition-colors duration-200 border",
+                  bottomwearLength === option.value
+                    ? "bg-card border-primary shadow-sm"
+                    : "bg-card border-border hover:border-primary/50 hover:shadow-sm",
+                )}
+              >
+                {bottomwearLength === option.value && (
+                  <div className="absolute top-2 right-2 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
+                    <Check className="w-2.5 h-2.5 text-primary-foreground" />
+                  </div>
+                )}
+                <p
+                  className={cn(
+                    "text-sm font-medium",
+                    bottomwearLength === option.value ? "text-primary" : "text-foreground",
+                  )}
+                >
                   {option.label}
                 </p>
                 <p className="text-[11px] text-muted-foreground leading-tight pr-4">
@@ -1862,8 +2319,15 @@ export function StepGarments({ store }: StepGarmentsProps) {
                       onProductInfoChange={updatePrimaryFolderProductInfo}
                       onToggleBackView={!isFootwear ? toggleFolderImageBackView : undefined}
                       onSetFootwearSide={isFootwear ? setFolderImageFootwearSide : undefined}
+                      garmentType={garmentType}
                       globalFit={fit}
+                      globalSleeveLength={sleeveLength}
+                      globalTopwearLength={topwearLength}
+                      globalBottomwearLength={bottomwearLength}
                       onFitChange={updatePrimaryFolderFit}
+                      onSleeveLengthChange={updatePrimaryFolderSleeveLength}
+                      onTopwearLengthChange={updatePrimaryFolderTopwearLength}
+                      onBottomwearLengthChange={updatePrimaryFolderBottomwearLength}
                       isFootwear={isFootwear}
                     />
                   ))}

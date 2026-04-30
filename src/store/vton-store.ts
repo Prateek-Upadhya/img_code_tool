@@ -9,6 +9,7 @@ import {
   AspectRatio,
   BULK_SPREADSHEET_FILTER_ALL,
   BackgroundConfig,
+  BottomwearLength,
   BulkBackground,
   BulkSpreadsheetSession,
   BulkBgAssignmentMode,
@@ -26,8 +27,11 @@ import {
   GarmentType,
   Gender,
   GeneratedResult,
+  ImageGenModel,
   ModelImage,
   ModelSwapBackgroundMode,
+  SleeveLength,
+  TopwearLength,
   ModelSwapBulkCombination,
   ModelSwapBulkResult,
   ModelSwapGeneratedResult,
@@ -95,6 +99,9 @@ export function useVTONStore() {
   const [garmentType, setGarmentType] = useState<GarmentType>("topwear");
   const [footwearType, setFootwearType] = useState<FootwearType>("casual-shoes");
   const [fit, setFit] = useState<FitType | null>(null);
+  const [sleeveLength, setSleeveLength] = useState<SleeveLength | null>(null);
+  const [topwearLength, setTopwearLength] = useState<TopwearLength | null>(null);
+  const [bottomwearLength, setBottomwearLength] = useState<BottomwearLength | null>(null);
   const [complementaryImages, setComplementaryImages] = useState<ComplementaryImage[]>([]);
   const [poseAccessories, setPoseAccessories] = useState<Record<string, AccessoryItem[]>>({});
   const [applyAccessoriesToAllPoses, setApplyAccessoriesToAllPosesRaw] = useState(false);
@@ -103,6 +110,7 @@ export function useVTONStore() {
   const [modelImage, setModelImage] = useState<ModelImage | null>(null);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("3:4");
   const [imageQuality, setImageQuality] = useState<"1K" | "2K" | "4K">("2K");
+  const [imageGenModel, setImageGenModel] = useState<ImageGenModel>("gemini");
   const [selectedPoses, setSelectedPoses] = useState<Pose[]>([]);
   const [customPoses, setCustomPoses] = useState<CustomPose[]>([]);
   const [namingLogic, setNamingLogic] = useState<NamingLogic>("folder-name-sequential");
@@ -611,6 +619,24 @@ export function useVTONStore() {
   const updatePrimaryFolderFit = useCallback((id: string, newFit: FitType | null) => {
     setPrimaryFolders((prev) =>
       prev.map((f) => (f.id === id ? { ...f, fit: newFit } : f))
+    );
+  }, []);
+
+  const updatePrimaryFolderSleeveLength = useCallback((id: string, v: SleeveLength | null) => {
+    setPrimaryFolders((prev) =>
+      prev.map((f) => (f.id === id ? { ...f, sleeveLength: v } : f))
+    );
+  }, []);
+
+  const updatePrimaryFolderTopwearLength = useCallback((id: string, v: TopwearLength | null) => {
+    setPrimaryFolders((prev) =>
+      prev.map((f) => (f.id === id ? { ...f, topwearLength: v } : f))
+    );
+  }, []);
+
+  const updatePrimaryFolderBottomwearLength = useCallback((id: string, v: BottomwearLength | null) => {
+    setPrimaryFolders((prev) =>
+      prev.map((f) => (f.id === id ? { ...f, bottomwearLength: v } : f))
     );
   }, []);
 
@@ -1617,6 +1643,12 @@ export function useVTONStore() {
     setFootwearType,
     fit,
     setFit,
+    sleeveLength,
+    setSleeveLength,
+    topwearLength,
+    setTopwearLength,
+    bottomwearLength,
+    setBottomwearLength,
     addGarmentImage,
     removeGarmentImage,
     toggleGarmentBackView,
@@ -1646,6 +1678,8 @@ export function useVTONStore() {
     setAspectRatio,
     imageQuality,
     setImageQuality,
+    imageGenModel,
+    setImageGenModel,
     selectedPoses,
     togglePose,
     movePoseInSequence,
@@ -1684,6 +1718,9 @@ export function useVTONStore() {
     renamePrimaryFolder,
     updatePrimaryFolderProductInfo,
     updatePrimaryFolderFit,
+    updatePrimaryFolderSleeveLength,
+    updatePrimaryFolderTopwearLength,
+    updatePrimaryFolderBottomwearLength,
     bulkSpreadsheetSession,
     setBulkSpreadsheetSession,
     bulkSpreadsheetFilter,

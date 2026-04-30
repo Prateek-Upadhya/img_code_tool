@@ -37,6 +37,7 @@ import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, editVTONImage, buildModelSwapImageContentParts, editModelSwapImage } from "@/lib/gemini";
+import { generateVTONImageAzure } from "@/lib/azure-image";
 import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS } from "@/lib/constants";
 import Image from "next/image";
 import type { VTONStore } from "@/store/vton-store";
@@ -360,6 +361,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
     garmentType,
     footwearType,
     fit,
+    sleeveLength,
+    topwearLength,
+    bottomwearLength,
     complementaryImages,
     poseAccessories,
     applyAccessoriesToAllPoses,
@@ -420,7 +424,35 @@ export function StepGenerate({ store }: StepGenerateProps) {
     namingLogic,
   } = store;
   const { imageQuality, setImageQuality } = store;
+  const { imageGenModel } = store;
   const isModelSwap = featureMode === "model-swap";
+  const useAzureForFootwear = productCategory === "footwear" && imageGenModel === "gpt-image-2";
+
+  /**
+   * Routes the VTON image call to either Nano Banana 2 (Gemini) or Azure gpt-image-2,
+   * depending on the user-selected model. Kept call-signature-identical to
+   * `generateVTONImage` so existing call sites only need to swap the function name.
+   * The Azure backend ignores params that don't apply (productCategory, isGhostMannequin,
+   * isBackViewPose); those are Gemini-specific prompt-assembly hints.
+   */
+  const generateVTONImageRouted = useCallback(
+    (args: Parameters<typeof generateVTONImage>[0]) => {
+      if (useAzureForFootwear) {
+        return generateVTONImageAzure({
+          prompt: args.prompt,
+          garmentImages: args.garmentImages,
+          complementaryImages: args.complementaryImages,
+          accessories: args.accessories,
+          modelImage: args.modelImage,
+          aspectRatio: args.aspectRatio,
+          imageSize: args.imageSize ?? "2K",
+          isProductOnlyShot: args.isProductOnlyShot,
+        });
+      }
+      return generateVTONImage(args);
+    },
+    [useAzureForFootwear],
+  );
 
   const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
   const [infographicImage, setInfographicImage] = useState<{
@@ -604,6 +636,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
           garmentType,
           footwearType,
           fit,
+          sleeveLength,
+          topwearLength,
+          bottomwearLength,
           complementaryImages,
           accessories,
           background,
@@ -615,12 +650,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
           additionalInfo,
           productInfo,
           applyAccessoriesToAllPoses,
+          targetImageModel: imageGenModel,
         });
         collectedCosts.push(promptResult.cost);
 
         updateResult(result.id, { prompt: promptResult.text, status: "generating-image" });
 
-        const imageResult = await generateVTONImage({
+        const imageResult = await generateVTONImageRouted({
           apiKey,
           prompt: promptResult.text,
           garmentImages,
@@ -779,6 +815,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
     garmentType,
     footwearType,
     fit,
+    sleeveLength,
+    topwearLength,
+    bottomwearLength,
     complementaryImages,
     poseAccessories,
     applyAccessoriesToAllPoses,
@@ -788,6 +827,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
     additionalInfo,
     productInfo,
     imageQuality,
+    imageGenModel,
+    generateVTONImageRouted,
     setResults,
     updateResult,
     setUgcResults,
@@ -905,6 +946,18 @@ export function StepGenerate({ store }: StepGenerateProps) {
           garmentType,
           footwearType,
           fit: combo.primaryFolder.fit !== undefined ? combo.primaryFolder.fit : fit,
+          sleeveLength:
+            combo.primaryFolder.sleeveLength !== undefined
+              ? combo.primaryFolder.sleeveLength
+              : sleeveLength,
+          topwearLength:
+            combo.primaryFolder.topwearLength !== undefined
+              ? combo.primaryFolder.topwearLength
+              : topwearLength,
+          bottomwearLength:
+            combo.primaryFolder.bottomwearLength !== undefined
+              ? combo.primaryFolder.bottomwearLength
+              : bottomwearLength,
           complementaryImages: cgImages,
           accessories,
           background: effectiveBg,
@@ -916,12 +969,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
           additionalInfo,
           productInfo: combo.primaryFolder.productInfo || "",
           applyAccessoriesToAllPoses,
+          targetImageModel: imageGenModel,
         });
         collectedCosts.push(promptResult.cost);
 
         updateBulkResult(result.id, { prompt: promptResult.text, status: "generating-image" });
 
-        const imageResult = await generateVTONImage({
+        const imageResult = await generateVTONImageRouted({
           apiKey,
           prompt: promptResult.text,
           garmentImages: pgImages,
@@ -1121,12 +1175,17 @@ export function StepGenerate({ store }: StepGenerateProps) {
     garmentType,
     footwearType,
     fit,
+    sleeveLength,
+    topwearLength,
+    bottomwearLength,
     poseAccessories,
     applyAccessoriesToAllPoses,
     aspectRatio,
     additionalInfo,
     productInfo,
     imageQuality,
+    imageGenModel,
+    generateVTONImageRouted,
     resolveOverride,
     setBulkResults,
     updateBulkResult,
@@ -1161,6 +1220,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
           garmentType,
           footwearType,
           fit,
+          sleeveLength,
+          topwearLength,
+          bottomwearLength,
           complementaryImages,
           accessories,
           background,
@@ -1172,11 +1234,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
           additionalInfo,
           productInfo,
           applyAccessoriesToAllPoses,
+          targetImageModel: imageGenModel,
         });
         collectedCosts.push(promptResult.cost);
         updateResult(result.id, { prompt: promptResult.text, status: "generating-image" });
 
-        const imageResult = await generateVTONImage({
+        const imageResult = await generateVTONImageRouted({
           apiKey,
           prompt: promptResult.text,
           garmentImages,
@@ -1246,6 +1309,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
       garmentType,
       footwearType,
       fit,
+      sleeveLength,
+      topwearLength,
+      bottomwearLength,
       complementaryImages,
       poseAccessories,
       applyAccessoriesToAllPoses,
@@ -1254,6 +1320,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
       additionalInfo,
       productInfo,
       imageQuality,
+      imageGenModel,
+      generateVTONImageRouted,
       updateResult,
     ]
   );
@@ -1310,6 +1378,18 @@ export function StepGenerate({ store }: StepGenerateProps) {
           garmentType,
           footwearType,
           fit: combo.primaryFolder.fit !== undefined ? combo.primaryFolder.fit : fit,
+          sleeveLength:
+            combo.primaryFolder.sleeveLength !== undefined
+              ? combo.primaryFolder.sleeveLength
+              : sleeveLength,
+          topwearLength:
+            combo.primaryFolder.topwearLength !== undefined
+              ? combo.primaryFolder.topwearLength
+              : topwearLength,
+          bottomwearLength:
+            combo.primaryFolder.bottomwearLength !== undefined
+              ? combo.primaryFolder.bottomwearLength
+              : bottomwearLength,
           complementaryImages: cgImages,
           accessories,
           background: effectiveBg,
@@ -1321,11 +1401,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
           additionalInfo,
           productInfo: combo.primaryFolder.productInfo || "",
           applyAccessoriesToAllPoses,
+          targetImageModel: imageGenModel,
         });
         collectedCosts.push(promptResult.cost);
         updateBulkResult(result.id, { prompt: promptResult.text, status: "generating-image" });
 
-        const imageResult = await generateVTONImage({
+        const imageResult = await generateVTONImageRouted({
           apiKey,
           prompt: promptResult.text,
           garmentImages: pgImages,
@@ -1393,12 +1474,17 @@ export function StepGenerate({ store }: StepGenerateProps) {
       garmentType,
       footwearType,
       fit,
+      sleeveLength,
+      topwearLength,
+      bottomwearLength,
       poseAccessories,
       applyAccessoriesToAllPoses,
       aspectRatio,
       additionalInfo,
       productInfo,
       imageQuality,
+      imageGenModel,
+      generateVTONImageRouted,
       resolveOverride,
       updateBulkResult,
     ]

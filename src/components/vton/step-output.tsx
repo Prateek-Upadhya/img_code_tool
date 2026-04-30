@@ -4,7 +4,7 @@ import Image from "next/image";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { AlertCircle, Camera, Check, CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, Filter, GripVertical, ImageIcon, Package, Plus, Sparkles, Trash2, Upload, User, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ACCESSORY_CATEGORIES, ASPECT_RATIOS, FRAMING_OPTIONS, POSES, FOOTWEAR_POSES, UGC_SHOT_TYPE_OPTIONS, UGC_SCENE_PRESETS } from "@/lib/constants";
+import { ACCESSORY_CATEGORIES, ASPECT_RATIOS, FRAMING_OPTIONS, IMAGE_GEN_MODELS, POSES, FOOTWEAR_POSES, UGC_SHOT_TYPE_OPTIONS, UGC_SCENE_PRESETS } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -687,6 +687,44 @@ function CustomPoseCard({
         />
       </div>
 
+      {/* Reference Mode — only meaningful when at least one reference image is attached */}
+      <div>
+        <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+          Reference Mode
+        </label>
+        <div className="mt-1 flex gap-2">
+          <button
+            onClick={() => onUpdate(pose.id, { referenceMode: "pose" })}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors",
+              (pose.referenceMode ?? "pose") === "pose"
+                ? "bg-primary/10 border-primary text-primary"
+                : "bg-card border-border text-muted-foreground hover:border-primary/30 hover:text-foreground"
+            )}
+          >
+            <Sparkles className="w-4 h-4" />
+            Pose Reference
+          </button>
+          <button
+            onClick={() => onUpdate(pose.id, { referenceMode: "image" })}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors",
+              pose.referenceMode === "image"
+                ? "bg-amber-500/10 border-amber-500 text-amber-700 dark:text-amber-400"
+                : "bg-card border-border text-muted-foreground hover:border-amber-500/30 hover:text-foreground"
+            )}
+          >
+            <ImageIcon className="w-4 h-4" />
+            Image Reference
+          </button>
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-1">
+          {(pose.referenceMode ?? "pose") === "pose"
+            ? "Strict pose reference — only body geometry, camera angle, and image framing are copied. Background, accessories, garments, and model identity are ignored."
+            : "Holistic inspiration — pose, scene, lighting, and mood are extracted in a product-agnostic manner. Background colors are adapted to contrast with and highlight your product."}
+        </p>
+      </div>
+
       {/* Reference Images */}
       <div>
         <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
@@ -757,6 +795,7 @@ function CustomPosesSection({
       name: "",
       description: "",
       isModelShot: true,
+      referenceMode: "pose",
       referenceImages: [],
     });
   }, [addCustomPose]);
@@ -1593,6 +1632,8 @@ export function StepOutput({ store }: StepOutputProps) {
     syncAccessoriesToAllPoses,
     hasModel,
     featureMode,
+    imageGenModel,
+    setImageGenModel,
     ugcScenes,
     addUgcScene,
     removeUgcScene,
@@ -1698,6 +1739,57 @@ export function StepOutput({ store }: StepOutputProps) {
 
   return (
     <div className="space-y-8">
+      {/* Image Generation Model (Footwear VTON only) */}
+      {featureMode === "vton" && isFootwear && (
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-base font-semibold text-foreground">
+              Image Generation Model
+            </h3>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Choose which AI engine renders the final footwear photo. Prompt enrichment always runs through Gemini 3.1 Pro.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {IMAGE_GEN_MODELS.map((opt) => {
+              const isSelected = imageGenModel === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setImageGenModel(opt.value)}
+                  className={cn(
+                    "text-left p-4 rounded-xl border transition-colors duration-200",
+                    isSelected
+                      ? "bg-gradient-to-br from-orange-500/10 to-amber-500/10 border-orange-500/50 shadow-sm shadow-orange-500/20"
+                      : "bg-card border-border hover:border-primary/30 hover:shadow-sm"
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <div className={cn(
+                      "w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0",
+                      isSelected ? "border-orange-500" : "border-muted-foreground/40"
+                    )}>
+                      {isSelected && <div className="w-2 h-2 rounded-full bg-orange-500" />}
+                    </div>
+                    <p className={cn(
+                      "text-sm font-semibold",
+                      isSelected ? "text-foreground" : "text-foreground"
+                    )}>
+                      {opt.label}
+                    </p>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1.5 pl-6">
+                    {opt.description}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Aspect Ratio */}
       <div className="space-y-4">
         <div>

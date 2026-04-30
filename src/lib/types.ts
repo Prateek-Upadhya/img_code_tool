@@ -1,5 +1,12 @@
 export type ProductCategory = "clothing" | "footwear";
 
+/**
+ * Backend used to generate the final VTON image.
+ * - `gemini`: Nano Banana 2 (gemini-3.1-flash-image-preview). Default for everything.
+ * - `gpt-image-2`: Azure OpenAI gpt-image-2. Currently exposed only for Footwear VTON.
+ */
+export type ImageGenModel = "gemini" | "gpt-image-2";
+
 export type Gender = "male" | "female" | "unisex";
 
 export type GarmentType = "topwear" | "bottomwear" | "onepiece";
@@ -24,6 +31,35 @@ export type FitType =
   | "loose"
   | "bodycon"
   | "boxy";
+
+/**
+ * Sleeve length for TOPWEAR / ONEPIECE garments. `null` = AI auto-detect from images (default).
+ * Authoritative when set — overrides any AI inference from the reference photos.
+ */
+export type SleeveLength =
+  | "full"          // Full sleeve — extends to the wrist
+  | "three-quarter" // 3/4 sleeve — ends mid-forearm, between elbow and wrist
+  | "half"          // Half sleeve — short sleeve ending around mid-bicep
+  | "sleeveless";   // No sleeve — bare shoulder/arm
+
+/**
+ * Body / hemline length for TOPWEAR (and the upper portion of ONEPIECE).
+ * Describes how far down the body the top extends. `null` = AI auto-detect (default).
+ */
+export type TopwearLength =
+  | "full"          // Full length — hem reaches the shin (tunic / kurta / maxi-top)
+  | "three-quarter" // 3/4 length — hem reaches around the knee
+  | "mid-thigh"     // Mid-thigh length — hem ends mid-thigh (long shirt / longline)
+  | "half";         // Half / waist length — hem ends at the natural waist (regular crop)
+
+/**
+ * Outseam length for BOTTOMWEAR garments (and the lower portion of ONEPIECE / jumpsuit).
+ * Describes how far down the leg the bottomwear extends. `null` = AI auto-detect (default).
+ */
+export type BottomwearLength =
+  | "full"           // Full length — hem reaches the ankle (regular pants / trousers / jeans)
+  | "three-quarter"  // 3/4 length — hem ends below the knee / mid-calf (capri / cropped pants)
+  | "shorts";        // Shorts — hem ends at or above mid-thigh
 
 export type FootwearSide = "medial" | "lateral" | "sole";
 
@@ -134,12 +170,20 @@ export interface Pose {
   requiresModel?: boolean; // defaults to true; false for product-only shots
 }
 
+export type CustomPoseReferenceMode = "pose" | "image";
+
 export interface CustomPose {
   id: string;
   name: string;
   description: string;
   /** true = Model Shot (human model included), false = Product Shot (product only, no model) */
   isModelShot: boolean;
+  /**
+   * Controls how attached reference images are interpreted by the AI:
+   * - "pose" (default): images are STRICT pose references — only body geometry, camera angle, and image framing are extracted; background, accessories, model identity, garments/footwear, and other product-specific elements are ignored
+   * - "image": images are HOLISTIC inspirational references — pose, scene, lighting, mood, and an adapted color palette are extracted in a product-agnostic manner; the background palette is intentionally tuned to contrast with and highlight the user's product
+   */
+  referenceMode?: CustomPoseReferenceMode;
   /** Optional per-pose background/environment description that overrides the global background */
   customBackground?: string;
   referenceImages: {
@@ -156,6 +200,12 @@ export interface VTONConfig {
   garmentType: GarmentType;
   footwearType: FootwearType;
   fit: FitType | null;
+  /** Sleeve length override (topwear/onepiece). `null` = AI auto-detect. */
+  sleeveLength: SleeveLength | null;
+  /** Body length override for topwear / upper portion of onepiece. `null` = AI auto-detect. */
+  topwearLength: TopwearLength | null;
+  /** Outseam length override for bottomwear / lower portion of onepiece. `null` = AI auto-detect. */
+  bottomwearLength: BottomwearLength | null;
   complementaryImages: ComplementaryImage[];
   /** Accessories keyed by pose ID — each pose can have its own set of accessories */
   poseAccessories: Record<string, AccessoryItem[]>;
@@ -297,6 +347,12 @@ export interface ProductFolder {
   productInfo?: string;
   /** Per-product fit override; when undefined, the global fit selection is used */
   fit?: FitType | null;
+  /** Per-product sleeve length override (topwear/onepiece); undefined = inherit global */
+  sleeveLength?: SleeveLength | null;
+  /** Per-product top hemline length override (topwear/onepiece); undefined = inherit global */
+  topwearLength?: TopwearLength | null;
+  /** Per-product bottomwear outseam length override (bottomwear/onepiece); undefined = inherit global */
+  bottomwearLength?: BottomwearLength | null;
   /** Present when this folder was created from CSV/XLSX bulk import; used to replace on filter change */
   bulkImportSessionId?: string;
 }
@@ -309,6 +365,9 @@ export interface BulkSpreadsheetMapping {
   productNameColumn: string;
   imageUrlColumns: string[];
   fitColumn: string | null;
+  sleeveLengthColumn: string | null;
+  topwearLengthColumn: string | null;
+  bottomwearLengthColumn: string | null;
   filterColumn: string | null;
 }
 
@@ -316,6 +375,9 @@ export interface BulkSpreadsheetNormalizedRow {
   productName: string;
   imageUrls: string[];
   fit: FitType | null;
+  sleeveLength: SleeveLength | null;
+  topwearLength: TopwearLength | null;
+  bottomwearLength: BottomwearLength | null;
   /** Stable label for filtering; null when no filter column is mapped */
   filterValue: string | null;
 }
