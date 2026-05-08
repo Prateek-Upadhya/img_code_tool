@@ -6,10 +6,13 @@ alwaysApply: false
 
 # Gemini Prompt Engineering — Complete Reference
 
-All AI logic lives in `src/lib/gemini.ts`. This file contains 4 exported functions forming two two-step pipelines:
+All AI logic lives in `src/lib/gemini.ts`. This file contains the following exported functions:
 
-1. **VTON Pipeline**: `generateVTONPrompt()` → `generateVTONImage()`
-2. **Model Swap Pipeline**: `generateModelSwapPrompt()` → `generateModelSwapImage()`
+1. **VTON Pipeline (per pose)**: `generateVTONPrompt()` → `generateVTONImage()`
+2. **VTON batch pre-pass (NEW)**: `analyzeBackgroundScene()` — runs ONCE per Generate batch when an inspiration background is provided; produces a deterministic frozen scene description that downstream `generateVTONPrompt` calls reuse VERBATIM.
+3. **Model Swap Pipeline**: `generateModelSwapPrompt()` → `generateModelSwapImage()`
+
+All Gemini calls accept an optional `abortSignal: AbortSignal` so a single user-initiated Stop can cancel every in-flight request in a generation batch (note: `AbortSignal` is client-only — the server may still complete and bill, see Cancellable Generation section).
 
 ## Two-Model Pipeline Architecture
 
@@ -593,6 +596,139 @@ CRITICAL RULES:
 THINK OF IT THIS WAY: Imagine photographing a COMPLETELY DIFFERENT PERSON wearing the exact same
 outfit in the exact same pose. Result should look like a fresh photograph — not old photo with face pasted on.
 ```
+
+---
+
+## Batch-Level Background Consistency (`analyzeBackgroundScene` + `frozenSceneDescription`)
+
+When the user uploads an inspiration image as the global background, the VTON pipeline now runs a single Gemini 3.1 Pro pre-pass at the *start* of every Generate batch. The pre-pass produces a deterministic structured "frozen scene description" that is reused VERBATIM across every per-pose `generateVTONPrompt` call in the batch. The mechanism makes a 50-pose batch read as 50 photographs taken in the same physical location — without object positions drifting left/right between framings, and without lighting drifting between poses.
+
+### Pipeline integration
+
+```mermaid
+flowchart TD
+    Click[User clicks Generate] --> Has{background.mode == inspiration<br/>AND inspirationImage?}
+    Has -->|Yes| Analyze["analyzeBackgroundScene()<br/>(Gemini 3.1 Pro, ONE call per unique inspiration image)"]
+    Has -->|No| Skip[Skip]
+    Analyze --> Frozen[frozenSceneDescription: locked WIDE-SHOT layout + hex palette + flat-light directive]
+    Skip --> Frozen
+    Frozen --> Loop[For each pose in batch]
+    Loop --> Prompt["generateVTONPrompt() with frozenSceneDescription +<br/>FRAMING-AWARE SCENE PROJECTION rules"]
+    Prompt --> Image["generateVTONImage()"]
+```
+
+In bulk mode, the pre-pass is run once per *unique* inspiration `File` referenced by any combination's effective background (default + per-pose overrides). The results are keyed by `File` reference into a `Map<File, string>` and looked up at `processResult` time.
+
+### `analyzeBackgroundScene()` — output structure
+
+The function emits a fixed-format multi-section text block (no preamble, no closing chatter). The downstream meta-prompter embeds this entire string verbatim:
+
+```
+# WIDE-SHOT LAYOUT
+- <object_name>: x_center=<0.00–1.00>, width=<0.00–1.00>, vertical_zone=<sky | upper-third | upper-two-thirds | middle | middle-and-floor | floor | full-height>, depth=<foreground | midground | background>, description=<10–25 words, product-agnostic>
+
+# COMPONENTS
+<flat comma-separated list of every visible scene element, in product-agnostic language>
+
+# PALETTE
+- background-primary: #RRGGBB
+- mid-tone: #RRGGBB
+- accent: #RRGGBB
+- highlight: #RRGGBB
+- shadow: #RRGGBB
+
+# MATERIALS & SURFACES
+<2–4 sentences: ground texture, walls, atmospheric character, depth-of-field>
+
+# SUBJECT FRAMING ANCHOR
+"The model stands centered at x_center=0.5, occupying approximately the central 25–35% of the wide-shot frame, with both feet on the visible ground plane."
+
+# LIGHTING (FLAT-OVERRIDE — MANDATORY VERBATIM SENTENCE)
+"The model is lit by flat, evenly diffused light from a large overhead soft-source — a softbox-and-bounce setup at approximately 5500K daylight color temperature. The light wraps the model uniformly with minimal shadow falloff: cheeks, neck, collarbones, arms, hands, hips, and legs all read at the same exposure with no harsh side-shadow, no chiaroscuro, and no dramatic rim light. Background atmospheric lighting may follow the reference's overall mood, but light on the model itself stays flat and even."
+
+# ATMOSPHERE & MOOD
+<2–3 sentences>
+
+# BACKGROUND LOCK CONTRACT
+"This scene description is FROZEN for the entire batch. Every per-pose output prompt must reuse the WIDE-SHOT LAYOUT coordinates, the PALETTE hex codes, and the LIGHTING sentence VERBATIM, without paraphrasing, substituting synonyms, or drifting toward a default studio backdrop."
+```
+
+### Hard constraints baked into the analysis
+
+1. **BRAND-BLIND** — never names brands or real-world buildings by proper name.
+2. **PRODUCT-AGNOSTIC** — no assumption about what garment / footwear / model is later placed in the scene.
+3. **FORCE-FLAT LIGHTING OVERRIDE** — *regardless* of how the source image is lit (harsh sun, golden-hour, deep shadows), the LIGHTING section emits the verbatim flat-lighting sentence. This satisfies the explicit user requirement: "the model is evenly illuminated with minimal shadows" no matter what the reference looks like.
+4. **DETERMINISM** — coordinates and hex codes are exact; the description is reproducible.
+
+### `generateVTONPrompt` background precedence (with `frozenSceneDescription`)
+
+When `frozenSceneDescription` is passed in, the BACKGROUND section in the meta-prompt becomes:
+
+1. per-pose `customPose.customBackground` (unchanged — pose-specific override always wins)
+2. custom-pose IMAGE-REFERENCE mode (unchanged)
+3. **NEW**: `frozenSceneDescription` if provided — embed verbatim, drop the inspiration-image inline part (no need to re-send the image because Gemini Pro already has the locked text)
+4. `background.mode === "inspiration"` (legacy fallback when analysis was skipped or failed)
+5. `background.textDescription` (unchanged)
+6. default fallback (unchanged)
+
+### `FRAMING-AWARE SCENE PROJECTION` directive (NEW)
+
+When path (3) is active, `generateVTONPrompt` appends a `FRAMING-AWARE SCENE PROJECTION` directive to the meta-prompt. This is the actual mechanism that makes "tower on the left of the wide shot stays on the left of the close-up". It works because Gemini 3.1 Pro is the meta-prompter — it reads the wide-shot layout and emits a per-pose prompt whose BACKGROUND section honors the layout regardless of the framing's vertical crop.
+
+```
+═══ FRAMING-AWARE SCENE PROJECTION (MANDATORY when frozenSceneDescription is present) ═══
+The WIDE-SHOT LAYOUT above describes the full scene as it appears in a head-to-toe full-body framing.
+For the current pose with framing = {framing}, you MUST project that wide-shot scene through the
+framing's crop window WITHOUT moving any object's normalized x_center.
+
+Projection rules (NON-NEGOTIABLE):
+1. HORIZONTAL ANCHORING: every object listed in WIDE-SHOT LAYOUT keeps its x_center exactly as
+   given. Object positions NEVER drift left or right between framings.
+2. VERTICAL VISIBILITY by framing:
+   - full-body                → entire vertical_zone visible (sky → floor)
+   - three-quarter            → upper-two-thirds + middle visible; floor cropped near the feet
+   - mid-thigh                → upper-two-thirds + upper-middle visible; floor not visible
+   - waist-up                 → upper-third + upper-two-thirds visible; floor + lower-middle cropped
+   - bust-up / cropped headshot → ONLY upper-third + immediate background behind chest/head
+   - hip-down / knee-down     → middle + floor visible; sky / upper-third cropped
+   - product-only / feet-closeup → tightly-cropped sliver of floor only
+   - ghost-mannequin          → background follows the FROZEN SCENE DESCRIPTION as for full-body
+3. SCENE GEOMETRY LOCK: architectural elements keep the same vanishing-point geometry — a column
+   to the model's left in the full-body shot is still to the model's left, at the same x_center.
+4. PALETTE LOCK: copy the PALETTE hex codes verbatim into the BACKGROUND section.
+5. ATMOSPHERE LOCK: depth-of-field, materials, atmospheric character identical to the wide-shot.
+6. FLAT LIGHTING LOCK: copy the LIGHTING (FLAT-OVERRIDE) sentence verbatim. No chiaroscuro,
+   no harsh side-shadows, no dramatic rim lights.
+```
+
+### Cost & telemetry
+
+- One extra `gemini-3.1-pro-preview` call (`ThinkingLevel.MEDIUM`) per Generate batch (or per unique inspiration image in bulk mode).
+- The cost row shows up under `Background Scene Analysis (Gemini 3.1 Pro)`.
+
+---
+
+## Cancellable Generation (AbortController + `cancelGeneration`)
+
+Every Gemini call accepts an optional `abortSignal: AbortSignal` parameter, forwarded to `GenerateContentConfig.abortSignal`:
+
+- `generateVTONPrompt({ ..., abortSignal })`
+- `generateVTONImage({ ..., abortSignal })`
+- `validateGeneratedImage({ ..., abortSignal })`
+- `checkHumanVisibility({ ..., abortSignal })`
+- `analyzeBackgroundScene({ ..., abortSignal })`
+
+The store (`useVTONStore`) owns a `generationAbortControllerRef: React.MutableRefObject<AbortController | null>` and exposes:
+
+- `beginGeneration(): AbortController` — rotates a fresh controller and sets `isGenerating = true`. Called at the top of `handleGenerate` / `handleBulkGenerate`.
+- `cancelGeneration()` — calls `.abort()` on the current controller. Per-pose loops detect `signal.aborted` and (a) skip auto-retries, (b) mark the affected result `cancelled`, (c) break out between concurrency batches.
+
+### UX behaviour on cancel
+
+- Already-completed images stay visible.
+- In-flight + pending results are marked `status: "cancelled"` (the result-status union of `GeneratedResult`, `BulkGeneratedResult`, and `UGCGeneratedResult` was extended with this case; `getStatusIcon` / `getStatusText` render a muted X with the label *"Cancelled — re-generate to retry"*).
+- The Stop button (in the progress header of single + bulk VTON) carries a tooltip explaining that `AbortSignal` is client-only, so already-in-flight requests on Google's servers may still complete and bill.
+- Clicking Generate after a cancellation calls `setResults([])` / `setBulkResults([])` / `setUgcResults([])` first, so the cancelled batch is wiped before the new run starts.
 
 ---
 

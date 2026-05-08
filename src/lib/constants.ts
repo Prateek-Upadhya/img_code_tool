@@ -258,6 +258,15 @@ export const POSES: Pose[] = [
     framing: "mid-thigh",
     garmentRelevance: ["topwear", "onepiece"],
   },
+  {
+    id: "front-lifestyle-interaction-mid",
+    name: "Lifestyle Interaction",
+    description: "Natural, candid lifestyle pose where the model is interacting with ONE element of the surrounding environment in a way that complements the garment's style, fashion segment, and the scene's mood — for example: leaning the upper back or shoulder against a wall, hand resting on a stair railing, fingers lightly grazing a window pane, leaning a forearm on a counter or window ledge, casually adjusting a sleeve cuff near a doorway, or thumb tucked into a belt loop while leaning into a column. The interaction must feel candid and unposed, never staged. The model's posture, weight distribution, and gaze should harmonise with the garment's fashion segment (formal, casual, streetwear, ethnic, luxury, sportswear, bohemian, minimalist) and the background's mood. STRICT MID-THIGH FRAMING — the frame is head to upper mid-thigh, the bottom edge cuts off roughly one-third down the thigh from the hip crease, well above the knee. Knees are NEVER visible. Only the sliver of the environmental anchor that fits inside this upper-torso-to-upper-thigh window is visible (e.g. the wall surface adjacent to the upper torso, the upper portion of a railing, the edge of a window frame); never show full architectural elements that would imply a wider crop (no whole window, no entire stair flight, no full railing, no full doorway).",
+    icon: "🌿",
+    viewAngle: "front",
+    framing: "mid-thigh",
+    garmentRelevance: ["topwear", "bottomwear", "onepiece"],
+  },
 
   // --- Front · Waist-Up (head to waist/hip) ---
   {
@@ -538,9 +547,18 @@ export const POSES: Pose[] = [
 
   // --- Side · Full Body ---
   {
-    id: "side-profile-full",
-    name: "Side Profile",
-    description: "Full side profile with a natural standing posture — not rigidly straight but with the slight forward lean and relaxed shoulders of a real person at rest. One foot slightly ahead, arms hanging naturally. Head to toe",
+    id: "side-profile-left-full",
+    name: "Left Profile",
+    description: "Left profile with the model's body rotated about 75–80 degrees about the vertical axis so the LEFT side of the body faces the camera-left edge of the frame (the viewer's left, the 9 o'clock position) — but the chest is opened ~10–15 degrees back toward the camera so the front of the garment is gently visible (this is a flattering soft-profile, NOT a hard 90° silhouette). The model's nose, jawline, and the toes of the leading foot all point toward the 9 o'clock direction. Both shoulders are visible but the camera-side shoulder is closer to the lens. The gaze is OFF-CAMERA, looking out into the 9 o'clock direction (away from the camera) — the model is NOT looking at the lens. The model stands relaxed and grounded with weight on one leg, head to toe in frame. The orientation is ABSOLUTE: do NOT mirror, flip, or reverse — left = camera-left = 9 o'clock.",
+    icon: "👤",
+    viewAngle: "side",
+    framing: "full-body",
+    garmentRelevance: ["topwear", "bottomwear", "onepiece"],
+  },
+  {
+    id: "side-profile-right-full",
+    name: "Right Profile",
+    description: "Right profile with the model's body rotated about 75–80 degrees about the vertical axis so the RIGHT side of the body faces the camera-right edge of the frame (the viewer's right, the 3 o'clock position) — but the chest is opened ~10–15 degrees back toward the camera so the front of the garment is gently visible (this is a flattering soft-profile, NOT a hard 90° silhouette). The model's nose, jawline, and the toes of the leading foot all point toward the 3 o'clock direction. Both shoulders are visible but the camera-side shoulder is closer to the lens. The gaze is OFF-CAMERA, looking out into the 3 o'clock direction (away from the camera) — the model is NOT looking at the lens. The model stands relaxed and grounded with weight on one leg, head to toe in frame. The orientation is ABSOLUTE: do NOT mirror, flip, or reverse — right = camera-right = 3 o'clock.",
     icon: "👤",
     viewAngle: "side",
     framing: "full-body",

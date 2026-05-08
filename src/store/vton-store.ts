@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useMemo } from "react";
+import { useCallback, useState, useMemo, useRef } from "react";
 import {
   AccessoryCategory,
   AccessoryItem,
@@ -115,11 +115,54 @@ export function useVTONStore() {
   const [customPoses, setCustomPoses] = useState<CustomPose[]>([]);
   const [namingLogic, setNamingLogic] = useState<NamingLogic>("folder-name-sequential");
   const [singleDownloadPrefix, setSingleDownloadPrefix] = useState("product");
+  // Comma-separated list of suffix numbers to skip when generating sequential
+  // download filenames. Stored as raw user input; parsed at consumption time.
+  // Example: "3, 7" with prefix "product" produces product_1, product_2, product_4,
+  // product_5, product_6, product_8 (skipping _3 and _7).
+  const [skipNamingIndicesText, setSkipNamingIndicesText] = useState("");
   const [additionalInfo, setAdditionalInfo] = useState("");
   const [productInfo, setProductInfo] = useState("");
   const [apiKey, setApiKey] = useState(process.env.NEXT_PUBLIC_GEMINI_API_KEY ?? "");
   const [results, setResults] = useState<GeneratedResult[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  // True while the once-per-batch background-scene pre-pass is running. This
+  // surfaces a dedicated "Ingesting configuration… preparing to generate"
+  // loader so the user knows why the per-pose results haven't started
+  // appearing yet. Reset to false as soon as the analysis finishes (or
+  // fails) and per-pose generation begins.
+  const [isIngestingScene, setIsIngestingScene] = useState(false);
+
+  // ----------------------------------------------------------------------
+  // Generation cancellation
+  // ----------------------------------------------------------------------
+  // The current in-flight AbortController for the active generation batch.
+  // Stored in a ref (not state) because we never want a re-render when the
+  // controller is rotated — we only need a stable handle the Stop button can
+  // use to call .abort(). The same ref is also consumed by the per-pose loop
+  // to break out of the concurrency batches once the user has cancelled.
+  //
+  // NOTE per @google/genai docs: AbortSignal is a CLIENT-ONLY operation —
+  // calling .abort() cancels the in-flight HTTP request but does NOT cancel
+  // the work on Google's side, so any partial usage may still be billed.
+  const generationAbortControllerRef = useRef<AbortController | null>(null);
+
+  const beginGeneration = useCallback((): AbortController => {
+    const ctrl = new AbortController();
+    generationAbortControllerRef.current = ctrl;
+    setIsGenerating(true);
+    return ctrl;
+  }, []);
+
+  const cancelGeneration = useCallback(() => {
+    const ctrl = generationAbortControllerRef.current;
+    if (ctrl) {
+      ctrl.abort();
+    }
+    // We deliberately leave isGenerating === true here so the per-pose
+    // loops can finish their cleanup pass (mark in-flight + pending as
+    // "cancelled"); the loops themselves call setIsGenerating(false) in
+    // their finally blocks.
+  }, []);
 
   // --- Bulk Mode State ---
   const [primaryFolders, setPrimaryFolders] = useState<ProductFolder[]>([]);
@@ -813,6 +856,16 @@ export function useVTONStore() {
 
   const clearAllBulkPoseOverrides = useCallback(() => {
     setBulkPoseOverrides([]);
+  }, []);
+
+  const clearProductBgPoseOverrides = useCallback((productFolderId: string) => {
+    setBulkPoseOverrides((prev) =>
+      prev.map((o) =>
+        o.productFolderId === productFolderId
+          ? { ...o, backgroundId: undefined }
+          : o
+      )
+    );
   }, []);
 
   // --- Model Swap Actions ---
@@ -1687,6 +1740,8 @@ export function useVTONStore() {
     setNamingLogic,
     singleDownloadPrefix,
     setSingleDownloadPrefix,
+    skipNamingIndicesText,
+    setSkipNamingIndicesText,
     customPoses,
     addCustomPose,
     removeCustomPose,
@@ -1706,6 +1761,11 @@ export function useVTONStore() {
     hasModel,
     isGenerating,
     setIsGenerating,
+    isIngestingScene,
+    setIsIngestingScene,
+    beginGeneration,
+    cancelGeneration,
+    generationAbortControllerRef,
     canProceedToStep,
     // Bulk mode
     primaryFolders,
@@ -1752,6 +1812,7 @@ export function useVTONStore() {
     updateBulkPoseOverride,
     removeBulkPoseOverride,
     clearAllBulkPoseOverrides,
+    clearProductBgPoseOverrides,
     // Model Swap
     modelSwapBgMode,
     setModelSwapBgMode,

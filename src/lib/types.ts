@@ -241,7 +241,7 @@ export interface GeneratedResult {
   pose: Pose;
   /** Set when this result was generated from a custom pose instead of a preset */
   customPose?: CustomPose;
-  status: "pending" | "generating-prompt" | "generating-image" | "auto-retrying" | "editing" | "completed" | "error";
+  status: "pending" | "generating-prompt" | "generating-image" | "auto-retrying" | "editing" | "completed" | "cancelled" | "error";
   error?: string;
   validationStatus?: ValidationStatus;
   validationMessage?: string;
@@ -428,7 +428,7 @@ export interface BulkGeneratedResult {
   pose: Pose;
   /** Set when this result was generated from a custom pose instead of a preset */
   customPose?: CustomPose;
-  status: "pending" | "generating-prompt" | "generating-image" | "auto-retrying" | "editing" | "completed" | "error";
+  status: "pending" | "generating-prompt" | "generating-image" | "auto-retrying" | "editing" | "completed" | "cancelled" | "error";
   error?: string;
   validationStatus?: ValidationStatus;
   validationMessage?: string;
@@ -644,7 +644,7 @@ export interface UGCGeneratedResult {
   sceneName: string;
   prompt: string;
   imageData: string;
-  status: "pending" | "generating-prompt" | "generating-image" | "auto-retrying" | "completed" | "error";
+  status: "pending" | "generating-prompt" | "generating-image" | "auto-retrying" | "completed" | "cancelled" | "error";
   error?: string;
   validationStatus?: ValidationStatus;
   validationMessage?: string;

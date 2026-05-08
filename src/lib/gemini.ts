@@ -97,33 +97,68 @@ function fileToBase64(file: File): Promise<string> {
 
 /**
  * Shared directive: forces the Gemini 3.1 Pro meta-prompter to include photographic
- * human-texture descriptors in its output prompt so that Nano Banana 2 produces
- * skin/hair/teeth that are indistinguishable from a real human being.
+ * human-texture descriptors VERBATIM in its output prompt so that Nano Banana 2
+ * produces skin/hair/teeth/eyes/hands that are indistinguishable from a real human
+ * being.
  *
- * Written in positive framing per official Nano Banana prompting guidance — negatives
- * (e.g. "no plastic", "no airbrushed") tend to bias the generator toward those very
- * aesthetics, so we describe what the image SHOULD contain instead of what it should not.
+ * Applied to all on-model VTON outputs (clothing AND footwear). Skipped for
+ * product-only and ghost-mannequin shots.
+ *
+ * Design notes (informed by official Google Gemini prompting guidance, the
+ * awesome-nano-banana-pro-prompts curated repo, Leonardo.AI's Nano Banana guide,
+ * the DeepDream Generator Nano-Banana-2 best-prompts post, and the
+ * r/PromptEngineering "Powerful prompt for realistic human image" thread):
+ *
+ *   - The PRIOR version of this directive used soft language ("weave the
+ *     following into a paragraph"). Gemini 3 Pro paraphrased / diluted the
+ *     anchors when synthesizing, leaving the image generator with weak signals.
+ *     Fix: switch to a hard VERBATIM-INSERTION CONTRACT — each anchor sentence
+ *     must be copied word-for-word into the output prompt.
+ *   - The community-validated phrase "visible pores — not airbrushed" is the
+ *     single highest-leverage instruction for breaking the waxy plastic-skin
+ *     default. We deliberately whitelist the negation phrasing
+ *     ("not airbrushed, not beauty-filter-smooth, not waxy") inside one anchor
+ *     sentence even though we generally avoid negatives elsewhere.
+ *   - Specific camera + lens hardware ("85mm prime lens at f/4") locks the
+ *     model onto a learned depth-of-field, micro-contrast and skin-tone
+ *     profile.
  */
-const CLOTHING_VTON_REALISM_DIRECTIVE = `
-PHOTOREALISM & HUMAN TEXTURE DIRECTIVE (MANDATORY — apply to ALL clothing VTON outputs that feature a human model):
-The output prompt you generate MUST include an explicit photorealism clause that forces the image generator to render the model as visually indistinguishable from a real human being. Weave the following language into a natural-sounding paragraph (photographer-style prose, not a keyword dump) and include it inside the output prompt.
+const VTON_REALISM_DIRECTIVE = `
+═══ PHOTOREALISM & HUMAN TEXTURE DIRECTIVE (MANDATORY — applies to ALL on-model VTON outputs) ═══
 
-1. SKIN — describe the low-level texture in positive terms:
-   - "Natural, healthy, hydrated skin with authentic low-level texture: visible fine pores distributed across the cheeks, nose, and forehead; subtle vellus (peach-fuzz) hair catching the light along the jawline and temples; realistic subsurface scattering giving the skin depth and warmth."
-   - "Even, luminous skin tone with natural micro-variations in color — slightly warmer across the cheeks and nose bridge, cooler in the under-eye area. Specular highlights appear only as soft sheen on the T-zone and cheekbones, never as blown-out hotspots."
-   - The skin is HEALTHY. Do NOT introduce pimples, acne, active blemishes, scars, dark pigmentation patches, eczema, rashes, or any unhealthy skin conditions. The goal is realistic-but-healthy — real skin texture without distracting imperfections.
+VERBATIM-INSERTION CONTRACT — NON-NEGOTIABLE:
+The output prompt you generate MUST contain each of the following anchor sentences WORD-FOR-WORD, somewhere in the body of the prompt. Copy each anchor exactly as written below — do NOT paraphrase, do NOT summarise, do NOT split into multiple sentences, do NOT omit. These anchors are the single strongest signal preventing waxy plastic-skin output. Paraphrasing them produces visibly plastic skin and fails QA.
 
-2. HAIR — "Individual hair strands are visible at the hairline, temples, and part line, with a few natural micro-flyaways catching the light. Hair shows realistic anisotropic highlights that run along the length of the strands — not a uniform plastic sheen."
+ANCHOR 1 — SKIN (always include verbatim):
+"Render the model with hyper-realistic skin texture: visible pores distributed across the cheeks, nose, and forehead; fine vellus (peach-fuzz) hair catching the light along the jawline and temples; authentic skin grain and natural subsurface scattering. The skin reads as natural, healthy, and lived-in — not airbrushed, not beauty-filter-smooth, not waxy."
 
-3. TEETH (if visible — smile, parted lips) — "Teeth show natural, slightly off-white enamel with subtle translucence near the edges and soft shading between individual teeth — not uniformly white or artificially bright."
+ANCHOR 2 — MICRO-VARIATION (always include verbatim):
+"Skin tone shows natural micro-variations — slightly warmer across the cheeks and nose bridge, cooler in the under-eye area; specular highlights appear only as a soft sheen on the T-zone and cheekbones, never as blown-out hotspots."
 
-4. EYES — "Detailed iris texture (radial fibers, subtle color variation), natural corneal reflection with a visible catchlight, soft individual lash definition, and a thin moisture meniscus along the lower lid."
+ANCHOR 3 — HAIR (always include verbatim):
+"Individual hair strands are visible at the hairline, temples, and part line, with a few natural micro-flyaways catching the rim light. Hair shows realistic anisotropic highlights running along the length of the strands."
 
-5. PHOTOGRAPHIC ANCHOR (include verbatim in the output prompt): "Photographed on a full-frame camera with an 85mm lens at f/4, the subject renders with authentic photographic skin texture — visible pores, fine vellus hair, natural skin hydration, and realistic subsurface scattering — so the model reads as a real human being photographed in a real studio."
+ANCHOR 4 — EYES (always include verbatim):
+"The eyes show detailed iris fibres with subtle radial color variation, a clean corneal catchlight, soft individual lash definition, and a thin moisture meniscus along the lower lid."
 
-POSITIVE-FRAMING RULE (Nano Banana 2 best practice — strictly enforce):
-- Describe what the image SHOULD contain (visible pores, natural texture, healthy hydrated skin, individual hair strands). Do NOT describe what it should NOT be (avoid words like "flawless", "perfect", "porcelain", "airbrushed", "beauty filter", "smooth skin", "doll-like", "CGI", "render", "plastic", "waxy" — these adjectives either trigger beauty-filter defaults or bias the generator toward the very aesthetics we are trying to avoid).
-- Use the vocabulary: "natural", "healthy", "authentic", "photographic", "lived-in", "hydrated", "low-level texture".
+ANCHOR 5 — HANDS (include verbatim WHENEVER hands or any portion of the arms/wrists are visible in the framing — i.e. for any framing other than bust-up / neckline-detail crops):
+"The hands show natural skin texture: visible knuckle creases, subtle vein structure on the back of the hand, individual nail plates with a soft natural sheen — not glossy, not plastic."
+
+ANCHOR 6 — CAMERA & LENS (always include verbatim):
+"Shot on a full-frame mirrorless camera with an 85mm prime lens at f/4 — the photographic depth-of-field, micro-contrast, and skin-tone rendition of a real fashion editorial."
+
+ANCHOR 7 — TEETH (include verbatim ONLY when the pose or expression implies a smile or parted lips — otherwise omit so we don't force a smile):
+"Teeth show slightly off-white enamel with subtle edge translucence and soft shading between individual teeth — not uniformly bright white."
+
+HEALTHY-SKIN GUARD (include in your own words alongside the anchors):
+The skin is healthy. Do NOT introduce active blemishes, acne, scars, dark pigmentation patches, eczema, rashes, or any unhealthy skin conditions. The goal is realistic-but-healthy — real skin texture without distracting imperfections.
+
+FORBIDDEN VOCABULARY (do NOT use any of these words anywhere in the output prompt — they either trigger beauty-filter defaults or bias toward the very aesthetics we are eliminating):
+flawless, perfect, porcelain, doll-like, CGI, 3D render, render, plastic, waxy, smooth skin, beauty filter, airbrushed
+EXCEPTION: the verbatim phrase "not airbrushed, not beauty-filter-smooth, not waxy" inside ANCHOR 1 is the only place these words may appear — the negation framing is community-validated as a high-leverage de-biaser and must NOT be removed.
+
+PREFERRED VOCABULARY (use these when describing the model's appearance in your own prose):
+natural, healthy, authentic, photographic, lived-in, hydrated, fine grain, low-level texture, editorial, real-skin.
 `;
 
 /**
@@ -149,6 +184,52 @@ These variations must stay STRICTLY within the pose's canonical identity (a "fro
 
 ADDITIONAL INSTRUCTIONS INTEGRATION (CRITICAL):
 If the user's ADDITIONAL INSTRUCTIONS field (see SCENE PARAMETERS below) contains guidance about posture, stance, gaze, head tilt, arm/hand positioning, facial expression, mood, or styling attitude, you MUST weave those instructions directly into the pose description you produce. Treat ADDITIONAL INSTRUCTIONS as AUTHORITATIVE USER INTENT for posture and expression — describe the pose in terms that explicitly reflect those cues (e.g., if the user writes "confident, slight smirk, arms crossed", the output prompt must describe a confident stance with a slight smirk and arms crossed, not a generic smile with relaxed arms). When ADDITIONAL INSTRUCTIONS specify a mood or styling direction that will be reused across many products, translate it into concrete body-language micro-variations per generation so each output in the batch reads as a different moment within the same mood.
+`;
+
+/**
+ * Conditional directive for the "Lifestyle Interaction" mid-thigh front pose
+ * (`pose.id === "front-lifestyle-interaction-mid"`). Asks the meta-prompter
+ * to synthesise a contextual environmental interaction by reading the
+ * garment's fashion segment + the background, picking ONE concrete interaction
+ * from a discrete catalog, and re-emitting the strict mid-thigh framing
+ * boundary so it survives paraphrasing.
+ */
+const LIFESTYLE_INTERACTION_DIRECTIVE = `
+═══ LIFESTYLE INTERACTION DIRECTIVE (MANDATORY for "Lifestyle Interaction" mid-thigh pose) ═══
+
+The selected pose is a contextual lifestyle pose. You MUST synthesise the pose by performing the following analysis BEFORE drafting the output prompt — do not pick a generic stance.
+
+STEP 1 — GARMENT SEGMENT ANALYSIS:
+Read the garment reference images and identify the FASHION SEGMENT from this discrete list:
+  formal / business — suits, blazers, dress shirts, structured trousers
+  casual / everyday — t-shirts, jeans, casual shirts, hoodies
+  ethnic-traditional — kurta, saree, lehenga, sherwani, kimono
+  streetwear / urban — graphic tees, oversized hoodies, cargo pants, joggers
+  sportswear / athletic — activewear, track pants, jerseys
+  luxury / designer — silk blouses, statement coats, evening pieces
+  bohemian — flowing fabrics, embroidery, layered earthy pieces
+  minimalist — clean lines, neutral palette, restrained detail
+Also identify the garment's STYLE SENTIMENT (relaxed, confident, romantic, edgy, refined, playful, contemplative, energetic).
+
+STEP 2 — ENVIRONMENT ANCHOR ANALYSIS:
+Read the BACKGROUND specification (inspiration image and / or text description) in SCENE PARAMETERS. List the available environmental anchor candidates that exist within the upper-torso-to-upper-thigh framing window: wall surface, stair railing, window pane, window ledge, counter / table edge, doorway frame, column, narrow pillar, plant on a stand, brick or stone surface. If the background is a clean studio with no anchors, fall back to a freestanding minimal anchor (a tall narrow plinth or a flat painted wall surface).
+
+STEP 3 — INTERACTION SELECTION (pick exactly ONE from the catalog below; choose the option that best matches the garment segment + sentiment + the available anchor):
+  • LEAN-AGAINST-WALL — upper back or shoulder rests against a wall surface, weight on one leg, opposite knee softly bent.
+  • HAND-ON-RAILING — one hand resting on the upper portion of a stair railing, weight on the leg closer to the railing, body angled a few degrees toward the railing.
+  • FINGER-ON-WINDOW — fingertips lightly grazing or resting on a window pane / frame edge, gaze either toward the window or back toward camera.
+  • FOREARM-ON-COUNTER — forearm resting on a counter / window ledge, body slightly leaning into the surface.
+  • ADJUSTING-SLEEVE-NEAR-DOORWAY — one hand at the opposite cuff or wrist, casually adjusting / smoothing the sleeve, body framed beside a doorway edge.
+  • THUMB-IN-BELT-LOOP-AGAINST-COLUMN — thumb tucked into a belt loop or pocket, opposite shoulder leaning into a column / narrow pillar.
+  • HAND-IN-POCKET-AGAINST-WALL — one hand tucked casually into a pocket, opposite shoulder against a wall, weight unevenly distributed.
+
+STEP 4 — DESCRIBE THE CHOSEN INTERACTION CONCRETELY:
+Describe the body language with full anatomical specificity (shoulder angle, weight distribution, exact hand placement, gaze direction, head tilt) AND describe the visible sliver of the environmental anchor (what material, what color, what fraction of the frame it occupies on which side). The interaction must read as candid and unposed — caught mid-moment, not held for the camera.
+
+STEP 5 — RE-EMIT THE STRICT MID-THIGH BOUNDARY (MANDATORY — copy this anatomical anchor sentence verbatim into the output prompt so it survives paraphrasing):
+"Frame head to upper mid-thigh — the bottom edge of the image cuts off exactly 2 cm below the gusset / crotch point of the bottomwear, on the very upper thigh. The knees, calves, and feet are NEVER visible. Only the sliver of the environmental anchor that fits inside this upper-torso-to-upper-thigh window is visible — never show the entire wall, the entire railing, the entire window, or any architectural element that would imply a wider crop."
+
+DO NOT default to a generic "leaning against a wall in a studio" interaction unless that genuinely is the best match. The strength of this pose comes from the contextual fit between garment, mood, and anchor — pick deliberately.
 `;
 
 /**
@@ -229,6 +310,141 @@ Your extracted description must work identically for ANY ${productLabel} placed 
 }
 
 /**
+ * BATCH-LEVEL BACKGROUND SCENE ANALYSIS
+ *
+ * Runs ONCE at the start of a Generate batch when the user has uploaded an
+ * inspiration image for the background. Produces a single deterministic
+ * "frozen scene description" that is reused VERBATIM across every per-pose
+ * prompt-generation call. This is the mechanism that makes a 50-pose batch
+ * read as 50 photographs taken in the same physical location:
+ *
+ *   - Object positions are emitted in normalized 0.0–1.0 horizontal
+ *     coordinates (x_center, width, vertical_zone) so the meta-prompter
+ *     can later project them through any framing without left/right drift.
+ *   - The hex palette is locked once and reused for every pose's
+ *     BACKGROUND section.
+ *   - Lighting is FORCE-OVERRIDDEN to flat / evenly diffused, regardless of
+ *     how harsh the source image is — per the user's explicit requirement.
+ *
+ * The output is plain text in a documented section format. The downstream
+ * meta-prompter (`generateVTONPrompt`) embeds the entire string verbatim
+ * into its system prompt under `frozenSceneDescription`.
+ */
+export async function analyzeBackgroundScene({
+  apiKey,
+  inspirationImage,
+  abortSignal,
+}: {
+  apiKey: string;
+  inspirationImage: { file: File };
+  abortSignal?: AbortSignal;
+}): Promise<{ sceneDescription: string; cost: StepCost }> {
+  const ai = new GoogleGenAI({ apiKey });
+
+  const base64 = await fileToBase64(inspirationImage.file);
+
+  const systemPrompt = `You are an expert location scout and photographic scene analyst. Your task is to deeply analyse the attached background reference image and produce a SINGLE deterministic, structured scene description that will be reused VERBATIM across many fashion-photography generations.
+
+The downstream pipeline will generate dozens of fashion-photography images using this scene as the backdrop, across many different framings (full-body, three-quarter, mid-thigh, waist-up, bust-up, hip-down, knee-down) and viewing angles (front, back, side-profile). Every output must read as a different shot from the SAME photoshoot in the SAME physical location — to the point that a viewer placing them side by side cannot tell they were generated independently. To make that possible, your description must lock spatial geometry, the IDENTITY of every major component, the palette, and atmospheric light dynamics ONCE — without ambiguity. The lighting on the model, however, is FORCE-OVERRIDDEN to flat high-key studio lighting regardless of what the source image shows.
+
+═══ HARD CONSTRAINTS (NON-NEGOTIABLE) ═══
+
+1. BRAND-BLIND: Never name any brand or real-world building by proper name (do NOT say "Eiffel Tower" — say "tall lattice-iron tower with tapered profile"). Never name a real person.
+2. IDENTITY ANCHORING: For every major component (buildings, monuments, vehicles, vegetation clusters, water bodies, mountains, sky type, light sources), you MUST capture both its ENTITY CLASS (e.g. "lattice-iron tower", "neoclassical stone facade", "broadleaf tree", "linear neon sign") AND a 2–4 word visual signature (e.g. "tapered + asymmetric crown", "twelve fluted columns", "umbrella canopy", "vertical magenta glow"). The same entity must look the same across every generated pose — not a generic stand-in.
+3. PRODUCT-AGNOSTIC: This scene must work for ANY garment / footwear product the user uploads later. Do NOT assume a particular product, ethnicity, or model.
+4. FORCE-FLAT HIGH-KEY LIGHTING ON THE MODEL: Regardless of how the source image is lit (harsh sun, dramatic side-light, golden-hour, deep shadows, single-source), your description MUST instruct the photographer to use FLAT, HIGH-KEY, EVENLY DIFFUSED studio lighting on the model. Read the lighting in the reference for ATMOSPHERIC purposes only — describe its direction, color temperature and quality in the SKY & LIGHT DYNAMICS section, but never let it shape shadows on the model itself.
+5. CLOTHING COLOR FIDELITY: The lighting on the model must NEVER tint, warm, cool, desaturate, or otherwise shift the original colors of the user's garment. Garment color = exactly what is shown in the user's product photos. Even if the scene is golden-hour orange or twilight blue, the garment must read at its true daylight color (5500K perception).
+6. DETERMINISM: The description must be specific enough that two independent photographers reading it would set up identical scenes. Use exact hex codes for every color, normalized 0.0–1.0 coordinates for every object position, concrete material names, and named entity classes.
+
+═══ MANDATORY OUTPUT STRUCTURE ═══
+
+Output the analysis using EXACTLY these section headers, in this order, and nothing else (no preamble, no closing chatter):
+
+# WIDE-SHOT LAYOUT
+The reference image is treated as the FULL WIDE-SHOT (head-to-toe / full-body) framing. List EVERY salient background object as a bullet line in this exact format:
+
+  - <object_name>: entity_class=<specific class label>, signature=<2–4 word visual signature>, x_center=<0.00–1.00>, width=<0.00–1.00>, vertical_zone=<sky | upper-third | upper-two-thirds | middle | middle-and-floor | floor | full-height>, depth=<foreground | midground | background>, description=<10–25 words of product-agnostic visual detail>
+
+Coordinate convention: x_center=0.0 is the LEFT edge of the wide-shot frame; x_center=1.0 is the RIGHT edge; x_center=0.5 is dead center. width is the fraction of horizontal frame the object occupies. The model will stand at approximately x_center=0.5 in the wide-shot.
+
+Examples (for shape only — do NOT copy literally):
+  - tall_lattice_tower: entity_class=lattice-iron tower, signature=tapered crown + flared base, x_center=0.18, width=0.22, vertical_zone=upper-two-thirds, depth=midground, description=tapered iron-lattice structure rising from middle band, narrow silhouette, cool grey metalwork visible against pale sky
+  - colonnade: entity_class=neoclassical colonnade, signature=twelve fluted columns, x_center=0.62, width=0.34, vertical_zone=upper-two-thirds, depth=midground, description=row of evenly spaced fluted stone columns with simple capitals, weathered ivory tone, no ornamentation
+  - low_stone_wall: entity_class=hip-height stone wall, signature=horizontal weathered course, x_center=0.55, width=0.85, vertical_zone=middle-and-floor, depth=foreground, description=horizontal weathered grey-beige stone wall running across mid-frame at hip-height
+
+# IDENTITY ANCHORS
+A bullet list of the 3–6 MOST visually distinctive entities from WIDE-SHOT LAYOUT (the ones that anchor scene recognition). For each, restate entity_class + signature + x_center, and explicitly note that this entity MUST appear in the same place, with the same form, in every per-pose output where its vertical_zone is in the visible crop. Format:
+  - <object_name>: appears at x_center=<...>, ALWAYS rendered as <signature> <entity_class>; this is a named anchor and must NOT be substituted with a generic stand-in.
+
+# COMPONENTS
+A flat, comma-separated list of every visible scene element, in product-agnostic language. Include surfaces (ground material, wall material, ceiling/sky), architectural elements, vegetation, water bodies, vehicles, signage, and any props. Do NOT mention the source-image's model, person, or any product.
+
+# PALETTE
+List 4–6 hex codes with role labels, one per line, in this exact format:
+  - background-primary: #RRGGBB
+  - mid-tone: #RRGGBB
+  - accent: #RRGGBB
+  - highlight: #RRGGBB
+  - shadow: #RRGGBB
+These hex codes are LOCKED for the entire batch — every per-pose prompt will copy them verbatim.
+
+# MATERIALS & SURFACES
+Describe in 2–4 sentences: ground texture (concrete / hardwood / sand / cobblestone / etc.), dominant wall / facade material, any reflective or matte qualities, atmospheric character (haze, dust motes, mist, clear air). Specify approximate depth-of-field behavior (deep focus / mild background blur / pronounced bokeh on far elements).
+
+# SKY & LIGHT DYNAMICS (atmospheric only — does NOT shape light on the model)
+Describe the SCENE'S natural light: sky type (clear / overcast / partly-cloudy / golden-hour / blue-hour / night-with-artificial-source / interior-overhead), apparent sun or main-light direction in the scene (e.g. "high overhead", "low and to the camera-left at ~30°", "absent — interior overhead diffuse"), color temperature in Kelvin (e.g. "~5500K daylight", "~3200K warm tungsten", "~6500K open shade"), and the resulting atmosphere on the BACKGROUND ELEMENTS only (e.g. "long soft shadows on the colonnade pointing camera-right", "gentle bloom around the neon sign at twilight"). Be explicit and concrete in 2–4 sentences. This information is for background rendering ONLY — it is NEVER copied onto the model.
+
+# SUBJECT FRAMING ANCHOR
+A single sentence specifying where the model stands in the wide shot. Default to: "The model stands centered at x_center=0.5, occupying approximately the central 25–35% of the wide-shot frame, with both feet on the visible ground plane." Adjust only if the reference clearly implies an off-center subject placement.
+
+# LIGHTING ON MODEL (FLAT HIGH-KEY OVERRIDE — MANDATORY VERBATIM SENTENCE)
+Output exactly this sentence, verbatim, on its own paragraph:
+"The model is lit by flat, high-key, evenly diffused studio light from a large overhead soft-source paired with white bounce fill on both sides — emulating a softbox + reflector setup at approximately 5500K daylight color temperature. The light wraps the model uniformly with minimal shadow falloff: face, neck, collarbones, arms, hands, torso, hips, knees, and feet all read at the same exposure with no harsh side-shadow, no chiaroscuro, no dramatic rim light, and no colored cast on the skin. The garment renders at its TRUE colors as shown in the user's product photos — the scene's atmospheric light tint (golden-hour warm, twilight cool, neon, etc.) influences only the background; it never warms, cools, desaturates, or shifts the garment's color shade. Background atmospheric lighting follows the reference's overall mood as described in SKY & LIGHT DYNAMICS, but the light on the model itself stays flat, high-key, and color-neutral."
+
+# ATMOSPHERE & MOOD
+2–3 sentences describing the scene's emotional register and atmospheric character (e.g., "calm overcast morning", "warm sunlit courtyard", "cool urban dusk"). This influences only background tone, never the model's lighting and never the garment's colors.
+
+# BACKGROUND LOCK CONTRACT
+Output exactly this sentence, verbatim:
+"This scene description is FROZEN for the entire batch. Every per-pose output prompt must reuse the WIDE-SHOT LAYOUT coordinates, the IDENTITY ANCHORS exactly as named, the PALETTE hex codes, and the LIGHTING ON MODEL sentence VERBATIM, without paraphrasing, substituting synonyms, drifting toward a default studio backdrop, or letting scene atmosphere bleed into the model's lighting or the garment's color."
+
+═══ END OF MANDATORY STRUCTURE ═══
+
+Do not output anything outside the sections above — no preface, no commentary, no conclusion, no markdown other than the section headers.`;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents: [
+      { text: systemPrompt },
+      {
+        inlineData: {
+          mimeType: inspirationImage.file.type,
+          data: base64,
+        },
+      },
+    ],
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+      abortSignal,
+    },
+  });
+
+  const text = response.text;
+  if (!text) {
+    throw new Error("No background scene description returned from Gemini 3.1 Pro");
+  }
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeStepCost(
+    "gemini-3.1-pro-preview",
+    "Background Scene Analysis (Gemini 3.1 Pro)",
+    tokens
+  );
+
+  return { sceneDescription: text.trim(), cost };
+}
+
+/**
  * Step 1: Use Gemini 3.1 Pro to generate a detailed VTON prompt
  */
 export async function generateVTONPrompt({
@@ -254,6 +470,8 @@ export async function generateVTONPrompt({
   productInfo,
   applyAccessoriesToAllPoses = false,
   targetImageModel = "gemini",
+  frozenSceneDescription,
+  abortSignal,
 }: {
   apiKey: string;
   productCategory?: ProductCategory;
@@ -284,6 +502,17 @@ export async function generateVTONPrompt({
    * alternative backend). Defaults to Nano Banana 2 / Gemini.
    */
   targetImageModel?: ImageGenModel;
+  /**
+   * Pre-analyzed wide-shot scene description produced ONCE per Generate batch
+   * by `analyzeBackgroundScene`. When present, this string is the deterministic
+   * source of truth for the BACKGROUND section across every pose in the batch
+   * — the inspiration image is NOT re-sent and the meta-prompter projects this
+   * frozen wide-shot through the current pose's framing window without
+   * drifting object positions. Takes precedence over `background.mode`.
+   */
+  frozenSceneDescription?: string;
+  /** Optional client-side AbortSignal — cancels the in-flight Gemini request. */
+  abortSignal?: AbortSignal;
 }): Promise<{ text: string; cost: StepCost }> {
   const ai = new GoogleGenAI({ apiKey });
 
@@ -415,6 +644,47 @@ Your prompt must EMPHASIZE these BACK-FACING garment details:
 - BACK DRAPE: How the fabric falls, gathers, or flows when seen from behind
 CRITICAL: The camera shows the model FROM BEHIND. The entire back of the garment must be fully visible and described with precision.`;
     } else if (viewAngle === "side") {
+      const sideOrientationLock = pose.id.endsWith("-left-full") ? `
+
+★★★ CRITICAL LEFT-PROFILE ORIENTATION LOCK ★★★
+This pose is the LEFT PROFILE — a flattering soft-profile (≈75–80°), NOT a hard 90° silhouette. The orientation MUST be reproducible across every generation; the failure mode is that the image generator silently flips, mirrors, hard-rotates to 90°, or has the model look at the camera.
+
+NON-NEGOTIABLE BODY ORIENTATION:
+- The model's body is rotated approximately 75–80 degrees about the vertical axis. The LEFT side of the body faces the camera-LEFT edge of the frame (the viewer's left, the 9 o'clock position). The chest is opened ~10–15° back toward the camera so a sliver of the front of the garment is gently visible — this is intentional and flattering, not a frontal pose.
+- The model's nose, jawline, leading shoulder, and the toes of the leading foot all point toward the 9 o'clock direction.
+- Both shoulders are visible but the camera-side (right) shoulder is closer to the lens.
+- ABSOLUTE GAZE RULE: the gaze is OFF-CAMERA, looking out into the 9 o'clock direction (away from the camera, in the same direction the body faces). The model is NOT looking at the camera. The model is NOT making eye contact with the lens.
+- The model stands relaxed and grounded with weight on one leg; head to toe in frame.
+
+ABSOLUTE EXCLUSIONS (the shot is INVALID if any of these is true):
+- Toes pointing right (3 o'clock) → INVALID.
+- Body facing right → INVALID.
+- The shot has been mirrored or horizontally flipped → INVALID.
+- The model is looking at the camera → INVALID.
+- The body is rotated a full 90° such that no chest is visible (hard silhouette) → INVALID.
+
+VERBATIM ANCHOR SENTENCE (the output prompt you generate MUST include this sentence word-for-word):
+"This is a LEFT PROFILE: the model's body is rotated approximately 75–80 degrees about the vertical axis so that the left side of the body and the left side of the face point toward the 9 o'clock position (the viewer's left edge of the frame), with the chest opened only 10–15 degrees back toward the camera so a sliver of the garment front remains gently visible. The gaze is OFF-CAMERA, directed out toward the 9 o'clock position — the model is NOT looking at the lens. Do not mirror, flip, reverse, or rotate to a hard 90-degree silhouette under any circumstances."` : pose.id.endsWith("-right-full") ? `
+
+★★★ CRITICAL RIGHT-PROFILE ORIENTATION LOCK ★★★
+This pose is the RIGHT PROFILE — a flattering soft-profile (≈75–80°), NOT a hard 90° silhouette. The orientation MUST be reproducible across every generation; the failure mode is that the image generator silently flips, mirrors, hard-rotates to 90°, or has the model look at the camera.
+
+NON-NEGOTIABLE BODY ORIENTATION:
+- The model's body is rotated approximately 75–80 degrees about the vertical axis. The RIGHT side of the body faces the camera-RIGHT edge of the frame (the viewer's right, the 3 o'clock position). The chest is opened ~10–15° back toward the camera so a sliver of the front of the garment is gently visible — this is intentional and flattering, not a frontal pose.
+- The model's nose, jawline, leading shoulder, and the toes of the leading foot all point toward the 3 o'clock direction.
+- Both shoulders are visible but the camera-side (left) shoulder is closer to the lens.
+- ABSOLUTE GAZE RULE: the gaze is OFF-CAMERA, looking out into the 3 o'clock direction (away from the camera, in the same direction the body faces). The model is NOT looking at the camera. The model is NOT making eye contact with the lens.
+- The model stands relaxed and grounded with weight on one leg; head to toe in frame.
+
+ABSOLUTE EXCLUSIONS (the shot is INVALID if any of these is true):
+- Toes pointing left (9 o'clock) → INVALID.
+- Body facing left → INVALID.
+- The shot has been mirrored or horizontally flipped → INVALID.
+- The model is looking at the camera → INVALID.
+- The body is rotated a full 90° such that no chest is visible (hard silhouette) → INVALID.
+
+VERBATIM ANCHOR SENTENCE (the output prompt you generate MUST include this sentence word-for-word):
+"This is a RIGHT PROFILE: the model's body is rotated approximately 75–80 degrees about the vertical axis so that the right side of the body and the right side of the face point toward the 3 o'clock position (the viewer's right edge of the frame), with the chest opened only 10–15 degrees back toward the camera so a sliver of the garment front remains gently visible. The gaze is OFF-CAMERA, directed out toward the 3 o'clock position — the model is NOT looking at the lens. Do not mirror, flip, reverse, or rotate to a hard 90-degree silhouette under any circumstances."` : "";
       viewSpecificGarmentInstruction = `
 VIEW-SPECIFIC DETAILS (SIDE VIEW - the model is in full profile):
 Your prompt must EMPHASIZE these SIDE-VISIBLE garment details:
@@ -425,7 +695,7 @@ Your prompt must EMPHASIZE these SIDE-VISIBLE garment details:
 - HEM SHAPE: Whether the hem is straight, curved, high-low, or asymmetric from the side
 - SIDE POCKETS: Side slit pockets, cargo pockets, their depth and angle
 - THICKNESS/STRUCTURE: How thick or structured the garment appears in profile
-- FIT PROFILE: How tight or loose the garment sits on the body from the side`;
+- FIT PROFILE: How tight or loose the garment sits on the body from the side${sideOrientationLock}`;
     } else if (viewAngle === "three-quarter-front") {
       viewSpecificGarmentInstruction = `
 VIEW-SPECIFIC DETAILS (THREE-QUARTER FRONT VIEW — model rotated EXACTLY 45° about the vertical axis):
@@ -966,6 +1236,8 @@ ${!isProductOnlyShot ? "7" : "6"}. STYLE & QUALITY (verbatim):
 ${!isProductOnlyShot ? `- FOOTWEAR SCALE, FIT & PROPORTION LOCK (MANDATORY — this is the #1 footwear failure mode; give it maximum weight and include the following dense paragraph VERBATIM inside the MODEL & BODY POSITION section of your output prompt):
    "Render the footwear at the exact real-world scale of a normal shoe worn by THIS specific model, anchored to the model's own anatomy. The outsole spans from the back of the model's heel to the tip of their longest toe and no further — one shoe length equals one foot length, not more. The collar/topline hugs the ankle with the heel seated flush against the heel counter, the upper wrapping the forefoot smoothly, and the tongue sitting naturally over the instep — fit is clean and contoured with no gapping, bulging, tenting, cavernous opening, or slippage. PROPORTION LOCK (copy these attributes PIXEL-FOR-PIXEL from the product reference photos, never invent or exaggerate them): SOLE THICKNESS, midsole stack height, toe-spring, heel height, toe-box volume and depth, collar height, upper-to-sole ratio, and outsole length-to-width ratio are identical to the reference product. The shoe's overall silhouette on the foot reads as a true-to-life commercial e-commerce product photograph of the exact reference product — keep it slim when the reference is slim, keep it flat when the reference is flat. The ground contact is flat and stable and the ankle line is anatomically correct."` : ""}
 
+${!isProductOnlyShot ? VTON_REALISM_DIRECTIVE : ""}
+
 ${isProductOnlyShot ? "IMPORTANT: This is a PRODUCT-ONLY shot. Do NOT include any human model, feet, or body parts." : modelImage ? "A reference photo of the model is provided. Include: 'Use the EXACT person shown in the model reference image — same face, skin tone, hair, and body proportions.'" : ""}
 
 Output ONLY the generation prompt text following the mandatory structure.`,
@@ -1039,6 +1311,8 @@ ${!isProductOnlyShot ? "7" : "6"}. STYLE & QUALITY (include this verbatim as the
 ${!isProductOnlyShot ? `- FOOTWEAR SCALE, FIT & PROPORTION LOCK (MANDATORY — this is the #1 footwear failure mode; give it maximum weight and include the following dense paragraph VERBATIM inside the MODEL & ON-FOOT DETAILS section of your output prompt):
    "Render the footwear at the exact real-world scale of a normal shoe worn by THIS specific model, anchored to the model's own anatomy. The outsole spans from the back of the model's heel to the tip of their longest toe and no further — one shoe length equals one foot length, not more. The collar/topline hugs the ankle with the heel seated flush against the heel counter, the upper wrapping the forefoot smoothly, and the tongue sitting naturally over the instep — fit is clean and contoured with no gapping, bulging, tenting, cavernous opening, or slippage. PROPORTION LOCK (copy these attributes PIXEL-FOR-PIXEL from the product reference photos, never invent or exaggerate them): SOLE THICKNESS, midsole stack height, toe-spring, heel height, toe-box volume and depth, collar height, upper-to-sole ratio, and outsole length-to-width ratio are identical to the reference product. The shoe's overall silhouette on the foot reads as a true-to-life commercial e-commerce product photograph of the exact reference product — keep it slim when the reference is slim, keep it flat when the reference is flat. The ground contact is flat and stable and the ankle line is anatomically correct."` : ""}
 
+${!isProductOnlyShot ? VTON_REALISM_DIRECTIVE : ""}
+
 ${!isProductOnlyShot && modelImage ? "A reference photo of the model is provided. Include in your prompt: 'Use the EXACT person shown in the model reference image — same face, skin tone, hair, and body proportions.'" : ""}
 
 Output ONLY the generation prompt text following the mandatory structure — no preamble, no explanation, no metadata.`,
@@ -1088,13 +1362,19 @@ Then describe those visible garment details with maximum precision. Describe the
 ${garmentTypeInstruction}
 ${lengthOverridesBlock}
 
+DEEP ANALYSIS DIRECTIVE — Before drafting the output prompt, study the garment reference images with maximum attention to: sleeve length and cuff style, outseam length, hemline shape and trim, neckline shape and decorative detail, sleeve panel / pattern flow, embroidery placement and motif, wrap ties / sashes / drawcords, drape lines and asymmetric fabric falls, contrast piping along panel seams, decorative top-stitching, and any other trim / embellishment. Each of these must be described EXPLICITLY in your output prompt — never elided as a generic phrase like "construction details". If you can see it in the reference image, name it in the prompt.
+
 CRITICAL ACCURACY REQUIREMENTS - Your prompt MUST describe these garment details with EXACT precision based on the provided images:
 1. SLEEVE LENGTH: Describe the exact sleeve length as observed (sleeveless, cap sleeve, short sleeve, elbow length, three-quarter, full length, etc.). DO NOT change or assume the sleeve length.
+   Plus sleeve construction: cuff style (button cuff, French cuff, ribbed cuff, raw edge, banded, elasticated, slit cuff with placket), sleeve panel pattern flow (how prints / stripes / checks travel down the sleeve and meet the cuff), contrast trim or piping along the sleeve seams, sleeve embroidery / motifs / appliqué — name each by exact placement.
 2. NECKLINE: Describe the exact neckline (crew neck, V-neck, scoop, collar, mandarin, off-shoulder, etc.)
+   Plus neckline trim: exact opening shape (square, sweetheart, halter, boat, keyhole, plunging, asymmetric), neckline embroidery / lace / piping / contrast banding / appliqué, decorative collar stand, lapel detail, button-stand placket — name each by exact placement.
 3. HEMLINE & LENGTH: Describe exactly where the garment ends (cropped, waist-length, hip-length, knee-length, full-length, etc.)
+   Plus hemline trim: contrast binding, scalloped / asymmetric / stepped / high-low hem, fringing or tassels, hem embroidery, decorative hem stitching, slits, side vents, godets — name each by exact placement.
 4. FABRIC & TEXTURE: Describe the fabric type, weight, and texture (cotton, silk, denim, knit, sheer, etc.)
 5. COLOR & PATTERN: Describe exact colors, prints, patterns, stripes, checks, florals, etc.
 6. CONSTRUCTION DETAILS: Buttons, zippers, pockets, pleats, seams, embroidery, embellishments, logos
+   Plus wrap ties, sashes, drawcords, drape lines, asymmetric fabric falls, brooches / bows, decorative grommets / eyelets, decorative top-stitching, contrast piping along all panel seams, gathering / shirring / smocking, ruffles, frills, cinch belts — name each by exact placement.
 7. FIT: ${fit ? `**CRITICAL OVERRIDE** - The user has explicitly selected "${fit}" fit. DO NOT infer or guess the fit from the garment images. You MUST describe the garment as "${fit}" fit in the prompt regardless of how the garment appears in the reference photos. The "${fit}" fit means: "${FIT_OPTIONS.find(f => f.value === fit)?.description || fit}". Use this exact fit description - never substitute words like "oversized", "loose", "slim", etc. unless that is the user's actual selected fit.` : `No specific fit was selected by the user. Analyze the garment images and determine the most appropriate fit description (slim, regular, relaxed, oversized, tailored, loose, bodycon, boxy, etc.) based on what you observe in the reference photos.`}
 8. SILHOUETTE: Overall shape and drape of the garment
 
@@ -1103,9 +1383,11 @@ Derive the lighting description entirely from the user's background description 
 Shadow behavior must be USER-DRIVEN: include shadow language in the output prompt ONLY IF the user's background description explicitly calls for shadows (e.g., "long cast shadows", "dramatic shadows", "chiaroscuro", "moody shadows"). If the user's background description does not call for shadows, do NOT introduce, reference, negate, or describe shadows in the output prompt in any form.
 Do NOT mention specific lighting equipment names (softbox, octabox, reflector, strobe, ring light, beauty dish, etc.) — describe ONLY the resulting light quality.
 
-${!isProductOnlyShot && !isGhostMannequin ? CLOTHING_VTON_REALISM_DIRECTIVE : ""}
+${!isProductOnlyShot && !isGhostMannequin ? VTON_REALISM_DIRECTIVE : ""}
 
 ${!isProductOnlyShot && !isGhostMannequin ? CLOTHING_VTON_POSING_DIRECTIVE : ""}
+
+${!isProductOnlyShot && pose.id === "front-lifestyle-interaction-mid" ? LIFESTYLE_INTERACTION_DIRECTIVE : ""}
 
 ${fit ? `The prompt MUST instruct the image generator to faithfully reproduce every visual detail from the provided garment images (sleeve length, neckline, color, pattern, fabric texture, construction details). However, the FIT/SIZING of the garment${isProductOnlyShot ? "" : " on the model's body"} MUST follow the user's selection of "${fit}" fit, NOT your visual interpretation of the images.` : `The prompt MUST instruct the image generator to faithfully reproduce every detail from the provided garment images. Emphasize that the garment details must match the reference images exactly.`}
 ${lengthOverridesBlock ? `\nLENGTH OVERRIDE REMINDER: The user-specified garment length(s) listed in the AUTHORITATIVE GARMENT LENGTH OVERRIDES block above are MANDATORY. The output prompt MUST describe each user-specified length using the exact phrase and the anatomical-anchor sentence given for that length. Do NOT default to the visual interpretation of the reference images for those dimensions, and do NOT use any conflicting length descriptor anywhere in the output.\n` : ""}
@@ -1125,13 +1407,19 @@ ${framingInstruction}
 ${garmentTypeInstruction}
 ${lengthOverridesBlock}
 
+DEEP ANALYSIS DIRECTIVE — Before drafting the output prompt, study the garment reference images with maximum attention to: sleeve length and cuff style, outseam length, hemline shape and trim, neckline shape and decorative detail, sleeve panel / pattern flow, embroidery placement and motif, wrap ties / sashes / drawcords, drape lines and asymmetric fabric falls, contrast piping along panel seams, decorative top-stitching, and any other trim / embellishment. Each of these must be described EXPLICITLY in your output prompt — never elided as a generic phrase like "construction details". If you can see it in the reference image, name it in the prompt.
+
 CRITICAL ACCURACY REQUIREMENTS - Your prompt MUST describe these garment details with EXACT precision based on the provided images:
 1. SLEEVE LENGTH: Describe the exact sleeve length as observed (sleeveless, cap sleeve, short sleeve, elbow length, three-quarter, full length, etc.). DO NOT change or assume the sleeve length.
+   Plus sleeve construction: cuff style (button cuff, French cuff, ribbed cuff, raw edge, banded, elasticated, slit cuff with placket), sleeve panel pattern flow (how prints / stripes / checks travel down the sleeve and meet the cuff), contrast trim or piping along the sleeve seams, sleeve embroidery / motifs / appliqué — name each by exact placement.
 2. NECKLINE: Describe the exact neckline (crew neck, V-neck, scoop, collar, mandarin, off-shoulder, etc.)
+   Plus neckline trim: exact opening shape (square, sweetheart, halter, boat, keyhole, plunging, asymmetric), neckline embroidery / lace / piping / contrast banding / appliqué, decorative collar stand, lapel detail, button-stand placket — name each by exact placement.
 3. HEMLINE & LENGTH: Describe exactly where the garment ends (cropped, waist-length, hip-length, knee-length, full-length, etc.)
+   Plus hemline trim: contrast binding, scalloped / asymmetric / stepped / high-low hem, fringing or tassels, hem embroidery, decorative hem stitching, slits, side vents, godets — name each by exact placement.
 4. FABRIC & TEXTURE: Describe the fabric type, weight, and texture (cotton, silk, denim, knit, sheer, etc.)
 5. COLOR & PATTERN: Describe exact colors, prints, patterns, stripes, checks, florals, etc.
 6. CONSTRUCTION DETAILS: Buttons, zippers, pockets, pleats, seams, embroidery, embellishments, logos
+   Plus wrap ties, sashes, drawcords, drape lines, asymmetric fabric falls, brooches / bows, decorative grommets / eyelets, decorative top-stitching, contrast piping along all panel seams, gathering / shirring / smocking, ruffles, frills, cinch belts — name each by exact placement.
 7. FIT: ${fit ? `**CRITICAL OVERRIDE** - The user has explicitly selected "${fit}" fit. DO NOT infer or guess the fit from the garment images. You MUST describe the garment as "${fit}" fit in the prompt regardless of how the garment appears in the reference photos. The "${fit}" fit means: "${FIT_OPTIONS.find(f => f.value === fit)?.description || fit}". Use this exact fit description - never substitute words like "oversized", "loose", "slim", etc. unless that is the user's actual selected fit.` : `No specific fit was selected by the user. Analyze the garment images and determine the most appropriate fit description (slim, regular, relaxed, oversized, tailored, loose, bodycon, boxy, etc.) based on what you observe in the reference photos.`}
 8. SILHOUETTE: Overall shape and drape of the garment
 ${viewSpecificGarmentInstruction}
@@ -1140,12 +1428,14 @@ IMPORTANT FRAMING RULE: The image MUST be framed exactly as specified in the FRA
 
 ${!isProductOnlyShot && !isGhostMannequin ? CLOTHING_VTON_POSING_DIRECTIVE : ""}
 
+${!isProductOnlyShot && pose.id === "front-lifestyle-interaction-mid" ? LIFESTYLE_INTERACTION_DIRECTIVE : ""}
+
 LIGHTING DIRECTIVE (apply to ALL clothing VTON outputs):
 Derive the lighting description entirely from the user's background description in SCENE PARAMETERS — match the light quality, direction, color temperature, and atmosphere to the environment the user has asked for. Describe the lighting in positive, photographer-style terms (what the scene looks like), never in negative terms such as "no X" or "without X".
 Shadow behavior must be USER-DRIVEN: include shadow language in the output prompt ONLY IF the user's background description explicitly calls for shadows (e.g., "long cast shadows", "dramatic shadows", "chiaroscuro", "moody shadows"). If the user's background description does not call for shadows, do NOT introduce, reference, negate, or describe shadows in the output prompt in any form.
 Do NOT mention specific lighting equipment names (softbox, octabox, reflector, strobe, ring light, beauty dish, etc.) — describe ONLY the resulting light quality.
 
-${!isProductOnlyShot && !isGhostMannequin ? CLOTHING_VTON_REALISM_DIRECTIVE : ""}
+${!isProductOnlyShot && !isGhostMannequin ? VTON_REALISM_DIRECTIVE : ""}
 
 ${fit ? `The prompt MUST instruct the image generator to faithfully reproduce every visual detail from the provided garment images (sleeve length, neckline, color, pattern, fabric texture, construction details). However, the FIT/SIZING of the garment on the model's body MUST follow the user's selection of "${fit}" fit, NOT your visual interpretation of the images. The garment images are flat-lay or mannequin shots - you cannot reliably determine intended body fit from them. Always use the user-specified fit: "${fit}".` : `The prompt MUST instruct the image generator to faithfully reproduce every detail from the provided garment images. Emphasize that the garment details must match the reference images exactly - no modifications to sleeve length, neckline, color, pattern, or any construction detail. For the fit, use your best judgment based on what you observe in the garment images.`}
 ${lengthOverridesBlock ? `\nLENGTH OVERRIDE REMINDER: The user-specified garment length(s) listed in the AUTHORITATIVE GARMENT LENGTH OVERRIDES block above are MANDATORY. The output prompt MUST describe each user-specified length using the exact phrase and the anatomical-anchor sentence given for that length. The garment reference images are typically flat-lay / dress-form / shot on a different body — they CANNOT be used to override the user's length selection. Do NOT use any conflicting length descriptor anywhere in the output.\n` : ""}
@@ -1211,7 +1501,16 @@ When writing the output prompt, NEVER swap, mirror, or conflate these sides. If 
   } else {
     let garmentIntro = `\n\nHere are the ${garmentType} garment images to try on (${garmentImages.length} image${garmentImages.length > 1 ? "s" : ""} of the same product). ANALYZE EVERY DETAIL - sleeve length, neckline, color, pattern, fabric, construction:`;
     if (hasBackViewImage && isBackViewPose) {
-      garmentIntro += `\n\n★★★ BACK-VIEW IMAGE IDENTIFIED ★★★\nThe user has marked one of the following images as the BACK VIEW of the garment. For this back-view pose, you MUST base your description of the garment's back side EXCLUSIVELY on the image labelled "[BACK VIEW]". Do NOT apply front-side patterns, prints, graphics, or design elements to the back — the back may be completely different (plain, different print, different color). Only describe what is actually visible in the back-view reference image.`;
+      garmentIntro += `\n\n★★★ BACK-VIEW IMAGE IS THE AUTHORITATIVE SOURCE FOR THIS POSE ★★★
+The user has explicitly tagged one of the images below as the BACK VIEW of the garment, AND the current pose's view-angle ("${viewAngle}") shows the back of the garment to the camera. This combination is the single most important signal in this prompt.
+
+NON-NEGOTIABLE BACK-VIEW RULES:
+1. SOURCE OF TRUTH: Every description of the garment's back panel — color, print, graphic, text, embroidery, embellishment, panel construction, yoke shape, stitching, pocket placement, vent / slit, closure, hemline curve, drape — MUST be drawn EXCLUSIVELY from the image labelled "[BACK VIEW — AUTHORITATIVE]" below. The back-view image is the only valid reference for what the back of this garment looks like.
+2. NEVER MIRROR THE FRONT: Do NOT copy, mirror, transfer, or extrapolate ANY front-side pattern, print, graphic, logo, embroidery, or design element onto the back. The back may be completely different from the front — it may be plain, may have a different print, may have a different color, may have a different graphic, or may have no graphic at all. Trust ONLY what the back-view image shows.
+3. EXPLICITLY DESCRIBE BACK-EXCLUSIVE FEATURES: Devote the LARGEST share of your back-view garment description to features the back-view image makes visible — back graphics or prints, back-of-neck label or tag, yoke seam, center back seam, back darts or shaping, back vent / slit, back pockets, back closure (zipper / buttons / lace-up / hook-and-eye), back drape and hemline as it falls behind. Use the back-view image as your microscope.
+4. FORBIDDEN INFERENCES: Do NOT invent a back graphic because the front has one. Do NOT assume the back has the same pattern as the front. Do NOT assume the back has a logo because the front does. Do NOT assume the back is a single solid color because the front is patterned. If the back-view image shows a plain back, write "plain back panel" — do NOT add anything that is not in that image.
+5. CITE THE LABEL: When you write the BACK section of your output prompt, reference "the back-view reference image" by name so the downstream image generator knows which image you are anchoring to.
+6. GENERATION-TIME PRIORITY: The back-view image will be ordered FIRST in the image array passed to the image generator. The image generator's first impression of this garment will be the back. Your prompt must reinforce this hierarchy by leading the BACK section with the back-view image's contents and only afterwards describing front/side features.`;
     }
     parts.push({ text: garmentIntro });
   }
@@ -1224,7 +1523,10 @@ When writing the output prompt, NEVER swap, mirror, or conflate these sides. If 
   const anyFootwearSideLabeled = isFootwear && sortedGarmentImages.some((img) => img.footwearSide);
   for (const img of sortedGarmentImages) {
     if (hasBackViewImage && !isFootwear) {
-      parts.push({ text: img.isBackView ? "\n[BACK VIEW — This is the authoritative reference for the back of the garment]:" : "\n[FRONT / OTHER ANGLE]:" });
+      const backLabel = isBackViewPose
+        ? "\n[BACK VIEW — AUTHORITATIVE for this back-facing pose. Every back-side description MUST come from THIS image only]:"
+        : "\n[BACK VIEW — Use only when describing the back panel of the garment]:";
+      parts.push({ text: img.isBackView ? backLabel : "\n[FRONT / OTHER ANGLE]:" });
     }
     if (anyFootwearSideLabeled) {
       const sideLabel =
@@ -1355,14 +1657,49 @@ For reference-image accessories: reproduce the exact same accessory across all p
   // Background details — precedence:
   //   (1) per-pose customBackground (explicit text override)
   //   (2) image-reference mode (adapted palette derived from the holistic reference image)
-  //   (3) global inspiration image
-  //   (4) global text description
-  //   (5) default fallback
+  //   (3) frozenSceneDescription — pre-analyzed wide-shot from analyzeBackgroundScene()
+  //       (replaces global inspiration image; reused VERBATIM across the whole batch)
+  //   (4) global inspiration image (legacy fallback when analysis was skipped or failed)
+  //   (5) global text description
+  //   (6) default fallback
   let bgInstruction = "";
+  const useFrozenScene = !customPose?.customBackground && !isCustomPoseImageMode && !!frozenSceneDescription;
   if (customPose?.customBackground) {
     bgInstruction = `Background/environment description (CUSTOM FOR THIS POSE — DETERMINISTIC): ${customPose.customBackground}\nBACKGROUND LOCK: Reproduce this description VERBATIM in every output prompt — identical wording, identical colors, identical elements. Do NOT paraphrase, add synonyms, introduce creative variations, or reinterpret. If colors are specified, repeat them as exact hex/RGB values. Every pose in this batch must share a pixel-identical backdrop.`;
   } else if (isCustomPoseImageMode) {
     bgInstruction = `Background/environment description (DERIVED FROM HOLISTIC IMAGE REFERENCE — DETERMINISTIC):\nThe background for this custom pose is NOT taken from the global SCENE PARAMETERS. Instead, derive it from the HOLISTIC IMAGE REFERENCE — EXTRACTION RULES block above. Specifically:\n  • Use the SCENE & ENVIRONMENT, LIGHTING & MOOD, and COMPOSITION & STYLING extracted from the reference (rendered in product-agnostic language).\n  • Use the ADAPTED BACKGROUND PALETTE (STEP 5C) as the literal color specification — write its 4-6 hex codes verbatim into the BACKGROUND section of your output prompt with their role labels intact.\n  • Maintain the reference image's mood and atmospheric character; the adapted palette only retunes hue/value/chroma to highlight the user's product, never the underlying mood.\nBACKGROUND LOCK: Once derived, lock the resulting backdrop description and the adapted hex codes for the entire batch. Reuse the SAME description and the SAME hex codes word-for-word across every pose so all outputs share one pixel-consistent stage. Do NOT re-derive between poses, do NOT introduce synonym swaps, do NOT drift toward white or any other unspecified color.`;
+  } else if (useFrozenScene) {
+    bgInstruction = `Background/environment description (PRE-ANALYZED WIDE-SHOT — FROZEN FOR THE ENTIRE BATCH):
+The complete scene has already been analyzed once for this Generate batch. Below is the FROZEN SCENE DESCRIPTION — it is the SOLE source of truth for the background. Use it VERBATIM. Do NOT re-derive, paraphrase, swap synonyms, drift toward a default studio backdrop, or introduce any creative variation between poses.
+
+══════════ BEGIN FROZEN SCENE DESCRIPTION ══════════
+${frozenSceneDescription}
+══════════ END FROZEN SCENE DESCRIPTION ══════════
+
+═══ FRAMING-AWARE SCENE PROJECTION (MANDATORY when a FROZEN SCENE DESCRIPTION is present) ═══
+The WIDE-SHOT LAYOUT above describes the full scene as it appears in a head-to-toe full-body framing. For the current pose with framing = "${framing}", you MUST project that wide-shot scene through the framing's crop window WITHOUT moving any object's normalized x_center, and WITHOUT substituting any IDENTITY ANCHOR with a generic look-alike.
+
+Projection rules (NON-NEGOTIABLE):
+1. HORIZONTAL ANCHORING: every object listed in WIDE-SHOT LAYOUT keeps its x_center exactly as given. If the WIDE-SHOT LAYOUT places an object at x_center=0.18, that object is at x_center=0.18 in this pose's framing too. Object positions NEVER drift left or right between framings — a tower on the camera-left of the wide shot is on the camera-left of the close-up at the SAME normalized horizontal position.
+2. IDENTITY ANCHOR LOCK: every entry in IDENTITY ANCHORS must be reproduced with the SAME entity_class and the SAME 2–4 word visual signature wherever its vertical_zone enters the visible crop. Do NOT swap a "lattice-iron tower with tapered crown" for a generic "city skyline", do NOT replace a "twelve fluted column colonnade" with a plain wall, do NOT collapse "three broadleaf trees in a triangle" into a vague hedge. The named anchors are recognizable on sight — preserve them. If an anchor's vertical_zone is fully cropped out by the current framing, omit it; otherwise render it as named.
+3. VERTICAL VISIBILITY by framing:
+   - full-body              → entire vertical_zone visible (sky → floor)
+   - three-quarter          → upper-two-thirds + middle visible; floor is cropped near the model's feet
+   - mid-thigh              → upper-two-thirds + upper-middle visible; floor is NOT visible
+   - waist-up               → upper-third + upper-two-thirds visible (background continues behind the model down to mid-torso level); floor + lower-middle are cropped out
+   - bust-up / cropped headshot → ONLY the upper-third (sky / ceiling / upper-wall band) and the immediate background directly behind the model's chest and head are visible; everything below the chest is cropped
+   - hip-down / knee-down   → middle + floor visible; sky / upper-third are cropped
+   - product-only / feet-closeup → background reads as a tightly-cropped sliver of the floor / ground plane only
+   - ghost-mannequin        → background follows the FROZEN SCENE DESCRIPTION exactly as for full-body (no human in the frame)
+4. SCENE GEOMETRY LOCK: any architectural element (column, doorway, wall edge, horizon line, window frame, vegetation cluster) keeps the same vanishing-point geometry. A column to the model's left in the full-body shot is still to the model's left, at the same x_center, in the close-up. Horizon lines stay at the same world-space height across framings — only the visible vertical band changes with the crop.
+5. PALETTE LOCK: copy the hex codes from the PALETTE section of the FROZEN SCENE DESCRIPTION VERBATIM into the BACKGROUND section of your output prompt — same hex codes, same role labels, same order. Do NOT introduce new colors, do NOT round, do NOT shift hues.
+6. ATMOSPHERE LOCK: depth-of-field, materials, atmospheric character (haze / mist / clear-air / dust) and the SKY & LIGHT DYNAMICS section are identical to the wide-shot description across every pose. Tighter framings MAY add slight bokeh / softer focus on far-background elements (consistent with the focal length of a tighter crop), but the scene is NEVER re-staged, swapped, or replaced. Atmospheric light stays in the BACKGROUND only — it never paints the model.
+7. FLAT HIGH-KEY LIGHTING LOCK ON MODEL: copy the LIGHTING ON MODEL (FLAT HIGH-KEY OVERRIDE) sentence from the FROZEN SCENE DESCRIPTION into the LIGHTING section of your output prompt VERBATIM. Do NOT add chiaroscuro, harsh side-shadows, dramatic rim lights, or directional key lights on the model — even if the SKY & LIGHT DYNAMICS section describes a low-angle sun, golden hour, neon, or twilight. The model is uniformly lit across face, neck, arms, hands, torso, hips, knees, and feet by an overhead softbox + bounce fill at ~5500K daylight, with minimal shadow falloff. The atmospheric mood of the reference may colour the BACKGROUND elements, but it never warms, cools, or shapes the light on the model.
+8. CLOTHING COLOR LOCK: the garment renders at its TRUE colors as shown in the user's product photos. The scene's atmospheric tint (golden-hour orange, twilight blue, neon magenta, tungsten amber, etc.) MUST NOT warm, cool, desaturate, or otherwise shift the garment's color shade. If a hex value is shown in the user's product photo, that hex value is what the garment reads as in the output. This is the single most important rule — do NOT let the scene's mood bleed onto the garment.
+
+The viewer placing two outputs of this batch side-by-side (e.g. a full-body shot and a waist-up shot of the same configuration) MUST read them as two crops of the same photograph taken seconds apart in the same physical location, with the same named landmarks in the same positions, the same sky and atmosphere, identical garment colors, and identical flat high-key studio light on the model.
+
+BACKGROUND LOCK: The FROZEN SCENE DESCRIPTION above replaces all other background sources for this batch. Do NOT reference an inspiration image, do NOT default to a white studio cyclorama, and do NOT invent any scene element not present in the FROZEN SCENE DESCRIPTION.`;
   } else if (background.mode === "inspiration" && background.inspirationImage) {
     parts.push({
       text: `\n\nHere is the inspiration image for the background/environment:`,
@@ -1500,6 +1837,7 @@ Now write the ${isGhostMannequin ? "ghost mannequin" : isProductOnlyShot ? "prod
       thinkingConfig: {
         thinkingLevel: isFootwear ? ThinkingLevel.MEDIUM : ThinkingLevel.LOW,
       },
+      abortSignal,
     },
   });
 
@@ -1640,7 +1978,7 @@ export async function buildVTONImageContentParts({
     const hasBackViewImg = garmentImages.some((img) => img.isBackView);
     let backViewSuffix = "";
     if (hasBackViewImg && isBackViewPose) {
-      backViewSuffix = " CRITICAL: The first garment image provided below is the BACK VIEW of the garment. For this back-view pose, the garment's back must match ONLY that back-view reference — do NOT mirror front-side patterns, prints, or graphics onto the back.";
+      backViewSuffix = ` ★★★ BACK-VIEW PRIORITY ★★★ The FIRST garment image provided below is the user-tagged BACK VIEW of the garment, and the current pose shows the back of the garment to the camera. For this output you MUST: (1) treat that first back-view image as the SOLE source of truth for the back panel — the back's color, print, graphic, text, embroidery, panel construction, yoke, vent, closure, hemline, and drape ALL come from that image only; (2) NEVER mirror, transfer, or extrapolate any front-side pattern, print, graphic, or design element onto the back — the back may be plain even if the front is patterned, may have a different print, or may have a different color; (3) reproduce every back-side detail visible in that first image with PIXEL-LEVEL fidelity — the back of this garment is the focal point of this shot.`;
     }
     parts.push({
       text: `${prompt}\n\nIMPORTANT: The garment in the output must match the provided garment reference images EXACTLY - preserve the same sleeve length, neckline, hem length, color, pattern, fabric texture, and every construction detail. Do not modify any garment attributes.${isGhostMannequin ? " This is a ghost mannequin shot — the garment must appear three-dimensional and shaped as if worn by an invisible person. ZERO visible human body, skin, hands, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? " This is a product-only shot — no human model, mannequin body, or person should be visible. Show ONLY the garment product." : modelImage ? " Use the provided model reference photo to generate the EXACT same person - same face, skin tone, hair color, and body type." : ""}${backViewSuffix}`,
@@ -1687,6 +2025,7 @@ export async function generateVTONImage({
   isGhostMannequin = false,
   isBackViewPose = false,
   imageSize = "2K",
+  abortSignal,
 }: {
   apiKey: string;
   prompt: string;
@@ -1700,6 +2039,8 @@ export async function generateVTONImage({
   isGhostMannequin?: boolean;
   isBackViewPose?: boolean;
   imageSize?: "1K" | "2K" | "4K";
+  /** Optional client-side AbortSignal — cancels the in-flight Gemini image-gen request. */
+  abortSignal?: AbortSignal;
 }): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
   const ai = new GoogleGenAI({ apiKey });
 
@@ -1724,6 +2065,7 @@ export async function generateVTONImage({
         aspectRatio: aspectRatio,
         imageSize,
       },
+      abortSignal,
     },
   });
 
@@ -1814,9 +2156,11 @@ export async function editVTONImage({
 export async function checkHumanVisibility({
   apiKey,
   sourceImage,
+  abortSignal,
 }: {
   apiKey: string;
   sourceImage: File;
+  abortSignal?: AbortSignal;
 }): Promise<{ humanVisible: boolean; reason: string; cost?: StepCost }> {
   const ai = new GoogleGenAI({ apiKey });
 
@@ -1855,6 +2199,9 @@ Do NOT include any other text.`,
     const response = await ai.models.generateContent({
       model: "gemini-3.1-pro-preview",
       contents: parts,
+      config: {
+        abortSignal,
+      },
     });
 
     const tokens = extractTokenUsage(response);
@@ -2227,12 +2574,14 @@ export async function validateGeneratedImage({
   generatedImageData,
   productCategory = "clothing",
   validationMode = "vton",
+  abortSignal,
 }: {
   apiKey: string;
   originalImages: File[];
   generatedImageData: string;
   productCategory?: ProductCategory;
   validationMode?: "vton" | "model-swap" | "room-staging";
+  abortSignal?: AbortSignal;
 }): Promise<ValidationResult & { cost?: StepCost }> {
   const ai = new GoogleGenAI({ apiKey });
 
@@ -2369,6 +2718,9 @@ Do NOT include any other text.`,
     const response = await ai.models.generateContent({
       model: "gemini-3.1-pro-preview",
       contents: parts,
+      config: {
+        abortSignal,
+      },
     });
 
     const vTokens = extractTokenUsage(response);

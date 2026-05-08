@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import {
   Sparkles,
   Download,
@@ -28,6 +28,7 @@ import {
   Pencil,
   Send,
   X,
+  Square,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -36,7 +37,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, editVTONImage, buildModelSwapImageContentParts, editModelSwapImage } from "@/lib/gemini";
+import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, editVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene } from "@/lib/gemini";
 import { generateVTONImageAzure } from "@/lib/azure-image";
 import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS } from "@/lib/constants";
 import Image from "next/image";
@@ -79,14 +80,47 @@ function getBgShortLabel(bg: BackgroundConfig): string {
   return "Studio Default";
 }
 
-function getSequencedFileName(baseName: string, sequenceIndex: number, ext: string, oneIndexed = false): string {
-  const safeName = baseName.replace(/[<>:"/\\|?*]+/g, "_");
-  if (oneIndexed) {
-    return `${safeName}_${sequenceIndex + 1}.${ext}`;
+/**
+ * Walks a counter past every value in `skipIndices` to compute the
+ * skip-aware suffix number for the i-th file in a sequence.
+ *
+ * - 0-indexed mode: counter starts at 0; the 0th file with no skips returns 0
+ *   (rendered as a bare prefix with no suffix), the 1st returns 1, etc.
+ * - 1-indexed mode: counter starts at 1; the 0th file returns 1, etc.
+ *
+ * Skipped values are jumped over: skipIndices=[3] in 1-indexed mode produces
+ * the sequence 1, 2, 4, 5, 6, ... for sequenceIndex 0, 1, 2, 3, 4, ...
+ */
+function computeSkipAwareCounter(
+  sequenceIndex: number,
+  oneIndexed: boolean,
+  skipIndices: number[],
+): number {
+  const skipSet = new Set(skipIndices);
+  let counter = oneIndexed ? 1 : 0;
+  for (let i = 0; i < sequenceIndex; i++) {
+    counter++;
+    while (skipSet.has(counter)) counter++;
   }
-  return sequenceIndex === 0
+  while (skipSet.has(counter)) counter++;
+  return counter;
+}
+
+function getSequencedFileName(
+  baseName: string,
+  sequenceIndex: number,
+  ext: string,
+  oneIndexed = false,
+  skipIndices: number[] = [],
+): string {
+  const safeName = baseName.replace(/[<>:"/\\|?*]+/g, "_");
+  const counter = computeSkipAwareCounter(sequenceIndex, oneIndexed, skipIndices);
+  if (oneIndexed) {
+    return `${safeName}_${counter}.${ext}`;
+  }
+  return counter === 0
     ? `${safeName}.${ext}`
-    : `${safeName}_${sequenceIndex}.${ext}`;
+    : `${safeName}_${counter}.${ext}`;
 }
 
 function sortResultsByPoseSequence<T extends { pose: Pose }>(
@@ -153,6 +187,8 @@ const getStatusIcon = (status: GeneratedResult["status"] | BulkGeneratedResult["
       return <CheckCircle2 className="w-5 h-5 text-green-500" />;
     case "skipped":
       return <SkipForward className="w-5 h-5 text-blue-500" />;
+    case "cancelled":
+      return <X className="w-5 h-5 text-muted-foreground" />;
     case "error":
       return <AlertCircle className="w-5 h-5 text-red-500" />;
   }
@@ -176,6 +212,8 @@ const getStatusText = (status: GeneratedResult["status"] | BulkGeneratedResult["
       return "Completed";
     case "skipped":
       return "Skipped — No model detected";
+    case "cancelled":
+      return "Cancelled — re-generate to retry";
     case "error":
       return "Error";
   }
@@ -381,12 +419,18 @@ export function StepGenerate({ store }: StepGenerateProps) {
     updateResult,
     isGenerating,
     setIsGenerating,
+    isIngestingScene,
+    setIsIngestingScene,
+    beginGeneration,
+    cancelGeneration,
     // Bulk
     primaryFolders,
     complementaryFolders,
     bulkModelImages,
     bulkBackgrounds,
     bulkBgAssignment,
+    setBulkBgAssignment,
+    setProductBgMapping,
     bulkCombinations,
     bulkResults,
     setBulkResults,
@@ -396,6 +440,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     updateBulkPoseOverride,
     removeBulkPoseOverride,
     clearAllBulkPoseOverrides,
+    clearProductBgPoseOverrides,
     // Model Swap
     modelSwapBgMode,
     modelSwapResults,
@@ -422,11 +467,27 @@ export function StepGenerate({ store }: StepGenerateProps) {
     // Sequencing & Naming
     singleDownloadPrefix,
     namingLogic,
+    skipNamingIndicesText,
   } = store;
   const { imageQuality, setImageQuality } = store;
   const { imageGenModel } = store;
   const isModelSwap = featureMode === "model-swap";
   const useAzureForFootwear = productCategory === "footwear" && imageGenModel === "gpt-image-2";
+
+  // Parse the comma-separated user input into a deduped array of non-negative
+  // integers. Any non-integer / negative tokens are silently dropped.
+  const skipIndices = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          skipNamingIndicesText
+            .split(",")
+            .map((s) => Number(s.trim()))
+            .filter((n) => Number.isInteger(n) && n >= 0)
+        )
+      ),
+    [skipNamingIndicesText]
+  );
 
   /**
    * Routes the VTON image call to either Nano Banana 2 (Gemini) or Azure gpt-image-2,
@@ -559,6 +620,15 @@ export function StepGenerate({ store }: StepGenerateProps) {
     [bulkPoseOverrides, bulkModelImages, bulkBackgrounds, complementaryFolders]
   );
 
+  const setProductBackground = useCallback(
+    (productFolderId: string, bgId: string) => {
+      if (bulkBgAssignment !== "manual") setBulkBgAssignment("manual");
+      setProductBgMapping(productFolderId, bgId);
+      clearProductBgPoseOverrides(productFolderId);
+    },
+    [bulkBgAssignment, setBulkBgAssignment, setProductBgMapping, clearProductBgPoseOverrides]
+  );
+
   const overrideCount = bulkPoseOverrides.length;
 
   // ======================================================================
@@ -571,9 +641,46 @@ export function StepGenerate({ store }: StepGenerateProps) {
     if (anyPoseNeedsModel && !selectedModel && !modelImage) return;
     if ((selectedPoses.length === 0 && customPoses.length === 0 && ugcScenes.length === 0) || !apiKey) return;
 
-    setIsGenerating(true);
+    // Clear any leftover cancelled / errored results from a previous batch
+    // before kicking off a fresh run.
+    setResults([]);
+    setUgcResults([]);
+
+    const ctrl = beginGeneration();
+    const signal = ctrl.signal;
 
     try {
+    // ──────────────────────────────────────────────────────────────────
+    // STEP 0 — Background scene pre-analysis (ONCE per batch).
+    // When the user has uploaded an inspiration image, we run a single
+    // Gemini 3.1 Pro pass to extract a structured WIDE-SHOT LAYOUT +
+    // hex palette + forced-flat-lighting directive. The resulting
+    // string is reused VERBATIM by every per-pose prompt-generation
+    // call so the entire batch reads as the same physical photoshoot.
+    // ──────────────────────────────────────────────────────────────────
+    let frozenSceneDescription: string | undefined;
+    if (background.mode === "inspiration" && background.inspirationImage) {
+      setIsIngestingScene(true);
+      try {
+        const r = await analyzeBackgroundScene({
+          apiKey,
+          inspirationImage: background.inspirationImage,
+          abortSignal: signal,
+        });
+        frozenSceneDescription = r.sceneDescription;
+      } catch (err) {
+        if (signal.aborted) {
+          setIsIngestingScene(false);
+          return;
+        }
+        console.warn("Background scene analysis failed; falling back to per-pose inspiration image:", err);
+      } finally {
+        setIsIngestingScene(false);
+      }
+    }
+
+    if (signal.aborted) return;
+
     // Create results for preset poses
     const presetResults: GeneratedResult[] = selectedPoses.map((pose) => ({
       id: `result-${pose.id}-${Date.now()}`,
@@ -616,6 +723,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
     setUgcResults(initialUgcResults);
 
     const processPose = async (result: GeneratedResult) => {
+      // If the user already cancelled before this slot started, mark as
+      // cancelled without firing any network calls.
+      if (signal.aborted) {
+        updateResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+        return;
+      }
+
       const accessories = poseAccessories[result.pose.id] || [];
       const poseIsProductOnly = result.customPose
         ? !result.customPose.isModelShot
@@ -651,6 +765,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           productInfo,
           applyAccessoriesToAllPoses,
           targetImageModel: imageGenModel,
+          frozenSceneDescription,
+          abortSignal: signal,
         });
         collectedCosts.push(promptResult.cost);
 
@@ -669,6 +785,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           isGhostMannequin: poseIsGhostMannequin,
           isBackViewPose: result.pose.viewAngle === "back" || result.pose.viewAngle === "three-quarter-back",
           imageSize: imageQuality,
+          abortSignal: signal,
         });
         collectedCosts.push(imageResult.cost);
 
@@ -685,6 +802,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           originalImages: garmentImages.map((g) => g.file),
           generatedImageData: imageResult.imageData,
           productCategory,
+          abortSignal: signal,
         }).then((v) => {
           if (v.cost) collectedCosts.push(v.cost);
           const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
@@ -700,12 +818,27 @@ export function StepGenerate({ store }: StepGenerateProps) {
       try {
         await generate();
       } catch {
+        // If the cancel button was pressed, skip auto-retry — mark cancelled
+        // and exit. Auto-retry on a cancellation would defeat the whole
+        // purpose of the Stop button.
+        if (signal.aborted) {
+          updateResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+          return;
+        }
         try {
           retrySteps = [...collectedCosts];
           updateResult(result.id, { status: "auto-retrying", error: undefined });
           await new Promise((r) => setTimeout(r, 1000));
+          if (signal.aborted) {
+            updateResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+            return;
+          }
           await generate();
         } catch (retryError) {
+          if (signal.aborted) {
+            updateResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+            return;
+          }
           const allCosts = [...(retrySteps || []), ...collectedCosts];
           const totalCost = allCosts.reduce((s, c) => s + c.totalCost, 0);
           updateResult(result.id, {
@@ -719,12 +852,31 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     const CONCURRENCY_LIMIT = 7;
     for (let i = 0; i < initialResults.length; i += CONCURRENCY_LIMIT) {
+      if (signal.aborted) break;
       const batch = initialResults.slice(i, i + CONCURRENCY_LIMIT);
       await Promise.all(batch.map(processPose));
     }
 
+    // After the loop ends, sweep any results still in `pending` state and
+    // mark them cancelled (this can happen when the user aborted partway
+    // through the concurrency batches before those slots even started).
+    // updateResult patches whatever the latest state has — `processPose`
+    // already wrote `cancelled` to anything it actually touched, so this
+    // is only an extra safety net for never-touched pending entries.
+    if (signal.aborted) {
+      setResults((prev) =>
+        prev.map((r) =>
+          r.status === "pending" ? { ...r, status: "cancelled", error: "Cancelled by user" } : r
+        )
+      );
+    }
+
     // Process UGC scenes
     const processUgcScene = async (result: UGCGeneratedResult) => {
+      if (signal.aborted) {
+        updateUgcResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+        return;
+      }
       const scene = ugcScenes.find((s) => s.id === result.sceneId);
       if (!scene) return;
       const collectedCosts: StepCost[] = [];
@@ -777,12 +929,24 @@ export function StepGenerate({ store }: StepGenerateProps) {
       try {
         await generate();
       } catch {
+        if (signal.aborted) {
+          updateUgcResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+          return;
+        }
         try {
           retrySteps = [...collectedCosts];
           updateUgcResult(result.id, { status: "auto-retrying", error: undefined });
           await new Promise((r) => setTimeout(r, 1000));
+          if (signal.aborted) {
+            updateUgcResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+            return;
+          }
           await generate();
         } catch (retryError) {
+          if (signal.aborted) {
+            updateUgcResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+            return;
+          }
           const allCosts = [...(retrySteps || []), ...collectedCosts];
           const totalCost = allCosts.reduce((s, c) => s + c.totalCost, 0);
           updateUgcResult(result.id, {
@@ -796,8 +960,17 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     const UGC_CONCURRENCY = 5;
     for (let i = 0; i < initialUgcResults.length; i += UGC_CONCURRENCY) {
+      if (signal.aborted) break;
       const batch = initialUgcResults.slice(i, i + UGC_CONCURRENCY);
       await Promise.all(batch.map(processUgcScene));
+    }
+
+    if (signal.aborted) {
+      setUgcResults((prev) =>
+        prev.map((r) =>
+          r.status === "pending" ? { ...r, status: "cancelled", error: "Cancelled by user" } : r
+        )
+      );
     }
 
     } finally {
@@ -834,6 +1007,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
     setUgcResults,
     updateUgcResult,
     setIsGenerating,
+    setIsIngestingScene,
+    beginGeneration,
   ]);
 
   // ======================================================================
@@ -844,9 +1019,66 @@ export function StepGenerate({ store }: StepGenerateProps) {
     const hasUgc = ugcScenes.length > 0;
     if (bulkCombinations.length === 0 || (!hasAnyPoses && !hasUgc) || !apiKey) return;
 
-    setIsGenerating(true);
+    // Clear any leftover cancelled / errored results before kicking off a fresh batch.
+    setBulkResults([]);
+    setUgcResults([]);
+
+    const ctrl = beginGeneration();
+    const signal = ctrl.signal;
 
     try {
+    // ──────────────────────────────────────────────────────────────────
+    // STEP 0 — Background scene pre-analysis (ONCE per unique
+    // inspiration image used in this batch). In bulk mode the user may
+    // assign different backgrounds to different products / poses, so we
+    // pre-analyze each unique image once and key the resulting frozen
+    // scene description by the image's File reference.
+    // ──────────────────────────────────────────────────────────────────
+    const sceneCache = new Map<File, string>();
+    const uniqueInspirationFiles: File[] = [];
+    const collectFile = (bg: BackgroundConfig | undefined | null) => {
+      if (!bg || bg.mode !== "inspiration" || !bg.inspirationImage) return;
+      const f = bg.inspirationImage.file;
+      if (!uniqueInspirationFiles.includes(f)) uniqueInspirationFiles.push(f);
+    };
+    // Collect from every combo's default background
+    for (const combo of bulkCombinations) collectFile(combo.background);
+    // Collect from every per-pose override background
+    for (const ov of bulkPoseOverrides) {
+      if (!ov.backgroundId) continue;
+      const bg = bulkBackgrounds.find((b) => b.id === ov.backgroundId)?.config;
+      collectFile(bg);
+    }
+
+    if (uniqueInspirationFiles.length > 0) {
+      setIsIngestingScene(true);
+    }
+    try {
+      for (const file of uniqueInspirationFiles) {
+        if (signal.aborted) return;
+        try {
+          const r = await analyzeBackgroundScene({
+            apiKey,
+            inspirationImage: { file },
+            abortSignal: signal,
+          });
+          sceneCache.set(file, r.sceneDescription);
+        } catch (err) {
+          if (signal.aborted) return;
+          console.warn("Background scene analysis failed for an inspiration image; falling back per-pose:", err);
+        }
+      }
+    } finally {
+      setIsIngestingScene(false);
+    }
+
+    const lookupFrozenScene = (bg: BackgroundConfig): string | undefined => {
+      if (bg.mode !== "inspiration" || !bg.inspirationImage) return undefined;
+      return sceneCache.get(bg.inspirationImage.file);
+    };
+
+    if (signal.aborted) return;
+
     // Create result entries for every combination x pose (preset + custom)
     const allResults: BulkGeneratedResult[] = [];
     for (const combo of bulkCombinations) {
@@ -895,11 +1127,16 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     // Process a single bulk result
     const processResult = async (result: BulkGeneratedResult) => {
+      if (signal.aborted) {
+        updateBulkResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+        return;
+      }
       const combo = bulkCombinations.find((c) => c.id === result.combinationId);
       if (!combo) return;
 
       const effectivePoseId = result.customPose ? result.customPose.id : result.pose.id;
       const { model: effectiveModel, bg: effectiveBg, cg: effectiveCg } = resolveOverride(combo, effectivePoseId);
+      const frozenSceneDescription = lookupFrozenScene(effectiveBg);
 
       const pgImages: GarmentImage[] = combo.primaryFolder.images.map((img) => ({
         id: img.id,
@@ -970,6 +1207,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           productInfo: combo.primaryFolder.productInfo || "",
           applyAccessoriesToAllPoses,
           targetImageModel: imageGenModel,
+          frozenSceneDescription,
+          abortSignal: signal,
         });
         collectedCosts.push(promptResult.cost);
 
@@ -988,6 +1227,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           isGhostMannequin: poseIsGhostMannequin,
           isBackViewPose: result.pose.viewAngle === "back" || result.pose.viewAngle === "three-quarter-back",
           imageSize: imageQuality,
+          abortSignal: signal,
         });
         collectedCosts.push(imageResult.cost);
 
@@ -1004,6 +1244,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           originalImages: pgImages.map((g) => g.file),
           generatedImageData: imageResult.imageData,
           productCategory,
+          abortSignal: signal,
         }).then((v) => {
           if (v.cost) collectedCosts.push(v.cost);
           const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
@@ -1019,12 +1260,24 @@ export function StepGenerate({ store }: StepGenerateProps) {
       try {
         await generate();
       } catch {
+        if (signal.aborted) {
+          updateBulkResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+          return;
+        }
         try {
           retrySteps = [...collectedCosts];
           updateBulkResult(result.id, { status: "auto-retrying", error: undefined });
           await new Promise((r) => setTimeout(r, 1000));
+          if (signal.aborted) {
+            updateBulkResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+            return;
+          }
           await generate();
         } catch (retryError) {
+          if (signal.aborted) {
+            updateBulkResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+            return;
+          }
           const allCosts = [...(retrySteps || []), ...collectedCosts];
           const totalCost = allCosts.reduce((s, c) => s + c.totalCost, 0);
           updateBulkResult(result.id, {
@@ -1039,8 +1292,18 @@ export function StepGenerate({ store }: StepGenerateProps) {
     // Process in batches with concurrency limit
     const CONCURRENCY_LIMIT = 7;
     for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
+      if (signal.aborted) break;
       const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
       await Promise.all(batch.map(processResult));
+    }
+
+    // Sweep any remaining pending bulk results into cancelled.
+    if (signal.aborted) {
+      setBulkResults((prev) =>
+        prev.map((r) =>
+          r.status === "pending" ? { ...r, status: "cancelled", error: "Cancelled by user" } : r
+        )
+      );
     }
 
     // Process UGC scenes — one per combination × scene
@@ -1061,6 +1324,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
       setUgcResults(initialUgcResults);
 
       const processUgcScene = async (result: UGCGeneratedResult) => {
+        if (signal.aborted) {
+          updateUgcResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+          return;
+        }
         const scene = ugcScenes.find((s) => s.id === result.sceneId);
         if (!scene) return;
         const comboIndex = initialUgcResults.indexOf(result);
@@ -1137,12 +1404,24 @@ export function StepGenerate({ store }: StepGenerateProps) {
         try {
           await generate();
         } catch {
+          if (signal.aborted) {
+            updateUgcResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+            return;
+          }
           try {
             retrySteps = [...collectedCosts];
             updateUgcResult(result.id, { status: "auto-retrying", error: undefined });
             await new Promise((r) => setTimeout(r, 1000));
+            if (signal.aborted) {
+              updateUgcResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+              return;
+            }
             await generate();
           } catch (retryError) {
+            if (signal.aborted) {
+              updateUgcResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+              return;
+            }
             const allCosts = [...(retrySteps || []), ...collectedCosts];
             const totalCost = allCosts.reduce((s, c) => s + c.totalCost, 0);
             updateUgcResult(result.id, {
@@ -1156,8 +1435,17 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
       const UGC_CONCURRENCY = 5;
       for (let i = 0; i < initialUgcResults.length; i += UGC_CONCURRENCY) {
+        if (signal.aborted) break;
         const batch = initialUgcResults.slice(i, i + UGC_CONCURRENCY);
         await Promise.all(batch.map(processUgcScene));
+      }
+
+      if (signal.aborted) {
+        setUgcResults((prev) =>
+          prev.map((r) =>
+            r.status === "pending" ? { ...r, status: "cancelled", error: "Cancelled by user" } : r
+          )
+        );
       }
     }
 
@@ -1192,6 +1480,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
     setUgcResults,
     updateUgcResult,
     setIsGenerating,
+    setIsIngestingScene,
+    beginGeneration,
+    bulkPoseOverrides,
+    bulkBackgrounds,
   ]);
 
   // Retry/regenerate a single result (single mode) — works for both errored and completed results
@@ -1778,7 +2070,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     const seqIdx = selectedPoses.findIndex((p) => p.id === pose.id);
     const oneIndexed = namingLogic === "folder-name-sequential-1";
     const fileName = seqIdx >= 0
-      ? getSequencedFileName(baseName, seqIdx, "png", oneIndexed)
+      ? getSequencedFileName(baseName, seqIdx, "png", oneIndexed, skipIndices)
       : `${baseName.replace(/[<>:"/\\|?*]+/g, "_")}-${pose.id}.png`;
     try {
       const resp = await fetch(imageData);
@@ -1799,7 +2091,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       link.click();
       document.body.removeChild(link);
     }
-  }, [selectedPoses, singleDownloadPrefix, namingLogic]);
+  }, [selectedPoses, singleDownloadPrefix, namingLogic, skipIndices]);
 
   // Resolve the effective productInfo for the infographic editor based on result type.
   // In bulk mode, per-folder productInfo is used; in single mode, the global store value.
@@ -1884,20 +2176,21 @@ export function StepGenerate({ store }: StepGenerateProps) {
         const resp = await fetch(r.imageData);
         const blob = await resp.blob();
         const ext = (blob.type && blob.type.split("/")[1]) || "png";
-        zip.file(getSequencedFileName(prefix, i, ext, oneIndexed), blob);
+        zip.file(getSequencedFileName(prefix, i, ext, oneIndexed, skipIndices), blob);
       } catch (e) {
         console.error("Failed to add image to zip:", e);
       }
       if (r.infographicImages?.length) {
+        const counter = computeSkipAwareCounter(i, oneIndexed, skipIndices);
         for (let idx = 0; idx < r.infographicImages.length; idx++) {
           try {
             const resp = await fetch(r.infographicImages[idx]);
             const blob = await resp.blob();
             const ext = (blob.type && blob.type.split("/")[1]) || "png";
             const safePrefix = prefix.replace(/[<>:"/\\|?*]+/g, "_");
-            zip.file(i === 0
+            zip.file(!oneIndexed && counter === 0
               ? `${safePrefix}-infographic-${idx + 1}.${ext}`
-              : `${safePrefix}_${i}-infographic-${idx + 1}.${ext}`, blob);
+              : `${safePrefix}_${counter}-infographic-${idx + 1}.${ext}`, blob);
           } catch (e) {
             console.error("Failed to add infographic to zip:", e);
           }
@@ -1941,7 +2234,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     link.click();
     document.body.removeChild(link);
     setTimeout(() => URL.revokeObjectURL(url), 5000);
-  }, [results, ugcResults, selectedPoses, singleDownloadPrefix, namingLogic]);
+  }, [results, ugcResults, selectedPoses, singleDownloadPrefix, namingLogic, skipIndices]);
 
   // Download all completed images for Model Swap single mode as a ZIP
   const handleDownloadAllModelSwapSingle = useCallback(async () => {
@@ -2021,20 +2314,21 @@ export function StepGenerate({ store }: StepGenerateProps) {
           const resp = await fetch(r.imageData);
           const blob = await resp.blob();
           const ext = (blob.type && blob.type.split("/")[1]) || "png";
-          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed), blob);
+          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed, skipIndices), blob);
         } catch (e) {
           // eslint-disable-next-line no-console
           console.error("Failed to add image to zip:", e);
         }
         if (r.infographicImages?.length) {
+          const counter = computeSkipAwareCounter(i, oneIndexed, skipIndices);
           for (let idx = 0; idx < r.infographicImages.length; idx++) {
             try {
               const resp = await fetch(r.infographicImages[idx]);
               const blob = await resp.blob();
               const ext = (blob.type && blob.type.split("/")[1]) || "png";
-              folder.file(i === 0
+              folder.file(!oneIndexed && counter === 0
                 ? `${safeName}-infographic-${idx + 1}.${ext}`
-                : `${safeName}_${i}-infographic-${idx + 1}.${ext}`, blob);
+                : `${safeName}_${counter}-infographic-${idx + 1}.${ext}`, blob);
             } catch (e) {
               // eslint-disable-next-line no-console
               console.error("Failed to add infographic to zip:", e);
@@ -2082,7 +2376,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       document.body.removeChild(link);
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     },
-    [bulkResults, ugcResults, selectedPoses]
+    [bulkResults, ugcResults, selectedPoses, namingLogic, skipIndices]
   );
 
   // Download all completed images for a Model Swap bulk combination as a ZIP
@@ -2174,20 +2468,21 @@ export function StepGenerate({ store }: StepGenerateProps) {
           const resp = await fetch(r.imageData);
           const blob = await resp.blob();
           const ext = (blob.type && blob.type.split("/")[1]) || "png";
-          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed), blob);
+          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed, skipIndices), blob);
         } catch (e) {
           // eslint-disable-next-line no-console
           console.error("Failed to add image to zip:", e);
         }
         if (r.infographicImages?.length) {
+          const counter = computeSkipAwareCounter(i, oneIndexed, skipIndices);
           for (let idx = 0; idx < r.infographicImages.length; idx++) {
             try {
               const resp = await fetch(r.infographicImages[idx]);
               const blob = await resp.blob();
               const ext = (blob.type && blob.type.split("/")[1]) || "png";
-              folder.file(i === 0
+              folder.file(!oneIndexed && counter === 0
                 ? `${safeName}-infographic-${idx + 1}.${ext}`
-                : `${safeName}_${i}-infographic-${idx + 1}.${ext}`, blob);
+                : `${safeName}_${counter}-infographic-${idx + 1}.${ext}`, blob);
             } catch (e) {
               // eslint-disable-next-line no-console
               console.error("Failed to add infographic to zip:", e);
@@ -2234,7 +2529,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     link.click();
     document.body.removeChild(link);
     setTimeout(() => URL.revokeObjectURL(url), 5000);
-  }, [bulkResults, bulkCombinations, ugcResults, selectedPoses]);
+  }, [bulkResults, bulkCombinations, ugcResults, selectedPoses, namingLogic, skipIndices]);
 
   // Download all UGC images in bulk mode as a ZIP with nested product folders
   const handleDownloadAllUgcBulk = useCallback(async () => {
@@ -4257,6 +4552,40 @@ export function StepGenerate({ store }: StepGenerateProps) {
                     </AccordionTrigger>
                     <AccordionContent className="px-4 pb-3 pt-2">
                       <div className="space-y-px">
+                        <div className="grid grid-cols-[1fr_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 items-center rounded px-2 py-1 text-[11px] bg-muted/40 border border-border mb-1.5">
+                          <div className="flex items-center gap-1.5 text-foreground font-medium min-w-0">
+                            <Layers className="w-3 h-3 shrink-0" />
+                            <span className="truncate">Apply to all poses</span>
+                          </div>
+                          <div />
+                          <Select
+                            value={bulkBackgrounds.find((b) => b.config === combo.background)?.id ?? "__default__"}
+                            onValueChange={(val) => setProductBackground(combo.primaryFolder.id, val)}
+                            disabled={bulkBackgrounds.length === 0}
+                          >
+                            <SelectTrigger className="h-6 text-[11px] px-2 bg-emerald-500/5 border-emerald-500/20">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {bulkBackgrounds.length === 0 ? (
+                                <SelectItem value="__default__" className="text-[11px]">Default Studio</SelectItem>
+                              ) : (
+                                bulkBackgrounds.map((b) => (
+                                  <SelectItem key={b.id} value={b.id} className="text-[11px]">
+                                    {b.name}
+                                  </SelectItem>
+                                ))
+                              )}
+                            </SelectContent>
+                          </Select>
+                          <div />
+                          <div className="w-5 shrink-0" />
+                        </div>
+                        {productOverrides.some((o) => o.backgroundId) && (
+                          <p className="text-[10px] text-muted-foreground px-2 mb-1">
+                            Tip: changing the background here resets per-pose background overrides for this product.
+                          </p>
+                        )}
                         {allPoses.map((pose) => {
                           const override = bulkPoseOverrides.find(
                             (o) => o.productFolderId === combo.primaryFolder.id && o.poseId === pose.id
@@ -4441,7 +4770,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         </div>
 
         {/* Generate Button */}
-        {bulkResults.length === 0 && ugcResults.length === 0 && (
+        {bulkResults.length === 0 && ugcResults.length === 0 && !isIngestingScene && (
           <Button
             onClick={handleBulkGenerate}
             disabled={isGenerating || !apiKey || (totalPoses === 0 && ugcScenes.length === 0) || bulkCombinations.length === 0}
@@ -4451,6 +4780,42 @@ export function StepGenerate({ store }: StepGenerateProps) {
             <Sparkles className="w-5 h-5" />
             Generate {totalImages} VTON Image{totalImages !== 1 ? "s" : ""} ({bulkCombinations.length} combination{bulkCombinations.length !== 1 ? "s" : ""})
           </Button>
+        )}
+
+        {/* Scene-ingestion loader (bulk) — runs once per UNIQUE inspiration
+            image referenced by any combination's effective background. */}
+        {isIngestingScene && (
+          <div className="w-full rounded-xl border border-primary/30 bg-gradient-to-r from-primary/5 to-primary/10 px-5 py-4 flex items-center gap-4">
+            <div className="relative flex items-center justify-center w-10 h-10 rounded-full bg-primary/15 shrink-0">
+              <Loader2 className="w-6 h-6 text-primary animate-spin" />
+            </div>
+            <div className="flex flex-col gap-1 min-w-0">
+              <p className="text-sm font-semibold text-foreground">
+                Ingesting configuration… preparing to generate
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Analysing each unique background scene once so every pose stays in the same location.
+              </p>
+            </div>
+            <div className="ml-auto">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={cancelGeneration}
+                    size="sm"
+                    variant="destructive"
+                    className="rounded-xl gap-1.5"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-current" />
+                    Stop
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Cancel before per-pose generation starts. May still incur a small charge for the in-flight analysis call.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          </div>
         )}
         {/* Image Quality Selection */}
         <div className="mt-3 flex items-center gap-3">
@@ -4482,6 +4847,24 @@ export function StepGenerate({ store }: StepGenerateProps) {
                   : `${completedBulkResults}/${totalBulkResults} completed`}
               </p>
               <div className="flex items-center gap-2">
+                {isGenerating && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        onClick={cancelGeneration}
+                        size="sm"
+                        variant="destructive"
+                        className="rounded-xl gap-1.5"
+                      >
+                        <Square className="w-3.5 h-3.5 fill-current" />
+                        Stop
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Cancels pending and in-flight requests. Already-completed images stay. May still incur charges for requests already in flight on Google&apos;s servers.
+                    </TooltipContent>
+                  </Tooltip>
+                )}
                 {!isGenerating && completedBulkResults > 0 && (
                   <Button
                     onClick={handleDownloadAllBulk}
@@ -5019,7 +5402,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       </div>
 
       {/* Generate Button */}
-      {results.length === 0 && ugcResults.length === 0 && (
+      {results.length === 0 && ugcResults.length === 0 && !isIngestingScene && (
         <Button
           onClick={handleGenerate}
           disabled={
@@ -5036,6 +5419,44 @@ export function StepGenerate({ store }: StepGenerateProps) {
         </Button>
       )}
 
+      {/* Scene-ingestion loader — shown ONCE per Generate batch while
+          analyzeBackgroundScene is running its single Gemini 3.1 Pro pre-pass.
+          Replaces the Generate button visually so the user knows why per-pose
+          results haven't started appearing yet. */}
+      {isIngestingScene && (
+        <div className="w-full rounded-xl border border-primary/30 bg-gradient-to-r from-primary/5 to-primary/10 px-5 py-4 flex items-center gap-4">
+          <div className="relative flex items-center justify-center w-10 h-10 rounded-full bg-primary/15 shrink-0">
+            <Loader2 className="w-6 h-6 text-primary animate-spin" />
+          </div>
+          <div className="flex flex-col gap-1 min-w-0">
+            <p className="text-sm font-semibold text-foreground">
+              Ingesting configuration… preparing to generate
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Analysing the background scene once so every pose stays in the same location.
+            </p>
+          </div>
+          <div className="ml-auto">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  onClick={cancelGeneration}
+                  size="sm"
+                  variant="destructive"
+                  className="rounded-xl gap-1.5"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                  Stop
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Cancel before per-pose generation starts. May still incur a small charge for the in-flight analysis call.
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
+      )}
+
       {/* Progress */}
       {results.length > 0 && (
         <div className="space-y-2">
@@ -5047,6 +5468,24 @@ export function StepGenerate({ store }: StepGenerateProps) {
                   : `${completedCount}/${totalCount} completed`}
               </p>
               <div className="flex items-center gap-2">
+                {isGenerating && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        onClick={cancelGeneration}
+                        size="sm"
+                        variant="destructive"
+                        className="rounded-xl gap-1.5"
+                      >
+                        <Square className="w-3.5 h-3.5 fill-current" />
+                        Stop
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Cancels pending and in-flight requests. Already-completed images stay. May still incur charges for requests already in flight on Google&apos;s servers.
+                    </TooltipContent>
+                  </Tooltip>
+                )}
                 {!isGenerating && completedCount > 0 && (
                   <Button
                     onClick={handleDownloadAllSingle}

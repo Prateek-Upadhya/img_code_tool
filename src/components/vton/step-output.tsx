@@ -1423,6 +1423,152 @@ function PoseAccordion({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Skip-aware sequence preview helpers                                */
+/* ------------------------------------------------------------------ */
+/** Parses a comma-separated user input into a deduped array of non-negative integers. */
+function parseSkipIndices(text: string): number[] {
+  return Array.from(
+    new Set(
+      text
+        .split(",")
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isInteger(n) && n >= 0)
+    )
+  );
+}
+
+/** Walks the counter to produce the suffix number for the i-th file given the skip set. */
+function nthSkipAwareCounter(
+  index: number,
+  oneIndexed: boolean,
+  skipIndices: number[]
+): number {
+  const skipSet = new Set(skipIndices);
+  let counter = oneIndexed ? 1 : 0;
+  for (let i = 0; i < index; i++) {
+    counter++;
+    while (skipSet.has(counter)) counter++;
+  }
+  while (skipSet.has(counter)) counter++;
+  return counter;
+}
+
+/** Builds a 3-example preview string for one of the naming-logic radio cards. */
+function buildNamingExample(
+  prefix: string,
+  oneIndexed: boolean,
+  skipIndices: number[]
+): string {
+  const safe = prefix.replace(/[<>:"/\\|?*]+/g, "_");
+  const parts: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const counter = nthSkipAwareCounter(i, oneIndexed, skipIndices);
+    parts.push(
+      !oneIndexed && counter === 0
+        ? `${safe}.png`
+        : `${safe}_${counter}.png`
+    );
+  }
+  return `e.g. ${parts.join(", ")}`;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Naming logic section (radio cards + skip indices + prefix)         */
+/* ------------------------------------------------------------------ */
+function NamingLogicSection({
+  namingLogic,
+  setNamingLogic,
+  singleDownloadPrefix,
+  setSingleDownloadPrefix,
+  skipNamingIndicesText,
+  setSkipNamingIndicesText,
+  mode,
+}: {
+  namingLogic: NamingLogic;
+  setNamingLogic: (v: NamingLogic) => void;
+  singleDownloadPrefix: string;
+  setSingleDownloadPrefix: (v: string) => void;
+  skipNamingIndicesText: string;
+  setSkipNamingIndicesText: (v: string) => void;
+  mode: "single" | "bulk";
+}) {
+  const skipIndices = useMemo(
+    () => parseSkipIndices(skipNamingIndicesText),
+    [skipNamingIndicesText]
+  );
+
+  const zeroPrefix = mode === "bulk" ? "red_shirt" : singleDownloadPrefix || "product";
+  const onePrefix = mode === "bulk" ? "red_shirt" : singleDownloadPrefix || "product";
+
+  const zeroIndexedExample = buildNamingExample(zeroPrefix, false, skipIndices);
+  const oneIndexedExample = buildNamingExample(onePrefix, true, skipIndices);
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <h3 className="text-base font-semibold text-foreground">Naming Logic</h3>
+        <p className="text-sm text-muted-foreground mt-0.5">
+          How generated images are named when downloading.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <NamingOption
+          value="folder-name-sequential"
+          current={namingLogic}
+          onChange={setNamingLogic}
+          label="Folder name sequential (starts at 0)"
+          description={
+            mode === "bulk"
+              ? "Images are named using the product folder name: folder_name, folder_name_1, folder_name_2, ..."
+              : "Images are named using the download prefix: prefix, prefix_1, prefix_2, ..."
+          }
+          example={zeroIndexedExample}
+        />
+        <NamingOption
+          value="folder-name-sequential-1"
+          current={namingLogic}
+          onChange={setNamingLogic}
+          label="Folder name sequential (starts at 1)"
+          description={
+            mode === "bulk"
+              ? "Images are named using the product folder name starting from _1: folder_name_1, folder_name_2, folder_name_3, ..."
+              : "Images are named using the download prefix starting from _1: prefix_1, prefix_2, prefix_3, ..."
+          }
+          example={oneIndexedExample}
+        />
+      </div>
+      <div className="flex items-center gap-3 flex-wrap">
+        <label className="text-xs text-muted-foreground uppercase tracking-wider font-medium whitespace-nowrap">
+          Skip these numbers
+        </label>
+        <Input
+          value={skipNamingIndicesText}
+          onChange={(e) => setSkipNamingIndicesText(e.target.value)}
+          placeholder="e.g. 3, 7"
+          className="max-w-xs h-8 text-sm font-mono"
+        />
+        <span className="text-xs text-muted-foreground">
+          Comma-separated suffix numbers to skip in the sequence.
+        </span>
+      </div>
+      {mode === "single" && (
+        <div className="flex items-center gap-3">
+          <label className="text-xs text-muted-foreground uppercase tracking-wider font-medium whitespace-nowrap">
+            Download prefix
+          </label>
+          <Input
+            value={singleDownloadPrefix}
+            onChange={(e) => setSingleDownloadPrefix(e.target.value.replace(/[<>:"/\\|?*]+/g, "_"))}
+            placeholder="product"
+            className="max-w-xs h-8 text-sm"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Naming option radio card                                           */
 /* ------------------------------------------------------------------ */
 function NamingOption({
@@ -1608,6 +1754,8 @@ export function StepOutput({ store }: StepOutputProps) {
     setNamingLogic,
     singleDownloadPrefix,
     setSingleDownloadPrefix,
+    skipNamingIndicesText,
+    setSkipNamingIndicesText,
     mode,
     customPoses,
     addCustomPose,
@@ -2103,61 +2251,15 @@ export function StepOutput({ store }: StepOutputProps) {
 
       {/* Naming Logic */}
       {selectedPoses.length > 0 && (
-        <div className="space-y-3">
-          <div>
-            <h3 className="text-base font-semibold text-foreground">Naming Logic</h3>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              How generated images are named when downloading.
-            </p>
-          </div>
-          <div className="space-y-2">
-            <NamingOption
-              value="folder-name-sequential"
-              current={namingLogic}
-              onChange={setNamingLogic}
-              label="Folder name sequential (starts at 0)"
-              description={
-                mode === "bulk"
-                  ? "Images are named using the product folder name: folder_name, folder_name_1, folder_name_2, ..."
-                  : "Images are named using the download prefix: prefix, prefix_1, prefix_2, ..."
-              }
-              example={
-                mode === "bulk"
-                  ? "e.g. red_shirt.png, red_shirt_1.png, red_shirt_2.png"
-                  : `e.g. ${singleDownloadPrefix}.png, ${singleDownloadPrefix}_1.png, ${singleDownloadPrefix}_2.png`
-              }
-            />
-            <NamingOption
-              value="folder-name-sequential-1"
-              current={namingLogic}
-              onChange={setNamingLogic}
-              label="Folder name sequential (starts at 1)"
-              description={
-                mode === "bulk"
-                  ? "Images are named using the product folder name starting from _1: folder_name_1, folder_name_2, folder_name_3, ..."
-                  : "Images are named using the download prefix starting from _1: prefix_1, prefix_2, prefix_3, ..."
-              }
-              example={
-                mode === "bulk"
-                  ? "e.g. red_shirt_1.png, red_shirt_2.png, red_shirt_3.png"
-                  : `e.g. ${singleDownloadPrefix}_1.png, ${singleDownloadPrefix}_2.png, ${singleDownloadPrefix}_3.png`
-              }
-            />
-          </div>
-          {mode === "single" && (
-            <div className="flex items-center gap-3">
-              <label className="text-xs text-muted-foreground uppercase tracking-wider font-medium whitespace-nowrap">
-                Download prefix
-              </label>
-              <Input
-                value={singleDownloadPrefix}
-                onChange={(e) => setSingleDownloadPrefix(e.target.value.replace(/[<>:"/\\|?*]+/g, "_"))}
-                placeholder="product"
-                className="max-w-xs h-8 text-sm"
-              />
-            </div>
-          )}
-        </div>
+        <NamingLogicSection
+          namingLogic={namingLogic}
+          setNamingLogic={setNamingLogic}
+          singleDownloadPrefix={singleDownloadPrefix}
+          setSingleDownloadPrefix={setSingleDownloadPrefix}
+          skipNamingIndicesText={skipNamingIndicesText}
+          setSkipNamingIndicesText={setSkipNamingIndicesText}
+          mode={mode}
+        />
       )}
     </div>
   );
