@@ -266,16 +266,36 @@ The reference image${plural ? "s are" : " is"} visible to YOU ONLY. The downstre
 
 EXTRACT and DESCRIBE the following aspects:
 
-1. ${isProductOnlyShot ? "PRODUCT ARRANGEMENT & GEOMETRY" : "POSE & SUBJECT GEOMETRY"}:
+1A. ${isProductOnlyShot ? "PRODUCT ARRANGEMENT & GEOMETRY" : "POSE & SUBJECT GEOMETRY"}:
 ${isProductOnlyShot
     ? `   - Product orientation and tilt expressed in degrees, arrangement (single, paired, stacked, leaning, suspended), surface contact behavior, relative spacing
-   - Camera angle in degrees, camera distance, framing/crop boundaries (what enters the frame at top/bottom/left/right edges)`
+   - Where each product sits in the frame and how the products relate spatially to each other and to any anchors (props, surfaces, edges)`
     : `   - Body position, weight distribution, hip angle, torso tilt, shoulder line, head/gaze direction, arm/hand placement, foot placement (with feet directions in degrees relative to camera)
-   - Camera angle in degrees (e.g., "30-degree low angle"), camera distance, framing/crop boundaries (what enters the frame at top/bottom/left/right edges)`}
+   - Limb joint angles, finger curl, gaze vector (where the eyes look in degrees relative to the camera optical axis), facial expression cue
+   - Any contact with props, walls, floor, or anchors (which body part touches what, with what pressure)`}
+
+1B. FRAMING & CROP CONTRACT — DENSE, DETERMINISTIC, NON-NEGOTIABLE (this section is the single most important determinant of run-to-run framing consistency — translate every camera and crop attribute into concrete, measurable, photographer-grade English so two consecutive generations cannot drift):
+   - SHOT TYPE NAME (pick the SINGLE best match from this canonical vocabulary and name it explicitly): extreme close-up, close-up, medium close-up (chest-up), medium shot (waist-up), medium-long shot (mid-thigh / cowboy shot), long shot (full-length / full-body), wide shot, extreme wide shot${isProductOnlyShot ? ", product macro, product flat-lay, product hero shot" : ""}. State the named shot type in plain words — Nano Banana / gemini-3.1-flash-image-preview treats this name as a top-tier composition signal.
+   - FOCAL-LENGTH EQUIVALENT (35 mm full-frame): pick a concrete number from {24 mm, 28 mm, 35 mm, 50 mm, 85 mm, 105 mm, 135 mm, 200 mm} that best matches the perspective compression and depth feel of the reference. Lower = wider / more environmental context; higher = tighter / more compressed background.
+   - CAMERA DISTANCE: distance from the lens to the subject's ${isProductOnlyShot ? "centroid" : "chest (or to the product centroid for product-only shots)"}, in meters (e.g., "0.6 m", "1.5 m", "3.2 m").
+   - CAMERA HEIGHT relative to the subject: name the reference plane (overhead / above-head / eye-level / chin-level / chest-level / hip-level / knee-level / ankle-level / ground-level) AND the lens tilt in degrees (e.g., "lens at chest-level, tilted up by 8°", "lens at knee-level, level / 0° tilt", "lens directly overhead, tilted straight down at 90°").
+   - DUTCH ANGLE / ROLL: 0° for level horizon; otherwise specify the exact tilt in degrees and direction (e.g., "5° clockwise roll").
+   - ASPECT-RATIO ORIENTATION: portrait / landscape / square (do NOT pick the numeric aspect ratio here — that is decided elsewhere; only describe whether the reference reads taller-than-wide, wider-than-tall, or 1:1).
+   - SUBJECT FILL: percentage of the FRAME HEIGHT occupied by the ${isProductOnlyShot ? "main product silhouette" : "subject's silhouette from top-of-head to lowest visible point"} (e.g., "subject occupies ~78% of frame height", "product occupies ~55% of frame height").
+   - SUBJECT PLACEMENT: normalized rule-of-thirds coordinates of the subject's center of mass (x_center in 0.00–1.00 from left, y_center in 0.00–1.00 from top) plus a one-line caption (e.g., "x_center=0.50, y_center=0.55 — centered, slightly low"; "x_center=0.33, y_center=0.50 — left-third").
+   - TOP CROP — ANATOMICAL ANCHOR (this is the line that stops framing drift): describe the EXACT vertical position where the top edge of the image cuts, pegged to a named ${isProductOnlyShot ? "product or scene" : "anatomical"} landmark, using the same imperative style this codebase already uses for preset framings. Examples (for shape only): "frame top sits ~4 cm above the model's crown leaving a thin band of headroom"; "frame top cuts mid-forehead, the hairline is fully visible but the crown is cropped"; "frame top is at the model's clavicle line, the head is entirely outside the frame"; "frame top is at the upper edge of the toe-cap with ~3 cm of empty backdrop above".
+   - BOTTOM CROP — ANATOMICAL ANCHOR: same treatment for the bottom edge. Examples (for shape only): "frame bottom cuts ~2 cm above the patella, the knee is NOT visible"; "frame bottom cuts at mid-calf, the lower calf and feet are entirely cropped"; "frame bottom is at the toe-tip with ~5 cm of visible floor"; "frame bottom is just below the lower ribcage, strictly above the natural waistline".
+   - LEFT CROP and RIGHT CROP: how far each side extends past the subject. Anchor each side to either an anatomical landmark (e.g., "frame left sits ~8 cm outboard of the model's left shoulder"; "frame right cuts at the model's right elbow with the forearm exiting the frame") OR a scene element ("frame left is at the leading edge of the column"; "frame right is at the doorway jamb").
+   - DEPTH OF FIELD: pick one — deep focus (entire scene sharp), mild background blur (background softens but reads), pronounced bokeh (background reduced to circles of confusion). Then name WHERE the focal plane sits (e.g., "focal plane on the model's eyes; background falls off to soft-blur beyond ~2 m").
+   - HORIZON LINE (only if visible): vertical position in the frame as a fraction from the top (e.g., "horizon at y=0.42"; "no horizon visible — interior").
+
+After extracting the above, EMIT the entire 1B block — verbatim, with these exact field labels — as a labeled FRAMING & CROP CONTRACT section near the TOP of your final output prompt (immediately after the OPENING LINE and BEFORE the pose paragraph, scene paragraph, and lighting paragraph). The downstream image generator reads composition as a first-class element; emitting the contract early and verbatim is what guarantees consistent framing across generations.
+
+FRAMING LOCK — NON-NEGOTIABLE: The TOP CROP anatomical anchor and the BOTTOM CROP anatomical anchor extracted above are the SOLE source of truth for the vertical boundaries of EVERY generation of this custom pose. The crop point MUST remain pegged to the SAME named anatomical landmark across all outputs regardless of whether the model is standing still, shifting weight, gesturing, or being shot with a different garment — the crop does NOT drift up or down between images. The SHOT TYPE NAME, FOCAL-LENGTH EQUIVALENT, CAMERA DISTANCE, CAMERA HEIGHT, DUTCH ANGLE, and SUBJECT FILL are likewise locked: do NOT re-derive, paraphrase, swap synonyms (e.g., do not switch between "mid-thigh" and "cowboy shot" between images), or let the framing breathe between generations. Two consecutive outputs of this custom pose with the same product and the same model MUST read as two takes from the same shutter burst — identical crop, identical lens, identical camera height, identical subject placement.
 
 2. SCENE & ENVIRONMENT (describe in product-agnostic terms — replace any literal ${productNoun} or product-specific element from the reference with neutral compositional language):
    - Background type (studio cyclorama, outdoor location, indoor environment, abstract surface, architectural setting, etc.)
-   - Surfaces, textures, materials, depth of field, atmospheric character (haze, glare, bloom, fog, dust, grain)
+   - Surfaces, textures, materials, atmospheric character (haze, glare, bloom, fog, dust, grain)
    - Compositional props (only as anchors — never as product-specific elements)
 
 3. LIGHTING & MOOD:
@@ -284,9 +304,8 @@ ${isProductOnlyShot
    - Shadow behavior (long, soft, hard-edged, multiple, none)
    - Overall mood (editorial, lifestyle, gritty, dreamy, minimalist, cinematic, golden-hour, blue-hour, etc.)
 
-4. COMPOSITION & STYLING:
-   - Subject placement (rule-of-thirds, golden ratio, centered, off-center) and how the subject fills the frame
-   - Negative space distribution, leading lines, layering, visual rhythm
+4. COMPOSITION & STYLING (subject placement and depth-of-field are already captured in 1B above — do NOT repeat them here; this section is reserved for the secondary compositional structure):
+   - Negative space distribution, leading lines, layering, visual rhythm, foreground/background hierarchy
 
 5. COLOR PALETTE — CRITICAL THREE-STEP ANALYSIS (this is the single most important step in IMAGE REFERENCE MODE):
    STEP 5A — REFERENCE PALETTE: Inspect the reference image and list its 4-6 dominant colors as exact hex codes with role labels. Format: "background-primary: #RRGGBB, mid-tone: #RRGGBB, accent: #RRGGBB, highlight: #RRGGBB, shadow: #RRGGBB".
@@ -1212,9 +1231,11 @@ Your extracted pose description must work identically for ANY footwear product p
 1. OPENING LINE (verbatim):
    "A professional e-commerce product photograph of the exact footwear shown in the provided reference images. CRITICAL: Preserve the exact colors, materials, branding, shape, and design details of the provided input footwear."
 
-2. ANGLE & ORIENTATION: A DENSE, SELF-CONTAINED paragraph extracted from the custom pose — specify camera angle in degrees, camera distance, footwear/body orientation, toe direction, sole visibility angle, and all geometric relationships needed to reconstruct the shot without any reference image.
+${isCustomPoseImageMode ? `1.5. FRAMING & CROP CONTRACT (IMAGE REFERENCE MODE — INSERT IMMEDIATELY AFTER THE OPENING LINE, BEFORE EVERY OTHER SECTION): Reproduce the entire 1B FRAMING & CROP CONTRACT block from the EXTRACTION RULES above, with every field filled in with concrete values — Shot Type Name, Focal-Length Equivalent (mm), Camera Distance (m), Camera Height + lens tilt (degrees), Dutch Angle (degrees), Aspect-Ratio Orientation, Subject Fill (% of frame height), Subject Placement (x_center / y_center), Top Crop Anatomical Anchor, Bottom Crop Anatomical Anchor, Left Crop, Right Crop, Depth of Field, Horizon Line. The downstream image generator reads composition as a first-class signal and weights the earliest tokens most heavily — emitting the contract first is what locks the framing across consecutive generations. Reproduce field labels verbatim and values exactly as extracted; do NOT paraphrase, soften, or omit any field.
 
-3. FRAMING & COMPOSITION: Exact frame boundaries (what is cropped at each edge), subject placement (percentage or rule-of-thirds), negative space distribution, and overall compositional approach.
+` : ""}2. ANGLE & ORIENTATION: A DENSE, SELF-CONTAINED paragraph extracted from the custom pose — specify camera angle in degrees, camera distance, footwear/body orientation, toe direction, sole visibility angle, and all geometric relationships needed to reconstruct the shot without any reference image.${isCustomPoseImageMode ? " All values declared here MUST be consistent with the FRAMING & CROP CONTRACT in section 1.5 — never contradict it." : ""}
+
+3. FRAMING & COMPOSITION: ${isCustomPoseImageMode ? "In IMAGE REFERENCE MODE the FRAMING & CROP CONTRACT in section 1.5 is the SOLE source of truth for frame boundaries, subject placement, focal-length, camera height, dutch angle, subject fill, and depth of field. In this section, only the secondary composition elements (negative space distribution, leading lines, layering, visual rhythm, foreground/background hierarchy) are described. Do NOT re-derive, paraphrase, or contradict the contract." : "Exact frame boundaries (what is cropped at each edge), subject placement (percentage or rule-of-thirds), negative space distribution, and overall compositional approach."}
 
 4. LIGHTING & SHADOW: Describe a clean, intentional relight (professional studio terms) that matches the USER's background from SCENE PARAMETERS — neutralize any color cast or messy shadow character from cluttered source product photos. Do not preserve on-location lighting cues from the product reference images.
 
@@ -1359,6 +1380,47 @@ Based on the custom ${isProductOnlyShot ? "arrangement" : "pose"} description${c
 - Which garment details would be most visible from this angle and framing
 Then describe those visible garment details with maximum precision. Describe the pose/arrangement geometry itself with equal precision so the image generator can reconstruct it from the text alone.`}
 
+${isCustomPoseImageMode ? `═══ OUTPUT-PROMPT STRUCTURE MANDATE (IMAGE REFERENCE MODE) ═══
+Your final output prompt MUST open with the FRAMING & CROP CONTRACT section (the entire 1B block from the EXTRACTION RULES above, with every field filled in with concrete values — Shot Type Name, Focal-Length Equivalent, Camera Distance, Camera Height, Dutch Angle, Aspect-Ratio Orientation, Subject Fill, Subject Placement, Top Crop Anatomical Anchor, Bottom Crop Anatomical Anchor, Left/Right Crop, Depth of Field, Horizon Line). Emit this block BEFORE any pose paragraph, scene paragraph, lighting paragraph, or garment-detail paragraph. The downstream image generator (gemini-3.1-flash-image-preview) treats composition as a first-class signal and reads the earliest tokens with the highest weight — putting the contract first is what locks the framing across consecutive generations. After the contract, append the pose paragraph, the scene paragraph, the lighting paragraph, and the garment-detail paragraph, all of which MUST remain consistent with the values declared in the contract. NEVER paraphrase, soften, or omit the contract. Reproduce its field labels verbatim and its values exactly as you extracted them.
+` : ""}
+${isCustomPoseImageMode && accessories.length > 0 ? `═══ ACCESSORY INTEGRATION CONTRACT (IMAGE REFERENCE MODE + ACCESSORIES) ═══
+The user has attached one or more accessories to this custom pose AND is in IMAGE REFERENCE MODE. The desired output is the reference photograph WITH the accessory naturally added — not a new photoshoot inspired by it. Write the output prompt so the generator reads the reference scene as the immutable stage and treats the accessory as a single, plausible, minimally-invasive overlay on top of it.
+
+ABSOLUTE ANCHORS — must remain pixel-identical to the extraction above (do NOT permit any drift on these axes, even if the accessory feels like it would look better in a slightly different shot):
+- The BACKGROUND / scene / environment, including the ADAPTED BACKGROUND PALETTE (hex codes from STEP 5C) — verbatim.
+- The full FRAMING & CROP CONTRACT (1B): shot type name, focal-length equivalent, camera distance, camera height + lens tilt, dutch angle, aspect-ratio orientation, subject fill, x_center / y_center, top crop anatomical anchor, bottom crop anatomical anchor, left/right crop, depth of field, horizon line — verbatim.
+- The LIGHTING (key/fill/rim direction, quality, color temperature, shadow behavior) and overall MOOD — verbatim.
+- The subject's center of mass, weight distribution, hip angle, torso tilt, shoulder line, overall body axis, foot placement (which foot is planted where, ankle angle, foot direction in degrees), and general head/gaze direction — locked.
+
+PERMITTED MICRO-ADJUSTMENTS — small, plausible, and ONLY where the accessory makes them necessary. These are the ONLY freedoms the meta-prompter and the image generator have when integrating the accessory:
+- Hand and/or wrist position may move up to ~1–3 cm from the reference position.
+- Finger curl, finger spread, and grip may change to hold or interact with the accessory.
+- Head tilt may change by ≤ 5° on any axis.
+- Gaze direction may change by ≤ 10°.
+- Any individual limb joint angle (elbow, wrist, knee, ankle, neck) may change by ≤ 8°, but ONLY where required by the accessory; all other joints remain at the reference angles.
+- No other body geometry may change: do NOT re-stage the stance, do NOT swap weight-bearing legs, do NOT reframe the camera, do NOT move the subject's center of mass, do NOT introduce new arm gestures unrelated to the accessory.
+
+PER-ACCESSORY INTEGRATION DIRECTIVE — match the micro-adjustment to the accessory category visible in the SCENE PARAMETERS. Use this lookup as the guide and weave the chosen interaction into the pose paragraph in concrete, photographer-style prose (not as a tag list):
+- necklace / pendant — drape over the collarbone area as worn; no pose change beyond placement.
+- earrings — worn through earlobe; permit only a ≤ 5° head tilt to expose the ear to camera if the reference angle hides it; otherwise no change.
+- watch — worn on a wrist; rotate that wrist up to ~15° toward camera ONLY if needed to make the dial readable, but keep the elbow / shoulder / hand position otherwise identical to the reference.
+- bracelet / anklet — worn on the corresponding joint; subtle wrist or ankle rotation only if needed for visibility.
+- ring — worn on a finger; subtle finger curl + the wearing hand may be drawn slightly closer to a natural resting zone (waist / hip / chin) so the ring reads in frame, within the 1–3 cm hand-movement budget.
+- sunglasses — seated naturally on the bridge of the nose; eyes covered; no head, neck, or body pose change.
+- shoes — worn on the feet; do NOT alter foot placement or weight distribution; if the reference framing hides the feet, do NOT widen the crop — accept that the shoes will read only at the edge of frame.
+- belt — worn at the natural waist; one hand may rest lightly on the belt or hip if the reference's arm position is already near the waist, within the 1–3 cm hand-movement budget; otherwise no change.
+- hat — seated on the crown of the head; no pose change.
+- scarf — draped over the neck/shoulders; head, neck, and shoulders remain at the reference angles.
+- handbag — held by one hand on its strap or top handle at hip level; the holding hand and elbow may flex within the budget to support the bag; the other arm and full body stay at the reference.
+- clutch — held in one hand; that single arm may flex within the budget to bring the clutch into the natural carry position; everything else stays at the reference.
+- tie — knotted at the collar; torso, neck, and arms stay at the reference angles; only the knot and drape are added.
+- brooch — placed on the garment at the appropriate point (lapel / shoulder / neckline); no pose change.
+- cufflinks — at the shirt cuffs; a wrist may rotate ≤ 15° to expose a cuff to camera within the budget; otherwise no change.
+- hair-accessory — placed in the hair (clip / headband / scrunchie / barrette); no pose change.
+- CUSTOM accessory — read the user's text description in SCENE PARAMETERS; integrate it using the smallest plausible micro-adjustment from the budget above. If the description does not imply interaction, treat it as a placement-only accessory.
+
+RESULT TEST: A viewer placing the reference image and your final generated image side-by-side must read them as the SAME photograph taken seconds apart, with the SAME subject in the SAME stance in the SAME stage under the SAME light — the only visible difference being that the accessory is now present and the model is interacting with it through the smallest possible adjustment. If the test would fail (because the framing has drifted, the camera has moved, the stance has changed, the lighting has shifted, or the background has been re-staged), the output prompt is wrong — rewrite it to honor the contract.
+` : ""}
 ${garmentTypeInstruction}
 ${lengthOverridesBlock}
 
