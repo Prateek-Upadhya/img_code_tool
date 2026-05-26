@@ -316,6 +316,17 @@ export function useVTONStore() {
     []
   );
 
+  /**
+   * Model Swap (single mode): per-source-image Pose Variation toggle.
+   * When true, the generated image is allowed subtle pose changes while preserving
+   * framing and body orientation. When false (default), the original pose is reproduced exactly.
+   */
+  const setGarmentImagePoseVariation = useCallback((id: string, value: boolean) => {
+    setGarmentImages((prev) =>
+      prev.map((img) => (img.id === id ? { ...img, poseVariation: value } : img))
+    );
+  }, []);
+
   const addComplementaryImage = useCallback((image: ComplementaryImage) => {
     setComplementaryImages((prev) => [...prev, image]);
   }, []);
@@ -680,6 +691,18 @@ export function useVTONStore() {
   const updatePrimaryFolderBottomwearLength = useCallback((id: string, v: BottomwearLength | null) => {
     setPrimaryFolders((prev) =>
       prev.map((f) => (f.id === id ? { ...f, bottomwearLength: v } : f))
+    );
+  }, []);
+
+  /**
+   * Model Swap (bulk mode): per-ProductFolder Pose Variation toggle.
+   * Applies to all source images in this folder. When true, subtle pose changes are
+   * allowed while preserving framing and body orientation. When false (default),
+   * every image's original pose is reproduced exactly.
+   */
+  const setProductFolderPoseVariation = useCallback((id: string, value: boolean) => {
+    setPrimaryFolders((prev) =>
+      prev.map((f) => (f.id === id ? { ...f, poseVariation: value } : f))
     );
   }, []);
 
@@ -1706,6 +1729,7 @@ export function useVTONStore() {
     removeGarmentImage,
     toggleGarmentBackView,
     setGarmentImageFootwearSide,
+    setGarmentImagePoseVariation,
     complementaryImages,
     addComplementaryImage,
     removeComplementaryImage,
@@ -1781,6 +1805,7 @@ export function useVTONStore() {
     updatePrimaryFolderSleeveLength,
     updatePrimaryFolderTopwearLength,
     updatePrimaryFolderBottomwearLength,
+    setProductFolderPoseVariation,
     bulkSpreadsheetSession,
     setBulkSpreadsheetSession,
     bulkSpreadsheetFilter,

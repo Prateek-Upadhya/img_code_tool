@@ -1,6 +1,8 @@
 "use client";
 
+import { AlertCircle, KeyRound } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import type { VTONStore } from "@/store/vton-store";
 
 interface StepDetailsProps {
@@ -8,10 +10,48 @@ interface StepDetailsProps {
 }
 
 export function StepDetails({ store }: StepDetailsProps) {
-  const { additionalInfo, setAdditionalInfo } = store;
+  const { additionalInfo, setAdditionalInfo, featureMode, apiKey } = store;
+  const isModelSwap = featureMode === "model-swap";
+  const hasEnvKey = apiKey.length > 0;
 
   return (
     <div className="space-y-6">
+      {isModelSwap && (
+        <div
+          className={cn(
+            "rounded-xl border p-4 flex items-start gap-3 transition-colors",
+            hasEnvKey
+              ? "border-emerald-500/20 bg-emerald-500/5"
+              : "border-amber-500/30 bg-amber-500/5"
+          )}
+        >
+          {hasEnvKey ? (
+            <KeyRound className="w-4 h-4 mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          ) : (
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+          )}
+          <div className="space-y-0.5">
+            <p
+              className={cn(
+                "text-sm font-medium",
+                hasEnvKey
+                  ? "text-emerald-700 dark:text-emerald-300"
+                  : "text-amber-700 dark:text-amber-300"
+              )}
+            >
+              {hasEnvKey
+                ? "Gemini API key loaded from environment"
+                : "Gemini API key missing from environment"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {hasEnvKey
+                ? "Model Swap reads NEXT_PUBLIC_GEMINI_API_KEY from your .env.local automatically — no manual entry needed."
+                : "Set NEXT_PUBLIC_GEMINI_API_KEY in .env.local and restart the dev server to enable Model Swap generation."}
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="rounded-xl border border-border bg-card p-6 space-y-4 transition-colors hover:shadow-sm">
         <div>
           <h3 className="text-base font-semibold text-foreground">

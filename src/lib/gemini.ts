@@ -1719,17 +1719,60 @@ For reference-image accessories: reproduce the exact same accessory across all p
   // Background details — precedence:
   //   (1) per-pose customBackground (explicit text override)
   //   (2) image-reference mode (adapted palette derived from the holistic reference image)
-  //   (3) frozenSceneDescription — pre-analyzed wide-shot from analyzeBackgroundScene()
+  //   (3) REPLICA mode — global inspiration image with imageReferenceMode === "replica".
+  //       Image is also attached as input to the downstream image-gen call so Nano Banana 2
+  //       can reproduce it pixel-for-pixel; meta-prompt stays terse to avoid contradicting
+  //       the visual reference. See `buildVTONImageContentParts` for the matching directive.
+  //   (4) frozenSceneDescription — pre-analyzed wide-shot from analyzeBackgroundScene()
   //       (replaces global inspiration image; reused VERBATIM across the whole batch)
-  //   (4) global inspiration image (legacy fallback when analysis was skipped or failed)
-  //   (5) global text description
-  //   (6) default fallback
+  //   (5) global inspiration image in classic inspiration mode (legacy fallback when
+  //       analysis was skipped or failed)
+  //   (6) global text description
+  //   (7) default fallback
+  const isReplicaBg =
+    background.mode === "inspiration" &&
+    background.imageReferenceMode === "replica" &&
+    !!background.inspirationImage;
   let bgInstruction = "";
-  const useFrozenScene = !customPose?.customBackground && !isCustomPoseImageMode && !!frozenSceneDescription;
+  const useFrozenScene =
+    !customPose?.customBackground &&
+    !isCustomPoseImageMode &&
+    !isReplicaBg &&
+    !!frozenSceneDescription;
   if (customPose?.customBackground) {
     bgInstruction = `Background/environment description (CUSTOM FOR THIS POSE — DETERMINISTIC): ${customPose.customBackground}\nBACKGROUND LOCK: Reproduce this description VERBATIM in every output prompt — identical wording, identical colors, identical elements. Do NOT paraphrase, add synonyms, introduce creative variations, or reinterpret. If colors are specified, repeat them as exact hex/RGB values. Every pose in this batch must share a pixel-identical backdrop.`;
   } else if (isCustomPoseImageMode) {
     bgInstruction = `Background/environment description (DERIVED FROM HOLISTIC IMAGE REFERENCE — DETERMINISTIC):\nThe background for this custom pose is NOT taken from the global SCENE PARAMETERS. Instead, derive it from the HOLISTIC IMAGE REFERENCE — EXTRACTION RULES block above. Specifically:\n  • Use the SCENE & ENVIRONMENT, LIGHTING & MOOD, and COMPOSITION & STYLING extracted from the reference (rendered in product-agnostic language).\n  • Use the ADAPTED BACKGROUND PALETTE (STEP 5C) as the literal color specification — write its 4-6 hex codes verbatim into the BACKGROUND section of your output prompt with their role labels intact.\n  • Maintain the reference image's mood and atmospheric character; the adapted palette only retunes hue/value/chroma to highlight the user's product, never the underlying mood.\nBACKGROUND LOCK: Once derived, lock the resulting backdrop description and the adapted hex codes for the entire batch. Reuse the SAME description and the SAME hex codes word-for-word across every pose so all outputs share one pixel-consistent stage. Do NOT re-derive between poses, do NOT introduce synonym swaps, do NOT drift toward white or any other unspecified color.`;
+  } else if (isReplicaBg && background.inspirationImage) {
+    // ═══ REPLICA MODE ═══
+    // Attach the inspiration image so the meta-prompter (Gemini 3.1 Pro) sees it and can
+    // emit a BACKGROUND section that defers to the attached reference. The image is ALSO
+    // attached at the image-gen step (see `buildVTONImageContentParts`) where Nano Banana
+    // 2 performs the actual replication. The meta-prompt stays intentionally terse here
+    // because Google's Nano Banana prompting guide (https://cloud.google.com/blog/products/ai-machine-learning/ultimate-prompting-guide-for-nano-banana)
+    // recommends short, role-labelled references over long re-descriptions when the goal
+    // is exact reproduction — verbose textual re-description tends to compete with the
+    // image input and degrade fidelity.
+    parts.push({
+      text: `\n\n═══ BACKGROUND REPLICATION REFERENCE (REPLICA MODE) ═══\nThe image below is the EXACT background environment the user wants reproduced in every output of this batch. It will ALSO be attached directly to the downstream image-generation model (Nano Banana 2 / gemini-3.1-flash-image-preview). Treat it as the SOLE source of truth for scene, composition, palette, lighting, materials, and atmosphere — do NOT describe a different scene, do NOT default to a studio backdrop, and do NOT invent elements absent from this image.`,
+    });
+    const bgBase64 = await fileToBase64(background.inspirationImage.file);
+    parts.push({
+      inlineData: {
+        mimeType: background.inspirationImage.file.type,
+        data: bgBase64,
+      },
+    });
+    bgInstruction = `Background/environment description (REPLICA MODE — EXACT REPRODUCTION OF ATTACHED REFERENCE):
+The user has attached a BACKGROUND REPLICATION REFERENCE image (see above). The downstream image generator will receive this same image directly with a strict replication directive. Your job is to write the BACKGROUND section of the output prompt so that it (a) defers to the attached reference as the sole source of truth, and (b) explicitly names the photographic anchors the image generator must preserve.
+
+WRITE the BACKGROUND section of your output prompt as a short, focused paragraph (3–5 sentences) that:
+  • States that the background is replicated EXACTLY from the BACKGROUND REPLICATION REFERENCE image attached to this generation.
+  • Names the specific anchors to lock from the reference: overall composition / framing of the environment, perspective and vanishing point, palette (warm/cool/neutral tendency), light direction and color temperature, surface materials (walls, floor, props), depth of field, and atmospheric quality.
+  • Instructs that the lighting on the model must be HARMONIZED with the scene's existing light direction and color temperature so the model looks naturally embedded in the reference scene (this is the ONLY light cue derived from the reference — do NOT extract a flat high-key override).
+  • Explicitly forbids importing any pixel of the product reference photos' original surroundings (floors, walls, props, color spill) into the output.
+
+BACKGROUND LOCK: Use the same BACKGROUND wording across every pose in this batch so the batch reads as one coherent shoot. Do NOT paraphrase between poses, do NOT swap synonyms, do NOT add or remove anchors. Do NOT invent specific landmarks, brand names, or text content not visible in the reference image.`;
   } else if (useFrozenScene) {
     bgInstruction = `Background/environment description (PRE-ANALYZED WIDE-SHOT — FROZEN FOR THE ENTIRE BATCH):
 The complete scene has already been analyzed once for this Generate batch. Below is the FROZEN SCENE DESCRIPTION — it is the SOLE source of truth for the background. Use it VERBATIM. Do NOT re-derive, paraphrase, swap synonyms, drift toward a default studio backdrop, or introduce any creative variation between poses.
@@ -1834,8 +1877,9 @@ ${additionalInfo ? `Additional Instructions: ${additionalInfo}` : ""}
 BACKGROUND PRECEDENCE (ABSOLUTE, IN THIS ORDER):
   (a) If a per-pose CUSTOM POSE background is given, it is the SOLE source of truth — use it verbatim.
   (b) Otherwise, if the custom pose is in IMAGE REFERENCE MODE, the SOLE source of truth is the holistic extraction above — specifically the SCENE / LIGHTING / COMPOSITION descriptors plus the ADAPTED BACKGROUND PALETTE (STEP 5C, hex codes verbatim). Do NOT mix in the global SCENE PARAMETERS background in this case.
+  (b2) Otherwise, if REPLICA MODE is active (a BACKGROUND REPLICATION REFERENCE image is attached to this generation), that attached image is the SOLE source of truth. Your BACKGROUND section MUST defer to the attached reference verbatim — the downstream image generator will receive the same image and replicate it exactly. Do NOT re-describe the scene in long prose, do NOT extract a flat high-key lighting override, and do NOT invent landmarks or text not visible in the reference. The only lighting cue you may transfer to the model is harmonization with the scene's existing light direction and color temperature.
   (c) Otherwise, if the user provided a BACKGROUND inspiration image or text description in SCENE PARAMETERS, that specification is the SOLE source of truth — use it verbatim with every color/hex/material/atmospheric cue exactly as the user wrote it.
-  (d) ONLY if the user provided NO background information of any kind (no text, no inspiration image, no per-pose custom background, not in image-reference mode) — i.e. the Background line above is explicitly labeled as a DEFAULT FALLBACK — may you render a pure white (#FFFFFF) studio cyclorama. In every other case, you MUST NOT substitute, default toward, or drift to white (or any other color) that the user did not ask for.
+  (d) ONLY if the user provided NO background information of any kind (no text, no inspiration image, no per-pose custom background, not in image-reference mode, not in replica mode) — i.e. the Background line above is explicitly labeled as a DEFAULT FALLBACK — may you render a pure white (#FFFFFF) studio cyclorama. In every other case, you MUST NOT substitute, default toward, or drift to white (or any other color) that the user did not ask for.
 
 The product reference photos may be taken on cluttered floors, shelves, or outdoor surfaces. That is NOISE: your output prompt must instruct the image generator to extract ONLY the footwear and to build a brand-new scene where the ENTIRE environment (backdrop, floor plane, walls, air, global light) matches ONLY the background line above (or the inspiration image if one was provided). Repeat any hex/RGB color the user gave verbatim in the Background section. For one generation batch, use identical backdrop wording for every pose — no synonym swapping, no "creative variation" between images.
 
@@ -1877,7 +1921,7 @@ ${additionalInfo ? `Additional Instructions (AUTHORITATIVE USER INTENT — treat
 
 ★ ADDITIONAL INSTRUCTIONS HANDLING: If the text above contains guidance about posture, stance, gaze, head tilt, arm/hand positioning, facial expression, mood, or styling attitude, you MUST weave those cues DIRECTLY into the pose description in the output prompt (see NATURAL POSING & SUBTLE VARIATION DIRECTIVE). Do NOT paraphrase the intent away; reflect the user's specific words and intent in concrete, descriptive pose language. When the same guidance applies across many products, express it as a mood with subtle per-generation micro-variations in gaze, head tilt, arm/hand position, and expression — so each output reads as a distinct moment within the same mood.` : ""}
 
-IMPORTANT: The generated prompt must explicitly instruct to preserve ALL garment visual details exactly as shown in the reference images (sleeve length, neckline, color, pattern, fabric texture, and all construction details).${fit ? ` For FIT, the prompt MUST describe the garment as "${fit}" fit (${FIT_OPTIONS.find(f => f.value === fit)?.description || fit}). Do NOT use any other fit descriptor (e.g., do not say "oversized" if the user selected "regular", do not say "slim" if the user selected "relaxed"). The user's fit selection is authoritative.` : ` For FIT, use your best judgment based on the garment images to describe how the garment should fit${isProductOnlyShot ? "" : " on the model"}.`}${lengthOverridesBlock ? ` For GARMENT LENGTH (sleeve / top hemline / bottomwear outseam — whichever the user has specified above), the prompt MUST use the exact label and anatomical-anchor sentence given in GENERATION PARAMETERS. The user's length selection is authoritative and OVERRIDES any visual reading of the garment reference images for those dimensions; preserve every OTHER detail of the garment exactly as shown.` : ""}
+IMPORTANT: The generated prompt must explicitly instruct to preserve ALL garment visual details exactly as shown in the reference images (sleeve length, neckline, color, pattern, fabric texture, and all construction details).${fit ? ` For FIT, the prompt MUST describe the garment as "${fit}" fit (${FIT_OPTIONS.find(f => f.value === fit)?.description || fit}). Do NOT use any other fit descriptor (e.g., do not say "oversized" if the user selected "regular", do not say "slim" if the user selected "relaxed"). The user's fit selection is authoritative.` : ` For FIT, use your best judgment based on the garment images to describe how the garment should fit${isProductOnlyShot ? "" : " on the model"}.`}${lengthOverridesBlock ? ` For GARMENT LENGTH (sleeve / top hemline / bottomwear outseam — whichever the user has specified above), the prompt MUST use the exact label and anatomical-anchor sentence given in GENERATION PARAMETERS. The user's length selection is authoritative and OVERRIDES any visual reading of the garment reference images for those dimensions; preserve every OTHER detail of the garment exactly as shown.` : ""}${isReplicaBg ? `\n\nBACKGROUND REPLICA OVERRIDE: REPLICA MODE is active for this batch — a BACKGROUND REPLICATION REFERENCE image has been attached above. The downstream image generator will also receive that image and replicate it exactly. Keep the BACKGROUND section of the output prompt SHORT (3–5 sentences): defer to the attached reference and name the photographic anchors to preserve (composition, perspective, palette, light direction and color temperature, surface materials, depth of field, atmosphere). Instruct that the model's lighting must be harmonized with the scene's existing light direction and color temperature so the composite reads as naturally embedded. Explicitly forbid carrying over any pixel of the product reference photos' surroundings (floors, walls, props, color spill). Do NOT invent landmarks, brand names, or visible text not present in the reference.` : ""}
 ${!isProductOnlyShot && !isGhostMannequin && !accessories.some(a => a.category === "shoes") ? `\nFOOTWEAR COLOR RULE: When footwear is visible in the frame, the shoes/footwear must NEVER be white or off-white. Always use a non-white color (black, tan, brown, navy, grey, etc.) that complements the outfit. This rule is absolute — no white sneakers, no white shoes of any kind.` : ""}
 ${isGhostMannequin ? "\nCRITICAL: This is a GHOST MANNEQUIN shot. The generated image must show the garment shaped as if worn by an invisible person — three-dimensional, filled with natural body volume, but with ZERO visible human body parts, skin, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? "\nCRITICAL: This is a PRODUCT-ONLY shot. The generated image must show ONLY the garment product — NO human model, NO mannequin body, NO person. Focus entirely on the product." : ""}
 ${accessories.length > 0 ? `\nACCESSORY INSTRUCTION: For accessories with reference images, the prompt MUST instruct the image generator to reproduce the EXACT accessory shown - same design, material, color, and proportions. For AI-chosen accessories (no reference image), FIRST analyze the garment's style category (formal, casual, ethnic/traditional, streetwear, sportswear, luxury, bohemian, etc.) and then select accessories that are STYLISTICALLY COHERENT:
@@ -1925,6 +1969,7 @@ export async function buildVTONImageContentParts({
   complementaryImages,
   accessories,
   modelImage,
+  background,
   productCategory = "clothing",
   isProductOnlyShot = false,
   isGhostMannequin = false,
@@ -1935,13 +1980,61 @@ export async function buildVTONImageContentParts({
   complementaryImages: ComplementaryImage[];
   accessories: AccessoryItem[];
   modelImage: ModelImage | null;
+  /**
+   * Optional global background config. Only consulted to enable REPLICA MODE — when
+   * `background.mode === "inspiration"` AND `background.imageReferenceMode === "replica"`
+   * AND `background.inspirationImage` is set, the inspiration image is attached as a
+   * labeled content part and an exact-replication directive is appended to the prompt.
+   * Has no effect in the default inspiration / text / fallback modes.
+   */
+  background?: BackgroundConfig;
   productCategory?: ProductCategory;
   isProductOnlyShot?: boolean;
   isGhostMannequin?: boolean;
   isBackViewPose?: boolean;
 }): Promise<ContentPart[]> {
   const isFootwear = productCategory === "footwear";
+  const isReplicaBg =
+    !!background &&
+    background.mode === "inspiration" &&
+    background.imageReferenceMode === "replica" &&
+    !!background.inspirationImage;
   const parts: ContentPart[] = [];
+
+  // ═══ REPLICA-MODE PROMPT FRAGMENTS ═══
+  // Prompting strategy is derived from Google Cloud's "Ultimate prompting guide for
+  // Nano Banana" (https://cloud.google.com/blog/products/ai-machine-learning/ultimate-prompting-guide-for-nano-banana)
+  // and Google's "7 tips to get the most out of Nano Banana Pro"
+  // (https://blog.google/products-and-platforms/products/gemini/prompting-tips-nano-banana-pro):
+  //   • Role-label every reference image so the model unambiguously assigns it a job
+  //     ("Use Image A for the character's pose, Image B for the art style, Image C for
+  //     the background environment.")
+  //   • Use positive framing — "preserve / match / replicate" rather than "do not change".
+  //   • Be photographically specific — name composition, light direction, color
+  //     temperature, materials, depth-of-field, atmosphere — not just "the background".
+  //   • Sequence the operation: lock background → composite subject → harmonize light.
+  // The directive below is repeated near the end of the prompt (recency anchor) to
+  // counter long-context drift, mirroring the practice recommended in the same guide.
+  const replicaReferenceHeader =
+    "═══ BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE ═══\n" +
+    "The image below is the EXACT background environment for the generated photo. " +
+    "Replicate it precisely: preserve its overall composition and framing, perspective and vanishing point, " +
+    "color palette, light direction and color temperature, surface materials (walls, floor, props), " +
+    "depth of field, and atmospheric quality. " +
+    "The ONLY change versus this reference is that the model wearing the product is composited into the scene; " +
+    "harmonize the lighting on the model with the scene's existing light direction and color temperature so the " +
+    "composite reads as a natural, unedited photograph. " +
+    "Do NOT invent landmarks, brand names, or visible text that are not present in this image, and do NOT default " +
+    "to a studio backdrop, white cyclorama, or any other environment.";
+  const replicaDirective =
+    "\n\n═══ BACKGROUND REPLICATION DIRECTIVE (MANDATORY — APPLY IN THIS ORDER) ═══\n" +
+    "Step 1 — Lock the background from the BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image above. " +
+    "Preserve its composition, perspective, palette, light direction, color temperature, surface materials, " +
+    "depth-of-field, and atmospheric quality with pixel-level fidelity.\n" +
+    "Step 2 — Composite the model wearing the product into that locked scene. Harmonize the lighting on the model " +
+    "with the scene's existing light direction and color temperature so the model is naturally embedded — not pasted on.\n" +
+    "Step 3 — Product reference photos define product identity ONLY. Do NOT carry over their original surroundings, " +
+    "floors, walls, props, or color spill into the output. The background comes EXCLUSIVELY from the BACKGROUND ENVIRONMENT reference above.";
 
   if (isFootwear) {
     const hasFootwearSideLabel = garmentImages.some((img) => img.footwearSide);
@@ -2011,14 +2104,38 @@ export async function buildVTONImageContentParts({
       }
     }
 
+    // ═══ BACKGROUND ENVIRONMENT REFERENCE (REPLICA MODE) ═══
+    // Attached as the FINAL image so Nano Banana 2 reads it as the scene-anchor input,
+    // not as additional product detail. Role label follows Google's Nano Banana prompting
+    // guidance (assign each reference image a single clear role).
+    if (isReplicaBg && background?.inspirationImage) {
+      parts.push({ text: `\n${replicaReferenceHeader}` });
+      const bgBase64 = await fileToBase64(background.inspirationImage.file);
+      parts.push({
+        inlineData: {
+          mimeType: background.inspirationImage.file.type,
+          data: bgBase64,
+        },
+      });
+    }
+
     // ═══ GENERATION PROMPT + MANDATORY FIDELITY REQUIREMENTS ═══
     parts.push({
       text: `\n═══ GENERATION INSTRUCTIONS ═══\n${prompt}\n\n` +
-        `═══ BACKGROUND & ENVIRONMENT (gemini-3.1-flash-image-preview) ═══\n` +
-        `The scene, backdrop, surfaces, atmosphere, and global lighting MUST follow ONLY the generation prompt text above (which encodes the user's intended environment). ` +
-        `Do NOT substitute a white studio backdrop, a neutral grey cyclorama, or any other default environment when the prompt above describes a different scene — the prompt's background description is the SOLE source of truth. Render a pure white (#FFFFFF) cyclorama ONLY if the prompt above itself specifies one. ` +
-        `Treat the product reference photos as defining footwear identity only: ZERO transfer of their original location, flooring, walls, props, or spill light from those photos. ` +
-        `Relight the footwear so it belongs in that described environment (shadow softness, color temperature, and wrap consistent with that backdrop).\n\n` +
+        (isReplicaBg
+          ? `═══ BACKGROUND & ENVIRONMENT (REPLICA MODE — gemini-3.1-flash-image-preview) ═══\n` +
+            `The background environment is REPLICATED EXACTLY from the BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image attached above. ` +
+            `Preserve its composition, perspective, palette, light direction, color temperature, surface materials, depth-of-field, and atmosphere with pixel-level fidelity. ` +
+            `Do NOT substitute a white studio backdrop, a neutral grey cyclorama, or any other default environment. ` +
+            `Treat the product reference photos as defining footwear identity only: ZERO transfer of their original location, flooring, walls, props, or spill light from those photos. ` +
+            `Relight the footwear so it belongs in the replicated environment (shadow softness, color temperature, and wrap consistent with that backdrop).` +
+            replicaDirective +
+            `\n\n`
+          : `═══ BACKGROUND & ENVIRONMENT (gemini-3.1-flash-image-preview) ═══\n` +
+            `The scene, backdrop, surfaces, atmosphere, and global lighting MUST follow ONLY the generation prompt text above (which encodes the user's intended environment). ` +
+            `Do NOT substitute a white studio backdrop, a neutral grey cyclorama, or any other default environment when the prompt above describes a different scene — the prompt's background description is the SOLE source of truth. Render a pure white (#FFFFFF) cyclorama ONLY if the prompt above itself specifies one. ` +
+            `Treat the product reference photos as defining footwear identity only: ZERO transfer of their original location, flooring, walls, props, or spill light from those photos. ` +
+            `Relight the footwear so it belongs in that described environment (shadow softness, color temperature, and wrap consistent with that backdrop).\n\n`) +
         `═══ MANDATORY PRODUCT FIDELITY REQUIREMENTS ═══\n` +
         `The footwear in the generated image MUST be a pixel-accurate reproduction of the PRODUCT REFERENCE IMAGES provided above. This is non-negotiable:\n\n` +
         `• SHAPE, SILHOUETTE & INTERNAL PROPORTIONS: Identical overall shape and silhouette AND identical internal proportions. The SOLE THICKNESS, midsole stack height, toe-box form and depth, heel height, toe-spring, profile curvature, collar height, upper-to-sole ratio, and outsole length-to-width ratio are copied from the reference product with zero deviation. Do NOT thicken the sole, inflate the midsole, bulk up the toe box, heighten the heel, stylize a chunkier/sportier silhouette, or otherwise exaggerate the shoe beyond what the reference photos show — keep it slim when the reference is slim, keep it flat when the reference is flat\n` +
@@ -2043,7 +2160,7 @@ export async function buildVTONImageContentParts({
       backViewSuffix = ` ★★★ BACK-VIEW PRIORITY ★★★ The FIRST garment image provided below is the user-tagged BACK VIEW of the garment, and the current pose shows the back of the garment to the camera. For this output you MUST: (1) treat that first back-view image as the SOLE source of truth for the back panel — the back's color, print, graphic, text, embroidery, panel construction, yoke, vent, closure, hemline, and drape ALL come from that image only; (2) NEVER mirror, transfer, or extrapolate any front-side pattern, print, graphic, or design element onto the back — the back may be plain even if the front is patterned, may have a different print, or may have a different color; (3) reproduce every back-side detail visible in that first image with PIXEL-LEVEL fidelity — the back of this garment is the focal point of this shot.`;
     }
     parts.push({
-      text: `${prompt}\n\nIMPORTANT: The garment in the output must match the provided garment reference images EXACTLY - preserve the same sleeve length, neckline, hem length, color, pattern, fabric texture, and every construction detail. Do not modify any garment attributes.${isGhostMannequin ? " This is a ghost mannequin shot — the garment must appear three-dimensional and shaped as if worn by an invisible person. ZERO visible human body, skin, hands, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? " This is a product-only shot — no human model, mannequin body, or person should be visible. Show ONLY the garment product." : modelImage ? " Use the provided model reference photo to generate the EXACT same person - same face, skin tone, hair color, and body type." : ""}${backViewSuffix}`,
+      text: `${prompt}\n\nIMPORTANT: The garment in the output must match the provided garment reference images EXACTLY - preserve the same sleeve length, neckline, hem length, color, pattern, fabric texture, and every construction detail. Do not modify any garment attributes.${isGhostMannequin ? " This is a ghost mannequin shot — the garment must appear three-dimensional and shaped as if worn by an invisible person. ZERO visible human body, skin, hands, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? " This is a product-only shot — no human model, mannequin body, or person should be visible. Show ONLY the garment product." : modelImage ? " Use the provided model reference photo to generate the EXACT same person - same face, skin tone, hair color, and body type." : ""}${backViewSuffix}${isReplicaBg ? "\n\nREPLICA MODE NOTE: A BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image is attached below (after the product and accessory images). The background of this output is replicated EXACTLY from that reference — see the BACKGROUND REPLICATION DIRECTIVE at the end of this message." : ""}`,
     });
     if (modelImage && !isProductOnlyShot) {
       const modelBase64 = await fileToBase64(modelImage.file);
@@ -2069,6 +2186,23 @@ export async function buildVTONImageContentParts({
         parts.push({ inlineData: { mimeType: acc.image.file.type, data: base64 } });
       }
     }
+
+    // ═══ BACKGROUND ENVIRONMENT REFERENCE (REPLICA MODE) ═══
+    // Attached LAST so Nano Banana 2 reads it as the scene anchor (not as another
+    // garment / accessory detail), followed by an explicit replica directive that
+    // restates the operation order. This primacy + recency placement mirrors Google's
+    // Nano Banana prompting guidance for high image-text alignment.
+    if (isReplicaBg && background?.inspirationImage) {
+      parts.push({ text: `\n${replicaReferenceHeader}` });
+      const bgBase64 = await fileToBase64(background.inspirationImage.file);
+      parts.push({
+        inlineData: {
+          mimeType: background.inspirationImage.file.type,
+          data: bgBase64,
+        },
+      });
+      parts.push({ text: replicaDirective });
+    }
   }
 
   return parts;
@@ -2081,6 +2215,7 @@ export async function generateVTONImage({
   complementaryImages,
   accessories,
   modelImage,
+  background,
   aspectRatio,
   productCategory = "clothing",
   isProductOnlyShot = false,
@@ -2095,6 +2230,12 @@ export async function generateVTONImage({
   complementaryImages: ComplementaryImage[];
   accessories: AccessoryItem[];
   modelImage: ModelImage | null;
+  /**
+   * Optional global background config. Forwarded to {@link buildVTONImageContentParts}
+   * to enable REPLICA MODE (when `imageReferenceMode === "replica"` and an inspiration
+   * image is present). Has no effect for any other background configuration.
+   */
+  background?: BackgroundConfig;
   aspectRatio: AspectRatio;
   productCategory?: ProductCategory;
   isProductOnlyShot?: boolean;
@@ -2112,6 +2253,7 @@ export async function generateVTONImage({
     complementaryImages,
     accessories,
     modelImage,
+    background,
     productCategory,
     isProductOnlyShot,
     isGhostMannequin,
@@ -2284,7 +2426,35 @@ Do NOT include any other text.`,
 }
 
 /**
- * Model Swap Step 1: Generate a prompt for model replacement
+ * Model Swap Step 1: Generate a prompt for model replacement.
+ *
+ * The meta-prompter (Gemini 3.1 Pro) reads the source product photo and the new-model
+ * reference, then synthesises a Nano Banana 2 (Gemini 3.1 Flash Image) image-gen prompt
+ * that obeys THREE NON-NEGOTIABLE constraints:
+ *   1. Identity Preservation — the target model's face/skin/hair/build is captured precisely
+ *   2. Clothing Preservation — every garment & accessory in the source is pixel-perfect
+ *   3. Lighting Replication — the new render inherits the source image's light dynamics
+ *      (direction, color temperature, intensity, shadow softness, ambient fill, specular highlights)
+ *
+ * @param poseVariation
+ *   false (default) — reproduce the source pose EXACTLY (same gaze, hands, stance, head tilt).
+ *   true            — retain the EXACT image framing & body orientation, but allow subtle
+ *                     variation in gaze direction, hand positioning, stance, and overall pose.
+ *                     This option is product-level (per source image in single mode,
+ *                     per ProductFolder in bulk mode).
+ *
+ * Prompt-engineering choices applied (sources cited in the PR description):
+ *   - "Identity lock formula" — enumerate specific facial features rather than saying "same person"
+ *     (LaoZhang AI 2026 Nano Banana Pro Face Consistency guide).
+ *   - Order: identity → clothing → lighting → pose, with the most critical constraint first
+ *     and the most failure-prone constraint (lighting transfer) given its own dedicated clause
+ *     (Google Cloud "Ultimate prompting guide for Nano Banana", March 2026).
+ *   - Positive framing — describe what to preserve, not what to avoid
+ *     (Google Cloud guide; vidmuse.ai 2026 person-swap guide).
+ *   - Specific photographic terminology — direction/intensity/color-temperature/softness rather
+ *     than "good lighting" (Skywork "15 Nano Banana Pro Prompts").
+ *   - Verbatim lighting clause carried into the image-gen call so the lighting instruction
+ *     is repeated in both stages of the pipeline (nanobannana.org consistency guidance).
  */
 export async function generateModelSwapPrompt({
   apiKey,
@@ -2297,6 +2467,7 @@ export async function generateModelSwapPrompt({
   aspectRatio,
   additionalInfo,
   productInfo,
+  poseVariation = false,
   previousMismatchFeedback,
 }: {
   apiKey: string;
@@ -2309,6 +2480,11 @@ export async function generateModelSwapPrompt({
   aspectRatio: AspectRatio;
   additionalInfo: string;
   productInfo?: string;
+  /**
+   * Product-level Pose Variation toggle. See function docstring.
+   * Default: false (strict pose preservation).
+   */
+  poseVariation?: boolean;
   previousMismatchFeedback?: string;
 }): Promise<{ text: string; cost: StepCost }> {
   const ai = new GoogleGenAI({ apiKey });
@@ -2319,47 +2495,150 @@ export async function generateModelSwapPrompt({
 
   const keepBackground = backgroundMode === "keep-same";
 
-  parts.push({
-    text: `You are an expert fashion photographer and prompt engineer specializing in COMPLETE MODEL REPLACEMENT in product photography. Your job is to analyze an existing product photo and create a detailed prompt that instructs an AI image generator to COMPLETELY REPLACE the entire human model — every body part from head to toe — with a NEW person, while preserving the clothing and pose.
+  // ─────────────────────────────────────────────────────────────────────────
+  // POSE LOGIC — conditional on the product-level Pose Variation toggle.
+  // OFF: reproduce the source pose EXACTLY (this is the default and historical behavior).
+  // ON:  retain framing + body orientation; allow subtle gaze/hand/stance variation.
+  // ─────────────────────────────────────────────────────────────────────────
+  const poseDirective = poseVariation
+    ? `POSE LOGIC — SUBTLE VARIATION (USER OPTED IN):
+The new model must retain the EXACT image framing of the source photo (same crop, same
+camera angle, same focal length, same composition, same proportion of the frame occupied)
+AND the EXACT body orientation (same direction the torso faces, same shoulder line, same
+foot/feet direction, same overall weight distribution). Within those locks, you ARE allowed
+to introduce SUBTLE, NATURAL variations in:
+  • Gaze direction (e.g., looking slightly off-camera vs. directly at the lens)
+  • Hand and finger positioning (e.g., hand on hip → hand at side; relaxed fingers vs. closed fist)
+  • Stance details (e.g., subtle hip shift, slight weight transfer between feet)
+  • Head tilt or chin angle (subtle, within natural human range)
+  • Facial expression (within the new model's identity — e.g., neutral → soft smile)
+The pose should still read as "the same shot taken a fraction of a second later" — not a
+re-staged photograph. Camera position, lens, framing, and body orientation MUST be locked.`
+    : `POSE LOGIC — STRICT REPRODUCTION (DEFAULT):
+The new model must adopt the EXACT same pose as the original photo. Reproduce IDENTICALLY:
+  • Body position, stance, and weight distribution
+  • Every arm, hand, and finger position
+  • Every leg position and foot orientation
+  • Head angle, head tilt, and chin position
+  • Gaze direction
+  • Facial expression intent
+  • Shoulder line and torso rotation
+Treat the source photo as a strict pose reference — the new model is in the SAME instant
+of the SAME pose, not a re-staged variant.`;
 
-TASK: COMPLETE MODEL REPLACEMENT (NOT a face swap)
-The input is an existing product photo that already shows a model wearing clothing. Your prompt must instruct the image generator to:
-1. REPLACE the ENTIRE human model — this means EVERY visible body part: face, neck, shoulders, arms, hands, fingers, torso, legs, feet. The COMPLETE person must be the new model.
-2. PRESERVE the clothing EXACTLY as it appears — same garment, same fit, same drape, same wrinkles, same colors, patterns, and every construction detail
-3. PRESERVE the exact same POSE — same body position, same arm placement, same leg stance, same head angle, same weight distribution
-4. ${keepBackground ? "PRESERVE the original BACKGROUND exactly — same environment, same lighting conditions, same props, same colors, same depth of field" : "REPLACE the background with the new one described below"}
-5. Maintain the same camera angle, framing, and composition as the original photo
+  parts.push({
+    text: `You are an expert fashion photographer and prompt engineer specialising in COMPLETE MODEL REPLACEMENT for professional product photography. Your job: analyse the supplied ORIGINAL product photo and the NEW MODEL reference, then synthesise a Nano Banana 2 (Gemini 3.1 Flash Image) image-generation prompt that replaces the human model end-to-end while honouring three non-negotiable constraints.
+
+TASK: COMPLETE MODEL REPLACEMENT (NOT a face swap, NOT a compositing edit)
+The input is an existing product photo that already shows a model wearing clothing. Your
+output prompt must instruct the image generator to PHOTOGRAPH A COMPLETELY DIFFERENT PERSON
+in the same scene — every visible body part from head to toe belongs to the new model.
 
 GENDER CONTEXT: ${genderLabel} product
 
-═══════════════════════════════════════════════════════════════
- CRITICAL: THIS IS A FULL-BODY MODEL REPLACEMENT, NOT A FACE SWAP
-═══════════════════════════════════════════════════════════════
-★★★ The #1 most common failure is replacing ONLY the face while keeping the original model's body. This produces a visible skin tone mismatch between face and body. ★★★
+═══════════════════════════════════════════════════════════════════════════════
+THREE NON-NEGOTIABLE CONSTRAINTS — these are the spine of the output prompt
+═══════════════════════════════════════════════════════════════════════════════
 
-Your prompt MUST explicitly instruct the image generator to:
-- Replace the ENTIRE PERSON, not just the face — every square inch of visible skin must belong to the new model
-- The new model's SKIN TONE must be UNIFORM and CONSISTENT across ALL visible body parts: face, neck, décolletage, arms, hands, fingers, legs, feet — there must be ZERO skin tone mismatch
-- The new model's BODY BUILD (musculature, frame, proportions) must be consistent with their reference photo across the entire body
-- Hands and arms must match the new model's skin tone and build — NOT the original model's
-- If legs/feet are visible, they must also belong to the new model with matching skin tone
-- Think of this as photographing a COMPLETELY DIFFERENT PERSON in the same pose wearing the same outfit — not as editing or compositing
+CONSTRAINT 1 — IDENTITY PRESERVATION (the new model's visual identity is captured PRECISELY)
+The output prompt MUST enumerate and lock the following identity attributes of the NEW
+model from the supplied reference photo:
+  • Facial features: eye shape, eye colour, brow shape, nose bridge contour, lip shape
+    and proportions, jawline angle, cheekbone definition, chin shape, ear shape
+  • Skin: exact skin tone, undertone (warm/cool/neutral), texture, freckles/marks/moles
+  • Hair: colour, texture, length, hairline, styling and parting
+  • Body: build, proportions, musculature, shoulder width, frame, height impression
+  • Age impression and overall facial character
+Do NOT use vague phrases like "same person" or "use the reference". Enumerate concrete
+features. The new model's identity must be IMMEDIATELY recognisable as the reference person
+from the first glance — eye shape, nose contour, jawline, and skin tone are the highest-leverage
+cues, so call them out explicitly.
+★★★ Critical sub-rule — UNIFORM SKIN TONE: every visible square inch of skin (face, neck,
+décolletage, arms, hands, fingers, legs, feet) MUST share the EXACT same tone, undertone,
+and texture as the new model's face. The #1 historical failure of this pipeline is a
+face-only swap where the body keeps the original model's skin — that failure mode is
+strictly forbidden. Treat the body parts of the new model as continuous skin from one
+person, not a composite.
 
-ACCURACY REQUIREMENTS:
-- The clothing must remain PIXEL-PERFECT identical — do NOT change any garment attribute (sleeve length, neckline, color, pattern, fabric texture, fit, drape, or construction)
-- The pose must be EXACTLY replicated — same stance, same body angle, same limb positions
-- ${keepBackground ? "The background must remain IDENTICAL to the original photo" : ""}
-- The clothing-to-body interaction must look natural — the garments should fit and drape realistically on the new model's body proportions
+CONSTRAINT 2 — CLOTHING PRESERVATION (the clothing IDENTITY is preserved; ZERO changes)
+The output prompt MUST instruct the image generator to copy EVERY garment and accessory in
+the source photo pixel-for-pixel. Lock down:
+  • Garment silhouette, cut, and overall shape
+  • Fit (slim / regular / oversized — exactly as in the source)
+  • Drape, fall, and the position of every visible wrinkle and fold
+  • Colour, colourway, gradient, and colour placement on the garment
+  • Texture and material appearance (knit, weave, sheen, matte, leather, denim, etc.)
+  • Prints, patterns, motifs, logos, graphics, embroidery, screen prints — in the EXACT
+    position, scale, and orientation they appear in the source
+  • Construction details: necklines, collars, lapels, plackets, button rows, zippers,
+    pocket positions, seams, stitching colour, hem length
+  • Footwear worn in the source (if visible): style, colour, sole shape, laces, hardware
+  • Accessories already worn in the source (watch, jewellery, belt, scarf, bag,
+    sunglasses, hat, etc.): EVERY accessory must remain — same position, same item,
+    same colour, same material. Do NOT add, remove, or substitute accessories.
+The garments are NEVER to be changed. Treat the clothing region of the source as an
+inviolable photo overlay.
 
-${modelImage ? "A reference photo of the NEW model is provided. The generated image must feature this EXACT person — same face, same skin tone (applied uniformly across the ENTIRE body), same hair, and same body proportions. Study the reference photo carefully for the model's skin tone, complexion, and body characteristics, then apply these consistently to every visible body part." : ""}
-${model ? `AI Model to use: ${model.name} — ${model.description}. The entire body must reflect this model's appearance.` : ""}
+CONSTRAINT 3 — LIGHTING REPLICATION (the output's light dynamics MATCH the source EXACTLY)
+The output prompt MUST contain a dedicated lighting clause that instructs the image generator
+to analyse and EXACTLY REPLICATE the source image's lighting on BOTH the new model's skin
+AND every surface of the clothing. Specifically:
+  • LIGHT DIRECTION — the principal light's azimuth and elevation as visible in the source
+    (e.g., "key light high front-left at ~45°", "soft top-down overhead", "back-lit with
+    rim from camera-right"). The new model's facial shadows, nose shadow, chin shadow,
+    and clothing shadows must fall on the SAME sides as in the source.
+  • COLOUR TEMPERATURE — warm tungsten / neutral daylight / cool overcast — match the
+    source's white balance and any colour casts (warm window light, cool studio strobe,
+    golden-hour amber, etc.).
+  • INTENSITY & EXPOSURE — match the source's overall exposure level, key-to-fill ratio,
+    and contrast curve. Bright high-key sources stay bright; moody low-key sources stay moody.
+  • SHADOW SOFTNESS — match the hardness/softness of shadow edges (hard sun =
+    sharp-edged shadows; softbox / overcast = gradient soft shadows). The new model's skin
+    must render the same shadow softness on the same body planes.
+  • AMBIENT / FILL LIGHT — match the ambient fill level on the shadow side of the model.
+    Open shade / studio bounce / dark room ambient — copy whichever is visible in the source.
+  • SPECULAR HIGHLIGHTS — match the position and intensity of specular highlights on the
+    skin (forehead, cheekbones, nose tip, chin, collarbones) and on the clothing
+    (satin sheens, leather highlights, metallic hardware glints, footwear gloss).
+  • RIM / BACK LIGHT (if present) — preserve any rim light hitting the shoulders, hair,
+    or silhouette edge in the source; reproduce it on the new model with matching colour
+    and intensity.
+The goal is photographic indistinguishability: the final image must look like it was
+captured by the SAME photographer, in the SAME studio/location, with the SAME lighting
+setup, at the SAME moment as the source — just with a different person in front of the lens.
+This lighting clause is the difference between "AI-generated swap" and
+"professional real-life photoshoot".
 
-Output ONLY the generation prompt text. The prompt should be 2-4 paragraphs, extremely descriptive, ensuring the COMPLETE model replacement is seamless with uniform skin tone across all visible body parts and the clothing remains perfectly preserved.`,
+═══════════════════════════════════════════════════════════════════════════════
+${poseDirective}
+═══════════════════════════════════════════════════════════════════════════════
+
+ADDITIONAL REQUIREMENTS
+  • The clothing-to-body interaction must look natural — garments fit and drape
+    realistically on the new model's body proportions (the new model may have a
+    slightly different build; the drape must still read as physically correct).
+  • Maintain the same camera angle, framing, and composition as the source.
+  • Professional e-commerce fashion photography quality, photorealistic.
+  • ${keepBackground ? "PRESERVE the original BACKGROUND exactly — same environment, same props, same depth of field, same out-of-focus rendering" : "REPLACE the background with the new background described in the parameters block below; otherwise everything else stays locked"}.
+
+${modelImage ? "A reference photo of the NEW model is provided directly below. Study every facial feature, the skin tone, and the body proportions. Enumerate these explicitly in your output prompt — do not just say 'use the reference'." : ""}
+${model ? `Preset AI Model to use: ${model.name} — ${model.description}. Anchor every body part of the new render to this model's appearance.` : ""}
+
+Output ONLY the generation prompt text (no preamble, no explanation, no commentary). The prompt
+should be 3-5 well-structured paragraphs. Order the prompt as:
+  ¶1 — Identity (enumerate facial features and skin tone from the reference photo)
+  ¶2 — Clothing & accessories preservation (enumerate every garment attribute observed)
+  ¶3 — Lighting replication (enumerate the source's light direction, temperature, softness)
+  ¶4 — Pose ${poseVariation ? "(framing + body-orientation lock + permitted subtle variations)" : "(exact reproduction)"}
+  ¶5 — Composition, framing, background, and final quality directives
+Use natural prose (Nano Banana 2 responds best to descriptive sentences, not keyword lists).
+Use positive framing throughout ("preserve X exactly", "match Y precisely") rather than
+negative phrasing.`,
   });
 
   // Add the source product image
   parts.push({
-    text: "\n\nHere is the ORIGINAL product photo. Analyze the pose, clothing, and composition carefully:",
+    text: "\n\nHere is the ORIGINAL product photo. Analyse the pose, clothing, accessories, AND lighting dynamics carefully — the new render must inherit ALL of these:",
   });
   const sourceBase64 = await fileToBase64(sourceImage.file);
   parts.push({
@@ -2372,7 +2651,7 @@ Output ONLY the generation prompt text. The prompt should be 2-4 paragraphs, ext
   // Add new model reference image
   if (modelImage) {
     parts.push({
-      text: "\n\nHere is the reference photo of the NEW model. The generated image must feature this EXACT person:",
+      text: "\n\nHere is the reference photo of the NEW model. Capture this person's identity PRECISELY — enumerate their eye shape, nose contour, jawline, skin tone & undertone, hair, and build in the prompt:",
     });
     const modelBase64 = await fileToBase64(modelImage.file);
     parts.push({
@@ -2386,7 +2665,7 @@ Output ONLY the generation prompt text. The prompt should be 2-4 paragraphs, ext
   // Background instructions
   let bgInstruction = "";
   if (keepBackground) {
-    bgInstruction = "BACKGROUND: Keep the EXACT same background from the original product photo — same environment, lighting, colors, and atmosphere.";
+    bgInstruction = "BACKGROUND: Keep the EXACT same background from the original product photo — same environment, lighting conditions, props, colours, depth of field, and atmosphere. The lighting clause above also applies to the background.";
   } else if (background.mode === "inspiration" && background.inspirationImage) {
     parts.push({
       text: "\n\nHere is the inspiration image for the NEW background:",
@@ -2398,35 +2677,44 @@ Output ONLY the generation prompt text. The prompt should be 2-4 paragraphs, ext
         data: bgBase64,
       },
     });
-    bgInstruction = "BACKGROUND: Replace the background using the provided inspiration image as reference.";
+    bgInstruction = "BACKGROUND: Replace the background using the provided inspiration image as reference. CRITICAL — the LIGHTING REPLICATION clause still applies to the new model and clothing: the model's skin and clothing must remain lit by the SOURCE image's lighting setup, not by the inspiration background's lighting. Adapt only the environment/setting from the inspiration image, not its light dynamics.";
   } else if (background.textDescription) {
-    bgInstruction = `BACKGROUND: Replace the background with: ${background.textDescription}`;
+    bgInstruction = `BACKGROUND: Replace the background with: ${background.textDescription}. CRITICAL — the LIGHTING REPLICATION clause still applies: the model and clothing remain lit by the SOURCE image's lighting setup.`;
   } else {
     bgInstruction = keepBackground
       ? "BACKGROUND: Keep the original background from the product photo."
-      : "BACKGROUND: Use a clean, professional e-commerce photography studio background.";
+      : "BACKGROUND: Use a clean, professional e-commerce photography studio background. CRITICAL — the model and clothing remain lit by the SOURCE image's lighting setup (the LIGHTING REPLICATION clause is authoritative over any studio default).";
   }
 
   parts.push({
     text: `\n\n--- GENERATION PARAMETERS ---
 Gender: ${genderLabel}
-${model ? `New Model: ${model.name} — ${model.description}` : "New Model: Use the provided model reference image"}
-${modelImage ? "Model Reference: PROVIDED (replace the ENTIRE person with this EXACT individual — face, body, skin tone, everything)" : ""}
+${model ? `New Model: ${model.name} — ${model.description}` : "New Model: Use the provided model reference image (enumerate identity features in the prompt)"}
+${modelImage ? "Model Reference: PROVIDED (the ENTIRE person — face, body, skin tone, hair, build — must be this EXACT individual)" : ""}
+Pose Variation: ${poseVariation ? "ON — subtle pose variations allowed within locked framing + body orientation" : "OFF — strict exact pose reproduction (default)"}
 ${bgInstruction}
 Aspect Ratio: ${aspectRatio}
 ${productInfo ? `Product Info: ${productInfo}` : ""}
 ${additionalInfo ? `Additional Instructions: ${additionalInfo}` : ""}
-${previousMismatchFeedback ? `\n═══ CORRECTION FROM PREVIOUS ATTEMPT ═══\nA previous generation attempt was flagged by our quality-control system with these issues:\n${previousMismatchFeedback}\n\nYou MUST address ALL of the above issues in your prompt. Write explicit, forceful instructions that directly prevent each flagged problem. For example:\n- If "pose changed" was flagged: emphasize exact replication of every limb position, head angle, weight distribution, and body orientation from the original photo.\n- If "model size/framing changed" was flagged: emphasize that the new model must occupy the EXACT same proportion of the image frame — same crop, same distance from camera, same apparent size relative to the frame edges.\n- If "clothing mismatch" was flagged: emphasize pixel-perfect preservation of every garment detail — colors, patterns, fit, drape, construction.\nDo NOT just repeat generic instructions — specifically call out and correct the exact issues listed above.\n═══ END CORRECTION ═══` : ""}
+${previousMismatchFeedback ? `\n═══ CORRECTION FROM PREVIOUS ATTEMPT ═══\nA previous generation attempt was flagged by our quality-control system with these issues:\n${previousMismatchFeedback}\n\nYou MUST address ALL of the above issues in your prompt. Write explicit, forceful instructions that directly prevent each flagged problem:\n  - If "pose changed" was flagged AND poseVariation is OFF: emphasise exact replication of every limb position, head angle, weight distribution, and body orientation. (If poseVariation is ON, treat this flag as expected and do NOT over-correct — only ensure framing and body orientation are still locked.)\n  - If "model size/framing changed" was flagged: emphasise that the new model must occupy the EXACT same proportion of the image frame — same crop, same distance from camera, same apparent size.\n  - If "clothing mismatch" was flagged: re-state pixel-perfect preservation of every garment detail — colour, pattern, fit, drape, construction, accessories.\n  - If lighting mismatch was implied: restate the LIGHTING REPLICATION clause with extra concrete detail (direction, temperature, shadow softness).\nDo NOT just repeat generic instructions — specifically call out and correct the exact issues listed above.\n═══ END CORRECTION ═══` : ""}
 
-CRITICAL RULES:
-1. The clothing in the output must match the original product photo EXACTLY — every visual detail preserved
-2. The pose must be IDENTICAL to the original photo
-3. The ENTIRE human model is replaced — face, neck, arms, hands, legs, feet, ALL skin — must belong to the new model
-4. SKIN TONE CONSISTENCY: The new model's skin tone must be UNIFORM across face, neck, arms, hands, and any other visible skin — NO mismatch between face and body
-5. Professional e-commerce fashion photography quality
-${keepBackground ? "6. The background must remain exactly as in the original photo" : "6. The background should match the specified new background"}
+CRITICAL OUTPUT-PROMPT CHECKLIST (your written prompt must contain ALL of these):
+1. Enumerated identity features of the new model (face + skin + hair + body).
+2. Enumerated clothing & accessory features locked verbatim from the source.
+3. A dedicated lighting clause describing direction, temperature, intensity, shadow
+   softness, ambient fill, and specular highlights observed in the source — explicitly
+   stating these MUST be replicated on both the new model's skin AND every clothing surface.
+4. Pose directive matching the Pose Variation setting:
+   - poseVariation = OFF → exact pose reproduction
+   - poseVariation = ON  → framing + body-orientation lock; subtle gaze/hand/stance variation allowed
+5. Skin-tone uniformity across all visible body parts.
+6. Professional e-commerce fashion photography quality.
+7. ${keepBackground ? "Background preserved exactly as in the source" : "Background per the BACKGROUND directive above, with source lighting still authoritative over the model+clothing"}.
 
-Now write the Complete Model Replacement image generation prompt. Remember: this is a FULL-BODY model replacement, NOT a face swap. Every visible body part must belong to the new model.`,
+Now write the Complete Model Replacement image generation prompt following the 5-paragraph
+structure described above. Remember: this is a FULL-BODY model replacement, NOT a face swap.
+Every visible body part must belong to the new model, and the final image must be
+indistinguishable from a real professional photoshoot of that new model.`,
   });
 
   const response = await ai.models.generateContent({
@@ -2451,7 +2739,18 @@ Now write the Complete Model Replacement image generation prompt. Remember: this
 }
 
 /**
- * Model Swap Step 2: Generate the model-swapped image
+ * Model Swap Step 2: Assemble content parts for the Nano Banana 2 image-gen call.
+ *
+ * Ordering rationale (cf. Google Cloud "Ultimate prompting guide for Nano Banana"):
+ *   - Images first, text last. The image generator weighs the most recent input most heavily,
+ *     so placing the enforcement clause AFTER the images keeps the directives "fresh" while
+ *     the references are clearly tagged.
+ *   - The source product photo is the first image (Reference #1) — it carries the clothing,
+ *     pose, framing, and lighting that must be preserved.
+ *   - The new-model reference is the second image (Reference #2) — it supplies the identity.
+ *   - The enforcement clause repeats the THREE NON-NEGOTIABLE constraints in image-gen
+ *     register: identity-preservation, clothing-preservation, lighting-replication, and the
+ *     pose directive that corresponds to the product-level `poseVariation` flag.
  */
 export async function buildModelSwapImageContentParts({
   prompt,
@@ -2459,12 +2758,18 @@ export async function buildModelSwapImageContentParts({
   modelImage,
   backgroundMode,
   background,
+  poseVariation = false,
 }: {
   prompt: string;
   sourceImage: { file: File; preview: string };
   modelImage: ModelImage | null;
   backgroundMode: ModelSwapBackgroundMode;
   background: BackgroundConfig;
+  /**
+   * Product-level Pose Variation toggle. Same semantics as in `generateModelSwapPrompt`.
+   * Default: false (strict pose preservation).
+   */
+  poseVariation?: boolean;
 }): Promise<ContentPart[]> {
   const keepBackground = backgroundMode === "keep-same";
   const parts: ContentPart[] = [];
@@ -2482,24 +2787,84 @@ export async function buildModelSwapImageContentParts({
     parts.push({ inlineData: { mimeType: background.inspirationImage.file.type, data: bgBase64 } });
   }
 
+  const poseClause = poseVariation
+    ? `4. POSE — SUBTLE VARIATION (USER OPTED IN):
+   Lock the FRAMING and BODY ORIENTATION of the source photo:
+     - Same crop, same camera angle, same focal length, same composition.
+     - Same proportion of the frame occupied by the model.
+     - Same torso, shoulder, foot, and overall body-orientation direction.
+   Within that lock you ARE allowed to introduce subtle, natural variation in: gaze
+   direction, hand and finger position, stance details, head tilt, and facial expression.
+   The shot should still read as "a fraction of a second later" — not a re-staged photograph.`
+    : `4. POSE — STRICT REPRODUCTION (DEFAULT):
+   The new model must adopt the EXACT SAME POSE as the original photo. Reproduce identically:
+   body position, arm and hand positions, leg stance, weight distribution, head angle,
+   chin position, gaze direction, facial expression intent, and torso/shoulder rotation.`;
+
   parts.push({
     text: `${prompt}\n\n` +
-      `═══ CRITICAL: COMPLETE MODEL REPLACEMENT INSTRUCTIONS (NOT A FACE SWAP) ═══\n\n` +
-      `1. The first reference image is the ORIGINAL product photo — preserve the clothing EXACTLY as it appears (same garment, fit, colors, patterns, textures, construction details, wrinkles, and drape).\n\n` +
-      `2. REPLACE the ENTIRE HUMAN MODEL — not just the face. Every visible body part (face, neck, shoulders, arms, hands, fingers, torso, legs, feet) must belong to the NEW person shown in the model reference photo. Use their EXACT face, skin tone, hair color, hair style, body build, and proportions for the COMPLETE body.\n\n` +
-      `3. ★★★ SKIN TONE UNIFORMITY (MOST CRITICAL) ★★★\n` +
-      `   The new model's skin tone must be PERFECTLY CONSISTENT across ALL visible body parts:\n` +
-      `   - Face and neck: new model's skin tone\n` +
-      `   - Arms and hands: SAME skin tone as face (not the original model's)\n` +
-      `   - Legs and feet (if visible): SAME skin tone as face\n` +
-      `   - Décolletage/chest (if visible): SAME skin tone as face\n` +
-      `   There must be ZERO visible skin tone difference between face and any other body part.\n` +
-      `   If the new model has a different skin tone than the original, the ENTIRE body must reflect the new model's skin tone uniformly.\n\n` +
-      `4. The new model must adopt the EXACT SAME POSE as the original photo — same body position, same arm placement, same leg stance, same head angle.\n\n` +
-      `${keepBackground ? "5. Keep the background IDENTICAL to the original product photo — same environment, lighting, colors, props, and atmosphere.\n\n" : "5. Replace the background as described in the prompt.\n\n"}` +
-      `6. The clothing-to-body interaction must look natural — the garments should fit and drape realistically on the new model's proportions.\n\n` +
-      `7. Maintain the same camera angle, framing, and professional photography quality.\n\n` +
-      `THINK OF IT THIS WAY: Imagine you photographed a COMPLETELY DIFFERENT PERSON wearing the exact same outfit in the exact same pose. The result should look like a fresh photograph of the new person — not like the old photo with the face pasted on.`,
+      `═══════════════════════════════════════════════════════════════════════════════\n` +
+      `IMAGE-GEN ENFORCEMENT — Complete Model Replacement\n` +
+      `Three non-negotiable constraints (identity, clothing, lighting) + pose directive.\n` +
+      `═══════════════════════════════════════════════════════════════════════════════\n\n` +
+      `REFERENCE LABELS:\n` +
+      `  • Reference #1 (first attached image) = ORIGINAL PRODUCT PHOTO. This carries the\n` +
+      `    clothing, accessories, pose/framing, AND the lighting dynamics to replicate.\n` +
+      `  ${modelImage ? "• Reference #2 (second attached image) = NEW MODEL identity reference.\n    Capture this exact person's face, skin tone, hair, and body proportions.\n" : ""}` +
+      `\n` +
+      `1. CONSTRAINT 1 — IDENTITY PRESERVATION (the new model's identity is captured PRECISELY)\n` +
+      `   Replace the ENTIRE human model — face, neck, shoulders, arms, hands, fingers, torso,\n` +
+      `   legs, feet — with the person from ${modelImage ? "Reference #2" : "the model description provided"}.\n` +
+      `   Reproduce their EXACT eye shape, nose contour, lip shape, jawline, cheekbone\n` +
+      `   definition, skin tone & undertone, hair colour & style, and body build.\n` +
+      `   ★★★ SKIN-TONE UNIFORMITY (CRITICAL) — every visible square inch of skin (face,\n` +
+      `   neck, décolletage, arms, hands, fingers, legs, feet) MUST share the exact same\n` +
+      `   tone, undertone, and texture as the new model's face. ZERO mismatch between\n` +
+      `   face and body. This is the historical #1 failure of this pipeline; do not allow it.\n\n` +
+      `2. CONSTRAINT 2 — CLOTHING & ACCESSORY IDENTITY PRESERVATION (zero changes to garments)\n` +
+      `   Preserve EVERY garment and accessory from Reference #1 pixel-for-pixel:\n` +
+      `     - Silhouette, cut, fit, drape, every fold and wrinkle position\n` +
+      `     - Colour, colourway, gradient, and colour placement\n` +
+      `     - Texture, material appearance, and surface finish\n` +
+      `     - Prints, patterns, motifs, logos, graphics, embroidery — exact position & scale\n` +
+      `     - Construction details: necklines, collars, plackets, buttons, zippers, pockets,\n` +
+      `       seams, stitching colour, hem length\n` +
+      `     - Footwear (if visible in the source) — style, colour, sole, laces, hardware\n` +
+      `     - Every accessory already worn in the source (watch, jewellery, belt, scarf,\n` +
+      `       bag, sunglasses, hat, etc.) — keep each in place, do not add or remove any.\n\n` +
+      `3. CONSTRAINT 3 — LIGHTING REPLICATION (output light dynamics MATCH the source EXACTLY)\n` +
+      `   Analyse the lighting in Reference #1 and apply that EXACT lighting to BOTH the new\n` +
+      `   model's skin AND every clothing surface in the output:\n` +
+      `     - LIGHT DIRECTION — same principal-light azimuth and elevation. Shadows on the\n` +
+      `       new model's nose, chin, neck, and clothing must fall on the SAME side as in\n` +
+      `       Reference #1.\n` +
+      `     - COLOUR TEMPERATURE / WHITE BALANCE — match the source's warm/neutral/cool cast.\n` +
+      `     - INTENSITY & EXPOSURE — match the source's brightness, key-to-fill ratio, and\n` +
+      `       contrast curve (high-key stays high-key; moody stays moody).\n` +
+      `     - SHADOW SOFTNESS — match shadow-edge hardness (hard sun = sharp; softbox /\n` +
+      `       overcast = soft gradients).\n` +
+      `     - AMBIENT / FILL — match the fill level on the model's shadow side.\n` +
+      `     - SPECULAR HIGHLIGHTS — match position & intensity of skin highlights\n` +
+      `       (forehead, cheekbones, nose tip, chin, collarbones) AND clothing highlights\n` +
+      `       (satin sheens, leather highlights, metallic hardware glints, footwear gloss).\n` +
+      `     - RIM / BACK LIGHT — preserve any rim light hitting shoulders, hair, or\n` +
+      `       silhouette edge in the source.\n` +
+      `   The final image must look like the SAME photographer captured it in the SAME\n` +
+      `   studio/location with the SAME lighting setup as the source — just with a\n` +
+      `   different person in front of the lens.\n\n` +
+      `${poseClause}\n\n` +
+      `5. CLOTHING-TO-BODY INTERACTION — garments must fit and drape naturally on the new\n` +
+      `   model's body proportions. The drape must read as physically correct.\n\n` +
+      `6. CAMERA & FRAMING — same camera angle, same framing, same composition,\n` +
+      `   same proportion of the frame occupied by the model as in Reference #1.\n\n` +
+      `${keepBackground ? "7. BACKGROUND — keep identical to Reference #1 (same environment, props,\n   depth of field, and atmosphere). The lighting clause above also governs the background.\n\n" : "7. BACKGROUND — replace per the prompt's BACKGROUND directive. CRITICAL: the\n   model and clothing remain lit by Reference #1's lighting setup (the LIGHTING\n   REPLICATION clause is authoritative over any new background's ambient lighting).\n\n"}` +
+      `8. PHOTOGRAPHIC QUALITY — render as professional e-commerce fashion photography,\n` +
+      `   photorealistic, indistinguishable from a real-life studio capture.\n\n` +
+      `═══ MENTAL MODEL ═══\n` +
+      `Imagine the original photographer re-shot the same scene with a completely different\n` +
+      `person in front of the lens, in the same lighting setup, wearing the exact same\n` +
+      `clothing and accessories${poseVariation ? ", from the same camera position with the same framing — but caught a fraction of a second later, so the gaze, hand position, and stance vary subtly within natural human range" : ", holding the exact same pose"}. The result should look like\n` +
+      `a fresh authentic photograph — never like a face-swap or composite edit.`,
   });
 
   return parts;
@@ -2514,6 +2879,7 @@ export async function generateModelSwapImage({
   background,
   aspectRatio,
   imageSize = "2K",
+  poseVariation = false,
 }: {
   apiKey: string;
   prompt: string;
@@ -2523,6 +2889,11 @@ export async function generateModelSwapImage({
   background: BackgroundConfig;
   aspectRatio: AspectRatio;
   imageSize?: "1K" | "2K" | "4K";
+  /**
+   * Product-level Pose Variation toggle. Forwarded to the enforcement clause so the
+   * Nano Banana 2 call receives the matching pose directive. Default: false.
+   */
+  poseVariation?: boolean;
 }): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
   const ai = new GoogleGenAI({ apiKey });
 
@@ -2532,6 +2903,7 @@ export async function generateModelSwapImage({
     modelImage,
     backgroundMode,
     background,
+    poseVariation,
   });
 
   const response = await ai.models.generateContent({
@@ -2636,6 +3008,7 @@ export async function validateGeneratedImage({
   generatedImageData,
   productCategory = "clothing",
   validationMode = "vton",
+  allowPoseVariation = false,
   abortSignal,
 }: {
   apiKey: string;
@@ -2643,6 +3016,13 @@ export async function validateGeneratedImage({
   generatedImageData: string;
   productCategory?: ProductCategory;
   validationMode?: "vton" | "model-swap" | "room-staging";
+  /**
+   * Model Swap only — when true, the validator will NOT flag "pose changed" as a
+   * warning, because the user explicitly opted into subtle pose variation at the
+   * product level. Framing and body-orientation drift are still considered failures
+   * (those are checked via the SIZE/framing line). Default: false.
+   */
+  allowPoseVariation?: boolean;
   abortSignal?: AbortSignal;
 }): Promise<ValidationResult & { cost?: StepCost }> {
   const ai = new GoogleGenAI({ apiKey });
@@ -2802,12 +3182,20 @@ Do NOT include any other text.`,
       const posePreserved = poseLine?.toLowerCase().includes("preserved") ?? true;
       const sizeConsistent = sizeLine?.toLowerCase().includes("consistent") ?? true;
 
-      if (isMatch && posePreserved && sizeConsistent) {
-        return { status: "passed", message: reason || "Product, pose, and framing match well", cost: vCost };
+      // When the user opted into Pose Variation, a pose change is EXPECTED — do not flag it.
+      // Framing/size changes are still considered failures because the framing+body-orientation
+      // lock applies regardless of the Pose Variation toggle.
+      const poseOk = posePreserved || allowPoseVariation;
+
+      if (isMatch && poseOk && sizeConsistent) {
+        const okReason = allowPoseVariation && !posePreserved
+          ? (reason || "Product and framing match well; pose varies within user-permitted range")
+          : (reason || "Product, pose, and framing match well");
+        return { status: "passed", message: okReason, cost: vCost };
       } else {
         const issues: string[] = [];
         if (!isMatch) issues.push("clothing mismatch");
-        if (!posePreserved) issues.push("pose changed");
+        if (!poseOk) issues.push("pose changed");
         if (!sizeConsistent) issues.push("model size/framing changed");
         const issuePrefix = `Issues: ${issues.join(", ")}. `;
         return { status: "warning", message: issuePrefix + (reason || "The output may differ from the original"), cost: vCost };

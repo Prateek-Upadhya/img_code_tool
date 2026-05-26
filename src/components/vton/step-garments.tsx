@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Shirt, Scissors, Check, Upload, X, FolderOpen, Plus, Pencil, Trash2, FileText, FileSpreadsheet, Download, Loader2, AlertCircle } from "lucide-react";
+import { Shirt, Scissors, Check, Upload, X, FolderOpen, Plus, Pencil, Trash2, FileText, FileSpreadsheet, Download, Loader2, AlertCircle, Sparkles, Info } from "lucide-react";
 import { ImageUploadZone } from "./image-upload-zone";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -57,6 +58,95 @@ import type {
   TopwearLength,
 } from "@/lib/types";
 import { BULK_SPREADSHEET_FILTER_ALL } from "@/lib/types";
+
+/**
+ * Tooltip body for the Pose Variation toggle. Kept in one place so single-mode and
+ * bulk-mode controls show identical guidance.
+ */
+const POSE_VARIATION_TOOLTIP =
+  "When ON, the generated image introduces subtle pose changes (gaze direction, hand position, stance) while preserving image framing and body orientation. When OFF, the original pose is reproduced exactly.";
+
+/**
+ * Compact Model-Swap-only toggle for the "Pose Variation" product-level option.
+ * Default OFF — when OFF the new model must reproduce the source pose exactly; when ON
+ * the prompt is allowed to introduce subtle pose variations (see `POSE_VARIATION_TOOLTIP`).
+ */
+function PoseVariationToggle({
+  value,
+  onChange,
+  size = "md",
+}: {
+  value: boolean;
+  onChange: (next: boolean) => void;
+  size?: "sm" | "md";
+}) {
+  return (
+    <div
+      className={cn(
+        "inline-flex items-center gap-2 rounded-lg border bg-card transition-colors",
+        size === "sm" ? "px-2.5 py-1.5" : "px-3 py-2",
+        value
+          ? "border-orange-500/40 bg-orange-500/5"
+          : "border-border hover:border-primary/40",
+      )}
+    >
+      <Sparkles
+        className={cn(
+          size === "sm" ? "w-3 h-3" : "w-3.5 h-3.5",
+          value ? "text-orange-500" : "text-muted-foreground",
+        )}
+      />
+      <span
+        className={cn(
+          "font-medium",
+          size === "sm" ? "text-[11px]" : "text-xs",
+          value ? "text-orange-700 dark:text-orange-400" : "text-foreground",
+        )}
+      >
+        Pose Variation
+      </span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-label="What is Pose Variation?"
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <Info className={size === "sm" ? "w-3 h-3" : "w-3.5 h-3.5"} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-xs">
+          <p className="text-xs leading-relaxed">{POSE_VARIATION_TOOLTIP}</p>
+        </TooltipContent>
+      </Tooltip>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={value}
+        aria-label="Toggle Pose Variation"
+        onClick={() => onChange(!value)}
+        className={cn(
+          "relative inline-flex items-center rounded-full transition-colors duration-200 shrink-0",
+          size === "sm" ? "h-4 w-7" : "h-[18px] w-8",
+          value ? "bg-orange-500" : "bg-muted-foreground/30",
+        )}
+      >
+        <span
+          className={cn(
+            "inline-block rounded-full bg-white shadow-sm transition-transform duration-200",
+            size === "sm" ? "h-3 w-3" : "h-3.5 w-3.5",
+            value
+              ? size === "sm"
+                ? "translate-x-3.5"
+                : "translate-x-[18px]"
+              : "translate-x-0.5",
+          )}
+        />
+      </button>
+    </div>
+  );
+}
 
 const GARMENT_TYPES: { value: GarmentType; label: string; icon: React.ReactNode }[] = [
   { value: "topwear", label: "Top Wear", icon: <Shirt className="w-4 h-4" /> },
@@ -119,6 +209,7 @@ function ProductFolderCard({
   onTopwearLengthChange,
   onBottomwearLengthChange,
   isFootwear,
+  onTogglePoseVariation,
 }: {
   folder: ProductFolder;
   target: "primary" | "complementary";
@@ -140,6 +231,11 @@ function ProductFolderCard({
   onTopwearLengthChange?: (folderId: string, length: TopwearLength | null) => void;
   onBottomwearLengthChange?: (folderId: string, length: BottomwearLength | null) => void;
   isFootwear?: boolean;
+  /**
+   * Model Swap (bulk) only — when provided, renders a per-folder Pose Variation toggle.
+   * In VTON mode this prop is omitted and the control does not render.
+   */
+  onTogglePoseVariation?: (folderId: string, value: boolean) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -296,6 +392,17 @@ function ProductFolderCard({
           </div>
         )}
       </div>
+
+      {/* Pose Variation (Model Swap only — onTogglePoseVariation is only passed in model-swap mode) */}
+      {target === "primary" && onTogglePoseVariation && (
+        <div className="px-3 pb-3">
+          <PoseVariationToggle
+            value={folder.poseVariation === true}
+            onChange={(v) => onTogglePoseVariation(folder.id, v)}
+            size="sm"
+          />
+        </div>
+      )}
 
       {/* Product Info */}
       {target === "primary" && onProductInfoChange && (
@@ -1516,6 +1623,7 @@ export function StepGarments({ store }: StepGarmentsProps) {
     removeGarmentImage,
     toggleGarmentBackView,
     setGarmentImageFootwearSide,
+    setGarmentImagePoseVariation,
     complementaryImages,
     addComplementaryImage,
     removeComplementaryImage,
@@ -1535,6 +1643,7 @@ export function StepGarments({ store }: StepGarmentsProps) {
     updatePrimaryFolderSleeveLength,
     updatePrimaryFolderTopwearLength,
     updatePrimaryFolderBottomwearLength,
+    setProductFolderPoseVariation,
     complementaryFolders,
     addComplementaryFolder,
     removeComplementaryFolder,
@@ -2072,6 +2181,7 @@ export function StepGarments({ store }: StepGarmentsProps) {
                   onToggleBackView={!isModelSwap && !isFootwear ? toggleFolderImageBackView : undefined}
                   onSetFootwearSide={!isModelSwap && isFootwear ? setFolderImageFootwearSide : undefined}
                   isFootwear={isFootwear}
+                  onTogglePoseVariation={isModelSwap ? setProductFolderPoseVariation : undefined}
                 />
               ))}
             </div>
@@ -2132,6 +2242,44 @@ export function StepGarments({ store }: StepGarmentsProps) {
             description="Upload existing product photos with models wearing clothes. The AI will swap the model while preserving the clothing and pose."
           />
         </div>
+
+        {/* Per-image Pose Variation toggles (Model Swap single mode) */}
+        {garmentImages.length > 0 && (
+          <div className="space-y-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-semibold text-foreground">Pose Variation</h3>
+                <Badge variant="outline" className="text-xs">Optional</Badge>
+              </div>
+              <p className="text-sm text-muted-foreground mt-0.5">
+                Toggle per image. {POSE_VARIATION_TOOLTIP}
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {garmentImages.map((img) => (
+                <div
+                  key={img.id}
+                  className="flex items-center gap-3 rounded-lg border border-border bg-card p-2.5"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={img.preview}
+                    alt={img.file.name}
+                    className="w-12 h-12 rounded-md object-cover border border-border shrink-0"
+                  />
+                  <p className="flex-1 text-xs text-foreground truncate" title={img.file.name}>
+                    {img.file.name}
+                  </p>
+                  <PoseVariationToggle
+                    value={img.poseVariation === true}
+                    onChange={(v) => setGarmentImagePoseVariation(img.id, v)}
+                    size="sm"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Product Info */}
         <div className="space-y-3">

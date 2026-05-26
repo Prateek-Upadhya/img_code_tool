@@ -1951,7 +1951,7 @@ export const MODEL_SWAP_WIZARD_STEPS = [
   { step: 1, title: "Products", description: "Upload your product images" },
   { step: 2, title: "Styling", description: "Background & new model" },
   { step: 3, title: "Output", description: "Aspect ratio settings" },
-  { step: 4, title: "Details", description: "Additional info & API key" },
+  { step: 4, title: "Details", description: "Additional instructions" },
   { step: 5, title: "Generate", description: "Review & generate" },
 ] as const;
 

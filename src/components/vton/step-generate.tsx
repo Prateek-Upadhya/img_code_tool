@@ -659,7 +659,15 @@ export function StepGenerate({ store }: StepGenerateProps) {
     // call so the entire batch reads as the same physical photoshoot.
     // ──────────────────────────────────────────────────────────────────
     let frozenSceneDescription: string | undefined;
-    if (background.mode === "inspiration" && background.inspirationImage) {
+    // REPLICA MODE skips scene analysis entirely — the inspiration image is attached
+    // directly to the image-gen call (see `generateVTONImageRouted` below) with an
+    // exact-replication directive. Frozen-scene + flat-lighting overrides would
+    // contradict the user's intent to reproduce the reference verbatim.
+    const shouldAnalyzeScene =
+      background.mode === "inspiration" &&
+      !!background.inspirationImage &&
+      background.imageReferenceMode !== "replica";
+    if (shouldAnalyzeScene && background.inspirationImage) {
       setIsIngestingScene(true);
       try {
         const r = await analyzeBackgroundScene({
@@ -779,6 +787,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages,
           accessories,
           modelImage: poseIsProductOnly ? null : modelImage,
+          background,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
@@ -1038,6 +1047,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
     const uniqueInspirationFiles: File[] = [];
     const collectFile = (bg: BackgroundConfig | undefined | null) => {
       if (!bg || bg.mode !== "inspiration" || !bg.inspirationImage) return;
+      // REPLICA-mode backgrounds skip the scene-analysis pre-pass — they are attached
+      // directly to the image-gen call with an exact-replication directive instead.
+      if (bg.imageReferenceMode === "replica") return;
       const f = bg.inspirationImage.file;
       if (!uniqueInspirationFiles.includes(f)) uniqueInspirationFiles.push(f);
     };
@@ -1074,6 +1086,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     const lookupFrozenScene = (bg: BackgroundConfig): string | undefined => {
       if (bg.mode !== "inspiration" || !bg.inspirationImage) return undefined;
+      // REPLICA mode never uses a frozen scene, even if the same image file was
+      // analyzed under a different (inspiration-mode) background slot.
+      if (bg.imageReferenceMode === "replica") return undefined;
       return sceneCache.get(bg.inspirationImage.file);
     };
 
@@ -1221,6 +1236,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages: cgImages,
           accessories,
           modelImage: poseIsProductOnly ? null : bulkModelImg,
+          background: effectiveBg,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
@@ -1538,6 +1554,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages,
           accessories,
           modelImage: poseIsProductOnly ? null : modelImage,
+          background,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
@@ -1705,6 +1722,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages: cgImages,
           accessories,
           modelImage: poseIsProductOnly ? null : bulkModelImg,
+          background: effectiveBg,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
@@ -2938,6 +2956,11 @@ export function StepGenerate({ store }: StepGenerateProps) {
         return;
       }
 
+      // Product-level Pose Variation toggle for this source image (Model Swap single mode).
+      // Default: false (strict exact-pose reproduction). When true, the prompt is allowed
+      // to introduce subtle gaze/hand/stance variation within locked framing & body orientation.
+      const poseVariation = sourceImg.poseVariation === true;
+
       const generate = async () => {
         collectedCosts.length = 0;
         if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
@@ -2954,6 +2977,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           aspectRatio,
           additionalInfo,
           productInfo,
+          poseVariation,
         });
         collectedCosts.push(promptResult.cost);
 
@@ -2968,6 +2992,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           background,
           aspectRatio,
           imageSize: imageQuality,
+          poseVariation,
         });
         collectedCosts.push(imageResult.cost);
 
@@ -2984,6 +3009,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
+          allowPoseVariation: poseVariation,
         }).then((v) => {
           if (v.cost) collectedCosts.push(v.cost);
           const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
@@ -3089,6 +3115,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
         return;
       }
 
+      // Product-level Pose Variation toggle for this folder (Model Swap bulk mode).
+      // The toggle lives on the ProductFolder, so all images in this folder share the setting.
+      const poseVariation = combo.primaryFolder.poseVariation === true;
+
       const generate = async () => {
         collectedCosts.length = 0;
         if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
@@ -3105,6 +3135,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           aspectRatio,
           additionalInfo,
           productInfo: combo.primaryFolder.productInfo || "",
+          poseVariation,
         });
         collectedCosts.push(promptResult.cost);
 
@@ -3119,6 +3150,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           background: combo.background,
           aspectRatio,
           imageSize: imageQuality,
+          poseVariation,
         });
         collectedCosts.push(imageResult.cost);
 
@@ -3135,6 +3167,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
+          allowPoseVariation: poseVariation,
         }).then((v) => {
           if (v.cost) collectedCosts.push(v.cost);
           const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
@@ -3214,6 +3247,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
         return;
       }
 
+      // Product-level Pose Variation toggle (single mode retry). Read from the GarmentImage.
+      const poseVariation = sourceImg.poseVariation === true;
+
       const generate = async () => {
         collectedCosts.length = 0;
         if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
@@ -3229,6 +3265,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           aspectRatio,
           additionalInfo,
           productInfo,
+          poseVariation,
           previousMismatchFeedback: previousFeedback,
         });
         collectedCosts.push(promptResult.cost);
@@ -3243,6 +3280,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           background,
           aspectRatio,
           imageSize: imageQuality,
+          poseVariation,
         });
         collectedCosts.push(imageResult.cost);
         updateModelSwapResult(result.id, {
@@ -3259,6 +3297,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
+          allowPoseVariation: poseVariation,
         }).then((v) => {
           if (v.cost) collectedCosts.push(v.cost);
           const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
@@ -3370,6 +3409,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
         return;
       }
 
+      // Product-level Pose Variation toggle (bulk mode retry). Read from the ProductFolder.
+      const poseVariation = combo.primaryFolder.poseVariation === true;
+
       const generate = async () => {
         collectedCosts.length = 0;
         if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
@@ -3385,6 +3427,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           aspectRatio,
           additionalInfo,
           productInfo: combo.primaryFolder.productInfo || "",
+          poseVariation,
           previousMismatchFeedback: previousFeedback,
         });
         collectedCosts.push(promptResult.cost);
@@ -3399,6 +3442,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           background: combo.background,
           aspectRatio,
           imageSize: imageQuality,
+          poseVariation,
         });
         collectedCosts.push(imageResult.cost);
         updateModelSwapBulkResult(result.id, {
@@ -3415,6 +3459,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
+          allowPoseVariation: poseVariation,
         }).then((v) => {
           if (v.cost) collectedCosts.push(v.cost);
           const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);

@@ -72,6 +72,12 @@ export interface GarmentImage {
   isBackView?: boolean;
   /** For footwear: which side of the shoe this image represents */
   footwearSide?: FootwearSide;
+  /**
+   * Model Swap only. When true, allow subtle pose variation (gaze, hand position,
+   * stance) while preserving image framing and body orientation. When false / undefined,
+   * the new model must adopt the EXACT same pose as the source image. Default: false.
+   */
+  poseVariation?: boolean;
 }
 
 export interface ComplementaryImage {
@@ -118,12 +124,27 @@ export interface AccessoryItem {
 
 export type BackgroundMode = "inspiration" | "text";
 
+/**
+ * Controls how an uploaded background `inspirationImage` is consumed by the VTON pipeline.
+ * - `"inspiration"` (default when undefined): the image is analyzed once per batch by
+ *   `analyzeBackgroundScene`, yielding a product-agnostic frozen scene + flat-lighting
+ *   override; the image itself is NEVER attached to the Nano Banana image-gen call.
+ * - `"replica"`: scene analysis is skipped. The image is attached directly to
+ *   `gemini-3.1-flash-image-preview` (and to the meta-prompter) with an exact-replication
+ *   directive so the generated output preserves the reference background pixel-for-pixel.
+ *
+ * Only meaningful when `mode === "inspiration"` AND `inspirationImage` is set.
+ */
+export type BackgroundImageMode = "inspiration" | "replica";
+
 export interface BackgroundConfig {
   mode: BackgroundMode;
   inspirationImage?: {
     file: File;
     preview: string;
   };
+  /** See {@link BackgroundImageMode}. `undefined` is treated as `"inspiration"`. */
+  imageReferenceMode?: BackgroundImageMode;
   textDescription: string;
 }
 
@@ -355,6 +376,13 @@ export interface ProductFolder {
   bottomwearLength?: BottomwearLength | null;
   /** Present when this folder was created from CSV/XLSX bulk import; used to replace on filter change */
   bulkImportSessionId?: string;
+  /**
+   * Model Swap only. When true, allow subtle pose variation (gaze, hand position,
+   * stance) for every image in this folder while preserving image framing and body
+   * orientation. When false / undefined, the new model must adopt the EXACT same pose
+   * as each source image. Default: false.
+   */
+  poseVariation?: boolean;
 }
 
 /** Sentinel value for spreadsheet filter: include all rows */
