@@ -118,12 +118,27 @@ export interface AccessoryItem {
 
 export type BackgroundMode = "inspiration" | "text";
 
+/**
+ * Controls how an uploaded background `inspirationImage` is consumed by the VTON pipeline.
+ * - `"inspiration"` (default when undefined): the image is analyzed once per batch by
+ *   `analyzeBackgroundScene`, yielding a product-agnostic frozen scene + flat-lighting
+ *   override; the image itself is NEVER attached to the Nano Banana image-gen call.
+ * - `"replica"`: scene analysis is skipped. The image is attached directly to
+ *   `gemini-3.1-flash-image-preview` (and to the meta-prompter) with an exact-replication
+ *   directive so the generated output preserves the reference background pixel-for-pixel.
+ *
+ * Only meaningful when `mode === "inspiration"` AND `inspirationImage` is set.
+ */
+export type BackgroundImageMode = "inspiration" | "replica";
+
 export interface BackgroundConfig {
   mode: BackgroundMode;
   inspirationImage?: {
     file: File;
     preview: string;
   };
+  /** See {@link BackgroundImageMode}. `undefined` is treated as `"inspiration"`. */
+  imageReferenceMode?: BackgroundImageMode;
   textDescription: string;
 }
 

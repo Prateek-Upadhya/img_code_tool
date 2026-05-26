@@ -1657,17 +1657,60 @@ For reference-image accessories: reproduce the exact same accessory across all p
   // Background details — precedence:
   //   (1) per-pose customBackground (explicit text override)
   //   (2) image-reference mode (adapted palette derived from the holistic reference image)
-  //   (3) frozenSceneDescription — pre-analyzed wide-shot from analyzeBackgroundScene()
+  //   (3) REPLICA mode — global inspiration image with imageReferenceMode === "replica".
+  //       Image is also attached as input to the downstream image-gen call so Nano Banana 2
+  //       can reproduce it pixel-for-pixel; meta-prompt stays terse to avoid contradicting
+  //       the visual reference. See `buildVTONImageContentParts` for the matching directive.
+  //   (4) frozenSceneDescription — pre-analyzed wide-shot from analyzeBackgroundScene()
   //       (replaces global inspiration image; reused VERBATIM across the whole batch)
-  //   (4) global inspiration image (legacy fallback when analysis was skipped or failed)
-  //   (5) global text description
-  //   (6) default fallback
+  //   (5) global inspiration image in classic inspiration mode (legacy fallback when
+  //       analysis was skipped or failed)
+  //   (6) global text description
+  //   (7) default fallback
+  const isReplicaBg =
+    background.mode === "inspiration" &&
+    background.imageReferenceMode === "replica" &&
+    !!background.inspirationImage;
   let bgInstruction = "";
-  const useFrozenScene = !customPose?.customBackground && !isCustomPoseImageMode && !!frozenSceneDescription;
+  const useFrozenScene =
+    !customPose?.customBackground &&
+    !isCustomPoseImageMode &&
+    !isReplicaBg &&
+    !!frozenSceneDescription;
   if (customPose?.customBackground) {
     bgInstruction = `Background/environment description (CUSTOM FOR THIS POSE — DETERMINISTIC): ${customPose.customBackground}\nBACKGROUND LOCK: Reproduce this description VERBATIM in every output prompt — identical wording, identical colors, identical elements. Do NOT paraphrase, add synonyms, introduce creative variations, or reinterpret. If colors are specified, repeat them as exact hex/RGB values. Every pose in this batch must share a pixel-identical backdrop.`;
   } else if (isCustomPoseImageMode) {
     bgInstruction = `Background/environment description (DERIVED FROM HOLISTIC IMAGE REFERENCE — DETERMINISTIC):\nThe background for this custom pose is NOT taken from the global SCENE PARAMETERS. Instead, derive it from the HOLISTIC IMAGE REFERENCE — EXTRACTION RULES block above. Specifically:\n  • Use the SCENE & ENVIRONMENT, LIGHTING & MOOD, and COMPOSITION & STYLING extracted from the reference (rendered in product-agnostic language).\n  • Use the ADAPTED BACKGROUND PALETTE (STEP 5C) as the literal color specification — write its 4-6 hex codes verbatim into the BACKGROUND section of your output prompt with their role labels intact.\n  • Maintain the reference image's mood and atmospheric character; the adapted palette only retunes hue/value/chroma to highlight the user's product, never the underlying mood.\nBACKGROUND LOCK: Once derived, lock the resulting backdrop description and the adapted hex codes for the entire batch. Reuse the SAME description and the SAME hex codes word-for-word across every pose so all outputs share one pixel-consistent stage. Do NOT re-derive between poses, do NOT introduce synonym swaps, do NOT drift toward white or any other unspecified color.`;
+  } else if (isReplicaBg && background.inspirationImage) {
+    // ═══ REPLICA MODE ═══
+    // Attach the inspiration image so the meta-prompter (Gemini 3.1 Pro) sees it and can
+    // emit a BACKGROUND section that defers to the attached reference. The image is ALSO
+    // attached at the image-gen step (see `buildVTONImageContentParts`) where Nano Banana
+    // 2 performs the actual replication. The meta-prompt stays intentionally terse here
+    // because Google's Nano Banana prompting guide (https://cloud.google.com/blog/products/ai-machine-learning/ultimate-prompting-guide-for-nano-banana)
+    // recommends short, role-labelled references over long re-descriptions when the goal
+    // is exact reproduction — verbose textual re-description tends to compete with the
+    // image input and degrade fidelity.
+    parts.push({
+      text: `\n\n═══ BACKGROUND REPLICATION REFERENCE (REPLICA MODE) ═══\nThe image below is the EXACT background environment the user wants reproduced in every output of this batch. It will ALSO be attached directly to the downstream image-generation model (Nano Banana 2 / gemini-3.1-flash-image-preview). Treat it as the SOLE source of truth for scene, composition, palette, lighting, materials, and atmosphere — do NOT describe a different scene, do NOT default to a studio backdrop, and do NOT invent elements absent from this image.`,
+    });
+    const bgBase64 = await fileToBase64(background.inspirationImage.file);
+    parts.push({
+      inlineData: {
+        mimeType: background.inspirationImage.file.type,
+        data: bgBase64,
+      },
+    });
+    bgInstruction = `Background/environment description (REPLICA MODE — EXACT REPRODUCTION OF ATTACHED REFERENCE):
+The user has attached a BACKGROUND REPLICATION REFERENCE image (see above). The downstream image generator will receive this same image directly with a strict replication directive. Your job is to write the BACKGROUND section of the output prompt so that it (a) defers to the attached reference as the sole source of truth, and (b) explicitly names the photographic anchors the image generator must preserve.
+
+WRITE the BACKGROUND section of your output prompt as a short, focused paragraph (3–5 sentences) that:
+  • States that the background is replicated EXACTLY from the BACKGROUND REPLICATION REFERENCE image attached to this generation.
+  • Names the specific anchors to lock from the reference: overall composition / framing of the environment, perspective and vanishing point, palette (warm/cool/neutral tendency), light direction and color temperature, surface materials (walls, floor, props), depth of field, and atmospheric quality.
+  • Instructs that the lighting on the model must be HARMONIZED with the scene's existing light direction and color temperature so the model looks naturally embedded in the reference scene (this is the ONLY light cue derived from the reference — do NOT extract a flat high-key override).
+  • Explicitly forbids importing any pixel of the product reference photos' original surroundings (floors, walls, props, color spill) into the output.
+
+BACKGROUND LOCK: Use the same BACKGROUND wording across every pose in this batch so the batch reads as one coherent shoot. Do NOT paraphrase between poses, do NOT swap synonyms, do NOT add or remove anchors. Do NOT invent specific landmarks, brand names, or text content not visible in the reference image.`;
   } else if (useFrozenScene) {
     bgInstruction = `Background/environment description (PRE-ANALYZED WIDE-SHOT — FROZEN FOR THE ENTIRE BATCH):
 The complete scene has already been analyzed once for this Generate batch. Below is the FROZEN SCENE DESCRIPTION — it is the SOLE source of truth for the background. Use it VERBATIM. Do NOT re-derive, paraphrase, swap synonyms, drift toward a default studio backdrop, or introduce any creative variation between poses.
@@ -1772,8 +1815,9 @@ ${additionalInfo ? `Additional Instructions: ${additionalInfo}` : ""}
 BACKGROUND PRECEDENCE (ABSOLUTE, IN THIS ORDER):
   (a) If a per-pose CUSTOM POSE background is given, it is the SOLE source of truth — use it verbatim.
   (b) Otherwise, if the custom pose is in IMAGE REFERENCE MODE, the SOLE source of truth is the holistic extraction above — specifically the SCENE / LIGHTING / COMPOSITION descriptors plus the ADAPTED BACKGROUND PALETTE (STEP 5C, hex codes verbatim). Do NOT mix in the global SCENE PARAMETERS background in this case.
+  (b2) Otherwise, if REPLICA MODE is active (a BACKGROUND REPLICATION REFERENCE image is attached to this generation), that attached image is the SOLE source of truth. Your BACKGROUND section MUST defer to the attached reference verbatim — the downstream image generator will receive the same image and replicate it exactly. Do NOT re-describe the scene in long prose, do NOT extract a flat high-key lighting override, and do NOT invent landmarks or text not visible in the reference. The only lighting cue you may transfer to the model is harmonization with the scene's existing light direction and color temperature.
   (c) Otherwise, if the user provided a BACKGROUND inspiration image or text description in SCENE PARAMETERS, that specification is the SOLE source of truth — use it verbatim with every color/hex/material/atmospheric cue exactly as the user wrote it.
-  (d) ONLY if the user provided NO background information of any kind (no text, no inspiration image, no per-pose custom background, not in image-reference mode) — i.e. the Background line above is explicitly labeled as a DEFAULT FALLBACK — may you render a pure white (#FFFFFF) studio cyclorama. In every other case, you MUST NOT substitute, default toward, or drift to white (or any other color) that the user did not ask for.
+  (d) ONLY if the user provided NO background information of any kind (no text, no inspiration image, no per-pose custom background, not in image-reference mode, not in replica mode) — i.e. the Background line above is explicitly labeled as a DEFAULT FALLBACK — may you render a pure white (#FFFFFF) studio cyclorama. In every other case, you MUST NOT substitute, default toward, or drift to white (or any other color) that the user did not ask for.
 
 The product reference photos may be taken on cluttered floors, shelves, or outdoor surfaces. That is NOISE: your output prompt must instruct the image generator to extract ONLY the footwear and to build a brand-new scene where the ENTIRE environment (backdrop, floor plane, walls, air, global light) matches ONLY the background line above (or the inspiration image if one was provided). Repeat any hex/RGB color the user gave verbatim in the Background section. For one generation batch, use identical backdrop wording for every pose — no synonym swapping, no "creative variation" between images.
 
@@ -1815,7 +1859,7 @@ ${additionalInfo ? `Additional Instructions (AUTHORITATIVE USER INTENT — treat
 
 ★ ADDITIONAL INSTRUCTIONS HANDLING: If the text above contains guidance about posture, stance, gaze, head tilt, arm/hand positioning, facial expression, mood, or styling attitude, you MUST weave those cues DIRECTLY into the pose description in the output prompt (see NATURAL POSING & SUBTLE VARIATION DIRECTIVE). Do NOT paraphrase the intent away; reflect the user's specific words and intent in concrete, descriptive pose language. When the same guidance applies across many products, express it as a mood with subtle per-generation micro-variations in gaze, head tilt, arm/hand position, and expression — so each output reads as a distinct moment within the same mood.` : ""}
 
-IMPORTANT: The generated prompt must explicitly instruct to preserve ALL garment visual details exactly as shown in the reference images (sleeve length, neckline, color, pattern, fabric texture, and all construction details).${fit ? ` For FIT, the prompt MUST describe the garment as "${fit}" fit (${FIT_OPTIONS.find(f => f.value === fit)?.description || fit}). Do NOT use any other fit descriptor (e.g., do not say "oversized" if the user selected "regular", do not say "slim" if the user selected "relaxed"). The user's fit selection is authoritative.` : ` For FIT, use your best judgment based on the garment images to describe how the garment should fit${isProductOnlyShot ? "" : " on the model"}.`}${lengthOverridesBlock ? ` For GARMENT LENGTH (sleeve / top hemline / bottomwear outseam — whichever the user has specified above), the prompt MUST use the exact label and anatomical-anchor sentence given in GENERATION PARAMETERS. The user's length selection is authoritative and OVERRIDES any visual reading of the garment reference images for those dimensions; preserve every OTHER detail of the garment exactly as shown.` : ""}
+IMPORTANT: The generated prompt must explicitly instruct to preserve ALL garment visual details exactly as shown in the reference images (sleeve length, neckline, color, pattern, fabric texture, and all construction details).${fit ? ` For FIT, the prompt MUST describe the garment as "${fit}" fit (${FIT_OPTIONS.find(f => f.value === fit)?.description || fit}). Do NOT use any other fit descriptor (e.g., do not say "oversized" if the user selected "regular", do not say "slim" if the user selected "relaxed"). The user's fit selection is authoritative.` : ` For FIT, use your best judgment based on the garment images to describe how the garment should fit${isProductOnlyShot ? "" : " on the model"}.`}${lengthOverridesBlock ? ` For GARMENT LENGTH (sleeve / top hemline / bottomwear outseam — whichever the user has specified above), the prompt MUST use the exact label and anatomical-anchor sentence given in GENERATION PARAMETERS. The user's length selection is authoritative and OVERRIDES any visual reading of the garment reference images for those dimensions; preserve every OTHER detail of the garment exactly as shown.` : ""}${isReplicaBg ? `\n\nBACKGROUND REPLICA OVERRIDE: REPLICA MODE is active for this batch — a BACKGROUND REPLICATION REFERENCE image has been attached above. The downstream image generator will also receive that image and replicate it exactly. Keep the BACKGROUND section of the output prompt SHORT (3–5 sentences): defer to the attached reference and name the photographic anchors to preserve (composition, perspective, palette, light direction and color temperature, surface materials, depth of field, atmosphere). Instruct that the model's lighting must be harmonized with the scene's existing light direction and color temperature so the composite reads as naturally embedded. Explicitly forbid carrying over any pixel of the product reference photos' surroundings (floors, walls, props, color spill). Do NOT invent landmarks, brand names, or visible text not present in the reference.` : ""}
 ${!isProductOnlyShot && !isGhostMannequin && !accessories.some(a => a.category === "shoes") ? `\nFOOTWEAR COLOR RULE: When footwear is visible in the frame, the shoes/footwear must NEVER be white or off-white. Always use a non-white color (black, tan, brown, navy, grey, etc.) that complements the outfit. This rule is absolute — no white sneakers, no white shoes of any kind.` : ""}
 ${isGhostMannequin ? "\nCRITICAL: This is a GHOST MANNEQUIN shot. The generated image must show the garment shaped as if worn by an invisible person — three-dimensional, filled with natural body volume, but with ZERO visible human body parts, skin, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? "\nCRITICAL: This is a PRODUCT-ONLY shot. The generated image must show ONLY the garment product — NO human model, NO mannequin body, NO person. Focus entirely on the product." : ""}
 ${accessories.length > 0 ? `\nACCESSORY INSTRUCTION: For accessories with reference images, the prompt MUST instruct the image generator to reproduce the EXACT accessory shown - same design, material, color, and proportions. For AI-chosen accessories (no reference image), FIRST analyze the garment's style category (formal, casual, ethnic/traditional, streetwear, sportswear, luxury, bohemian, etc.) and then select accessories that are STYLISTICALLY COHERENT:
@@ -1863,6 +1907,7 @@ export async function buildVTONImageContentParts({
   complementaryImages,
   accessories,
   modelImage,
+  background,
   productCategory = "clothing",
   isProductOnlyShot = false,
   isGhostMannequin = false,
@@ -1873,13 +1918,61 @@ export async function buildVTONImageContentParts({
   complementaryImages: ComplementaryImage[];
   accessories: AccessoryItem[];
   modelImage: ModelImage | null;
+  /**
+   * Optional global background config. Only consulted to enable REPLICA MODE — when
+   * `background.mode === "inspiration"` AND `background.imageReferenceMode === "replica"`
+   * AND `background.inspirationImage` is set, the inspiration image is attached as a
+   * labeled content part and an exact-replication directive is appended to the prompt.
+   * Has no effect in the default inspiration / text / fallback modes.
+   */
+  background?: BackgroundConfig;
   productCategory?: ProductCategory;
   isProductOnlyShot?: boolean;
   isGhostMannequin?: boolean;
   isBackViewPose?: boolean;
 }): Promise<ContentPart[]> {
   const isFootwear = productCategory === "footwear";
+  const isReplicaBg =
+    !!background &&
+    background.mode === "inspiration" &&
+    background.imageReferenceMode === "replica" &&
+    !!background.inspirationImage;
   const parts: ContentPart[] = [];
+
+  // ═══ REPLICA-MODE PROMPT FRAGMENTS ═══
+  // Prompting strategy is derived from Google Cloud's "Ultimate prompting guide for
+  // Nano Banana" (https://cloud.google.com/blog/products/ai-machine-learning/ultimate-prompting-guide-for-nano-banana)
+  // and Google's "7 tips to get the most out of Nano Banana Pro"
+  // (https://blog.google/products-and-platforms/products/gemini/prompting-tips-nano-banana-pro):
+  //   • Role-label every reference image so the model unambiguously assigns it a job
+  //     ("Use Image A for the character's pose, Image B for the art style, Image C for
+  //     the background environment.")
+  //   • Use positive framing — "preserve / match / replicate" rather than "do not change".
+  //   • Be photographically specific — name composition, light direction, color
+  //     temperature, materials, depth-of-field, atmosphere — not just "the background".
+  //   • Sequence the operation: lock background → composite subject → harmonize light.
+  // The directive below is repeated near the end of the prompt (recency anchor) to
+  // counter long-context drift, mirroring the practice recommended in the same guide.
+  const replicaReferenceHeader =
+    "═══ BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE ═══\n" +
+    "The image below is the EXACT background environment for the generated photo. " +
+    "Replicate it precisely: preserve its overall composition and framing, perspective and vanishing point, " +
+    "color palette, light direction and color temperature, surface materials (walls, floor, props), " +
+    "depth of field, and atmospheric quality. " +
+    "The ONLY change versus this reference is that the model wearing the product is composited into the scene; " +
+    "harmonize the lighting on the model with the scene's existing light direction and color temperature so the " +
+    "composite reads as a natural, unedited photograph. " +
+    "Do NOT invent landmarks, brand names, or visible text that are not present in this image, and do NOT default " +
+    "to a studio backdrop, white cyclorama, or any other environment.";
+  const replicaDirective =
+    "\n\n═══ BACKGROUND REPLICATION DIRECTIVE (MANDATORY — APPLY IN THIS ORDER) ═══\n" +
+    "Step 1 — Lock the background from the BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image above. " +
+    "Preserve its composition, perspective, palette, light direction, color temperature, surface materials, " +
+    "depth-of-field, and atmospheric quality with pixel-level fidelity.\n" +
+    "Step 2 — Composite the model wearing the product into that locked scene. Harmonize the lighting on the model " +
+    "with the scene's existing light direction and color temperature so the model is naturally embedded — not pasted on.\n" +
+    "Step 3 — Product reference photos define product identity ONLY. Do NOT carry over their original surroundings, " +
+    "floors, walls, props, or color spill into the output. The background comes EXCLUSIVELY from the BACKGROUND ENVIRONMENT reference above.";
 
   if (isFootwear) {
     const hasFootwearSideLabel = garmentImages.some((img) => img.footwearSide);
@@ -1949,14 +2042,38 @@ export async function buildVTONImageContentParts({
       }
     }
 
+    // ═══ BACKGROUND ENVIRONMENT REFERENCE (REPLICA MODE) ═══
+    // Attached as the FINAL image so Nano Banana 2 reads it as the scene-anchor input,
+    // not as additional product detail. Role label follows Google's Nano Banana prompting
+    // guidance (assign each reference image a single clear role).
+    if (isReplicaBg && background?.inspirationImage) {
+      parts.push({ text: `\n${replicaReferenceHeader}` });
+      const bgBase64 = await fileToBase64(background.inspirationImage.file);
+      parts.push({
+        inlineData: {
+          mimeType: background.inspirationImage.file.type,
+          data: bgBase64,
+        },
+      });
+    }
+
     // ═══ GENERATION PROMPT + MANDATORY FIDELITY REQUIREMENTS ═══
     parts.push({
       text: `\n═══ GENERATION INSTRUCTIONS ═══\n${prompt}\n\n` +
-        `═══ BACKGROUND & ENVIRONMENT (gemini-3.1-flash-image-preview) ═══\n` +
-        `The scene, backdrop, surfaces, atmosphere, and global lighting MUST follow ONLY the generation prompt text above (which encodes the user's intended environment). ` +
-        `Do NOT substitute a white studio backdrop, a neutral grey cyclorama, or any other default environment when the prompt above describes a different scene — the prompt's background description is the SOLE source of truth. Render a pure white (#FFFFFF) cyclorama ONLY if the prompt above itself specifies one. ` +
-        `Treat the product reference photos as defining footwear identity only: ZERO transfer of their original location, flooring, walls, props, or spill light from those photos. ` +
-        `Relight the footwear so it belongs in that described environment (shadow softness, color temperature, and wrap consistent with that backdrop).\n\n` +
+        (isReplicaBg
+          ? `═══ BACKGROUND & ENVIRONMENT (REPLICA MODE — gemini-3.1-flash-image-preview) ═══\n` +
+            `The background environment is REPLICATED EXACTLY from the BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image attached above. ` +
+            `Preserve its composition, perspective, palette, light direction, color temperature, surface materials, depth-of-field, and atmosphere with pixel-level fidelity. ` +
+            `Do NOT substitute a white studio backdrop, a neutral grey cyclorama, or any other default environment. ` +
+            `Treat the product reference photos as defining footwear identity only: ZERO transfer of their original location, flooring, walls, props, or spill light from those photos. ` +
+            `Relight the footwear so it belongs in the replicated environment (shadow softness, color temperature, and wrap consistent with that backdrop).` +
+            replicaDirective +
+            `\n\n`
+          : `═══ BACKGROUND & ENVIRONMENT (gemini-3.1-flash-image-preview) ═══\n` +
+            `The scene, backdrop, surfaces, atmosphere, and global lighting MUST follow ONLY the generation prompt text above (which encodes the user's intended environment). ` +
+            `Do NOT substitute a white studio backdrop, a neutral grey cyclorama, or any other default environment when the prompt above describes a different scene — the prompt's background description is the SOLE source of truth. Render a pure white (#FFFFFF) cyclorama ONLY if the prompt above itself specifies one. ` +
+            `Treat the product reference photos as defining footwear identity only: ZERO transfer of their original location, flooring, walls, props, or spill light from those photos. ` +
+            `Relight the footwear so it belongs in that described environment (shadow softness, color temperature, and wrap consistent with that backdrop).\n\n`) +
         `═══ MANDATORY PRODUCT FIDELITY REQUIREMENTS ═══\n` +
         `The footwear in the generated image MUST be a pixel-accurate reproduction of the PRODUCT REFERENCE IMAGES provided above. This is non-negotiable:\n\n` +
         `• SHAPE, SILHOUETTE & INTERNAL PROPORTIONS: Identical overall shape and silhouette AND identical internal proportions. The SOLE THICKNESS, midsole stack height, toe-box form and depth, heel height, toe-spring, profile curvature, collar height, upper-to-sole ratio, and outsole length-to-width ratio are copied from the reference product with zero deviation. Do NOT thicken the sole, inflate the midsole, bulk up the toe box, heighten the heel, stylize a chunkier/sportier silhouette, or otherwise exaggerate the shoe beyond what the reference photos show — keep it slim when the reference is slim, keep it flat when the reference is flat\n` +
@@ -1981,7 +2098,7 @@ export async function buildVTONImageContentParts({
       backViewSuffix = ` ★★★ BACK-VIEW PRIORITY ★★★ The FIRST garment image provided below is the user-tagged BACK VIEW of the garment, and the current pose shows the back of the garment to the camera. For this output you MUST: (1) treat that first back-view image as the SOLE source of truth for the back panel — the back's color, print, graphic, text, embroidery, panel construction, yoke, vent, closure, hemline, and drape ALL come from that image only; (2) NEVER mirror, transfer, or extrapolate any front-side pattern, print, graphic, or design element onto the back — the back may be plain even if the front is patterned, may have a different print, or may have a different color; (3) reproduce every back-side detail visible in that first image with PIXEL-LEVEL fidelity — the back of this garment is the focal point of this shot.`;
     }
     parts.push({
-      text: `${prompt}\n\nIMPORTANT: The garment in the output must match the provided garment reference images EXACTLY - preserve the same sleeve length, neckline, hem length, color, pattern, fabric texture, and every construction detail. Do not modify any garment attributes.${isGhostMannequin ? " This is a ghost mannequin shot — the garment must appear three-dimensional and shaped as if worn by an invisible person. ZERO visible human body, skin, hands, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? " This is a product-only shot — no human model, mannequin body, or person should be visible. Show ONLY the garment product." : modelImage ? " Use the provided model reference photo to generate the EXACT same person - same face, skin tone, hair color, and body type." : ""}${backViewSuffix}`,
+      text: `${prompt}\n\nIMPORTANT: The garment in the output must match the provided garment reference images EXACTLY - preserve the same sleeve length, neckline, hem length, color, pattern, fabric texture, and every construction detail. Do not modify any garment attributes.${isGhostMannequin ? " This is a ghost mannequin shot — the garment must appear three-dimensional and shaped as if worn by an invisible person. ZERO visible human body, skin, hands, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? " This is a product-only shot — no human model, mannequin body, or person should be visible. Show ONLY the garment product." : modelImage ? " Use the provided model reference photo to generate the EXACT same person - same face, skin tone, hair color, and body type." : ""}${backViewSuffix}${isReplicaBg ? "\n\nREPLICA MODE NOTE: A BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image is attached below (after the product and accessory images). The background of this output is replicated EXACTLY from that reference — see the BACKGROUND REPLICATION DIRECTIVE at the end of this message." : ""}`,
     });
     if (modelImage && !isProductOnlyShot) {
       const modelBase64 = await fileToBase64(modelImage.file);
@@ -2007,6 +2124,23 @@ export async function buildVTONImageContentParts({
         parts.push({ inlineData: { mimeType: acc.image.file.type, data: base64 } });
       }
     }
+
+    // ═══ BACKGROUND ENVIRONMENT REFERENCE (REPLICA MODE) ═══
+    // Attached LAST so Nano Banana 2 reads it as the scene anchor (not as another
+    // garment / accessory detail), followed by an explicit replica directive that
+    // restates the operation order. This primacy + recency placement mirrors Google's
+    // Nano Banana prompting guidance for high image-text alignment.
+    if (isReplicaBg && background?.inspirationImage) {
+      parts.push({ text: `\n${replicaReferenceHeader}` });
+      const bgBase64 = await fileToBase64(background.inspirationImage.file);
+      parts.push({
+        inlineData: {
+          mimeType: background.inspirationImage.file.type,
+          data: bgBase64,
+        },
+      });
+      parts.push({ text: replicaDirective });
+    }
   }
 
   return parts;
@@ -2019,6 +2153,7 @@ export async function generateVTONImage({
   complementaryImages,
   accessories,
   modelImage,
+  background,
   aspectRatio,
   productCategory = "clothing",
   isProductOnlyShot = false,
@@ -2033,6 +2168,12 @@ export async function generateVTONImage({
   complementaryImages: ComplementaryImage[];
   accessories: AccessoryItem[];
   modelImage: ModelImage | null;
+  /**
+   * Optional global background config. Forwarded to {@link buildVTONImageContentParts}
+   * to enable REPLICA MODE (when `imageReferenceMode === "replica"` and an inspiration
+   * image is present). Has no effect for any other background configuration.
+   */
+  background?: BackgroundConfig;
   aspectRatio: AspectRatio;
   productCategory?: ProductCategory;
   isProductOnlyShot?: boolean;
@@ -2050,6 +2191,7 @@ export async function generateVTONImage({
     complementaryImages,
     accessories,
     modelImage,
+    background,
     productCategory,
     isProductOnlyShot,
     isGhostMannequin,

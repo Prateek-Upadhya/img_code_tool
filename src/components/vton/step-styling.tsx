@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn } from "@/lib/utils";
 import { AI_MODELS } from "@/lib/constants";
 import type { VTONStore } from "@/store/vton-store";
-import type { BackgroundConfig, BackgroundMode, BulkBackground, BulkModelImage, ModelSwapBackgroundMode } from "@/lib/types";
+import type { BackgroundConfig, BackgroundImageMode, BackgroundMode, BulkBackground, BulkModelImage, ModelSwapBackgroundMode } from "@/lib/types";
 import { MODEL_SWAP_BG_OPTIONS } from "@/lib/constants";
 
 /* ------------------------------------------------------------------ */
@@ -75,6 +75,69 @@ function BulkModelCard({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Background image reference-mode toggle (Inspiration | Replica)      */
+/* ------------------------------------------------------------------ */
+/**
+ * Sub-toggle that controls how an uploaded background reference image is
+ * consumed by the VTON pipeline.
+ *
+ * - "inspiration" (default): the image is analyzed once per batch
+ *   (`analyzeBackgroundScene`) and never attached to the image-gen call.
+ * - "replica": the image is passed directly to `gemini-3.1-flash-image-preview`
+ *   with an exact-replication directive; scene analysis is skipped.
+ */
+function ImageReferenceModeToggle({
+  value,
+  onChange,
+  size = "md",
+}: {
+  value: BackgroundImageMode;
+  onChange: (mode: BackgroundImageMode) => void;
+  size?: "sm" | "md";
+}) {
+  const padding = size === "sm" ? "px-2.5 py-1 text-[11px]" : "px-3 py-1.5 text-xs";
+  return (
+    <div className="space-y-1">
+      <div className="inline-flex rounded-lg border border-border bg-card overflow-hidden">
+        <button
+          type="button"
+          onClick={() => onChange("inspiration")}
+          title="Extract scene structure, palette, and lighting from the reference. The image itself is not sent to the image generator."
+          className={cn(
+            "font-medium transition-colors duration-200 flex items-center gap-1.5",
+            padding,
+            value === "inspiration"
+              ? "btn-gradient text-white"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          )}
+        >
+          Inspiration
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange("replica")}
+          title="Pass this image directly to the image generator with an exact-replication directive."
+          className={cn(
+            "font-medium transition-colors duration-200 flex items-center gap-1.5 border-l border-border",
+            padding,
+            value === "replica"
+              ? "btn-gradient text-white border-transparent"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          )}
+        >
+          Replica
+        </button>
+      </div>
+      <p className={cn("text-muted-foreground leading-tight", size === "sm" ? "text-[10px]" : "text-[11px]")}>
+        {value === "replica"
+          ? "Image is attached directly to the generator with an exact-replication directive."
+          : "Scene, palette, and lighting are extracted; image is not sent to the generator."}
+      </p>
     </div>
   );
 }
@@ -203,22 +266,33 @@ function BulkBackgroundCard({
 
       {/* Content */}
       {bg.config.mode === "inspiration" ? (
-        <div>
+        <div className="space-y-2">
           {bg.config.inspirationImage ? (
-            <div className="relative inline-block rounded-lg overflow-hidden border border-border">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={bg.config.inspirationImage.preview}
-                alt={bg.name}
-                className="max-h-32 object-cover rounded-lg"
+            <>
+              <div className="relative inline-block rounded-lg overflow-hidden border border-border">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={bg.config.inspirationImage.preview}
+                  alt={bg.name}
+                  className="max-h-32 object-cover rounded-lg"
+                />
+                <button
+                  onClick={removeImage}
+                  className="absolute top-1.5 right-1.5 p-0.5 rounded-full bg-black/60 text-white hover:bg-red-500 transition-colors"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+              <ImageReferenceModeToggle
+                value={bg.config.imageReferenceMode ?? "inspiration"}
+                onChange={(imageReferenceMode) =>
+                  onUpdate(bg.id, {
+                    config: { ...bg.config, imageReferenceMode },
+                  })
+                }
+                size="sm"
               />
-              <button
-                onClick={removeImage}
-                className="absolute top-1.5 right-1.5 p-0.5 rounded-full bg-black/60 text-white hover:bg-red-500 transition-colors"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            </div>
+            </>
           ) : (
             <button
               onClick={() => fileRef.current?.click()}
@@ -441,22 +515,30 @@ export function StepStyling({ store }: StepStylingProps) {
       </div>
 
       {background.mode === "inspiration" ? (
-        <div>
+        <div className="space-y-3">
           {background.inspirationImage ? (
-            <div className="relative inline-block rounded-lg overflow-hidden border border-border">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={background.inspirationImage.preview}
-                alt="Background inspiration"
-                className="max-h-48 object-cover rounded-lg"
+            <>
+              <div className="relative inline-block rounded-lg overflow-hidden border border-border">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={background.inspirationImage.preview}
+                  alt="Background inspiration"
+                  className="max-h-48 object-cover rounded-lg"
+                />
+                <button
+                  onClick={removeBgImage}
+                  className="absolute top-2 right-2 p-1 rounded-full bg-black/60 text-white hover:bg-red-500 transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <ImageReferenceModeToggle
+                value={background.imageReferenceMode ?? "inspiration"}
+                onChange={(imageReferenceMode) =>
+                  setBackground({ ...background, imageReferenceMode })
+                }
               />
-              <button
-                onClick={removeBgImage}
-                className="absolute top-2 right-2 p-1 rounded-full bg-black/60 text-white hover:bg-red-500 transition-colors"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
+            </>
           ) : (
             <button
               onClick={() => bgInputRef.current?.click()}
