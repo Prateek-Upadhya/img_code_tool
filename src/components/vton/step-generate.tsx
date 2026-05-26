@@ -2956,6 +2956,11 @@ export function StepGenerate({ store }: StepGenerateProps) {
         return;
       }
 
+      // Product-level Pose Variation toggle for this source image (Model Swap single mode).
+      // Default: false (strict exact-pose reproduction). When true, the prompt is allowed
+      // to introduce subtle gaze/hand/stance variation within locked framing & body orientation.
+      const poseVariation = sourceImg.poseVariation === true;
+
       const generate = async () => {
         collectedCosts.length = 0;
         if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
@@ -2972,6 +2977,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           aspectRatio,
           additionalInfo,
           productInfo,
+          poseVariation,
         });
         collectedCosts.push(promptResult.cost);
 
@@ -2986,6 +2992,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           background,
           aspectRatio,
           imageSize: imageQuality,
+          poseVariation,
         });
         collectedCosts.push(imageResult.cost);
 
@@ -3002,6 +3009,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
+          allowPoseVariation: poseVariation,
         }).then((v) => {
           if (v.cost) collectedCosts.push(v.cost);
           const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
@@ -3107,6 +3115,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
         return;
       }
 
+      // Product-level Pose Variation toggle for this folder (Model Swap bulk mode).
+      // The toggle lives on the ProductFolder, so all images in this folder share the setting.
+      const poseVariation = combo.primaryFolder.poseVariation === true;
+
       const generate = async () => {
         collectedCosts.length = 0;
         if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
@@ -3123,6 +3135,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           aspectRatio,
           additionalInfo,
           productInfo: combo.primaryFolder.productInfo || "",
+          poseVariation,
         });
         collectedCosts.push(promptResult.cost);
 
@@ -3137,6 +3150,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           background: combo.background,
           aspectRatio,
           imageSize: imageQuality,
+          poseVariation,
         });
         collectedCosts.push(imageResult.cost);
 
@@ -3153,6 +3167,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
+          allowPoseVariation: poseVariation,
         }).then((v) => {
           if (v.cost) collectedCosts.push(v.cost);
           const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
@@ -3232,6 +3247,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
         return;
       }
 
+      // Product-level Pose Variation toggle (single mode retry). Read from the GarmentImage.
+      const poseVariation = sourceImg.poseVariation === true;
+
       const generate = async () => {
         collectedCosts.length = 0;
         if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
@@ -3247,6 +3265,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           aspectRatio,
           additionalInfo,
           productInfo,
+          poseVariation,
           previousMismatchFeedback: previousFeedback,
         });
         collectedCosts.push(promptResult.cost);
@@ -3261,6 +3280,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           background,
           aspectRatio,
           imageSize: imageQuality,
+          poseVariation,
         });
         collectedCosts.push(imageResult.cost);
         updateModelSwapResult(result.id, {
@@ -3277,6 +3297,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
+          allowPoseVariation: poseVariation,
         }).then((v) => {
           if (v.cost) collectedCosts.push(v.cost);
           const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
@@ -3388,6 +3409,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
         return;
       }
 
+      // Product-level Pose Variation toggle (bulk mode retry). Read from the ProductFolder.
+      const poseVariation = combo.primaryFolder.poseVariation === true;
+
       const generate = async () => {
         collectedCosts.length = 0;
         if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
@@ -3403,6 +3427,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           aspectRatio,
           additionalInfo,
           productInfo: combo.primaryFolder.productInfo || "",
+          poseVariation,
           previousMismatchFeedback: previousFeedback,
         });
         collectedCosts.push(promptResult.cost);
@@ -3417,6 +3442,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           background: combo.background,
           aspectRatio,
           imageSize: imageQuality,
+          poseVariation,
         });
         collectedCosts.push(imageResult.cost);
         updateModelSwapBulkResult(result.id, {
@@ -3433,6 +3459,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
+          allowPoseVariation: poseVariation,
         }).then((v) => {
           if (v.cost) collectedCosts.push(v.cost);
           const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);

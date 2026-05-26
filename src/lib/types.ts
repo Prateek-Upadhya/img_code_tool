@@ -72,6 +72,12 @@ export interface GarmentImage {
   isBackView?: boolean;
   /** For footwear: which side of the shoe this image represents */
   footwearSide?: FootwearSide;
+  /**
+   * Model Swap only. When true, allow subtle pose variation (gaze, hand position,
+   * stance) while preserving image framing and body orientation. When false / undefined,
+   * the new model must adopt the EXACT same pose as the source image. Default: false.
+   */
+  poseVariation?: boolean;
 }
 
 export interface ComplementaryImage {
@@ -370,6 +376,13 @@ export interface ProductFolder {
   bottomwearLength?: BottomwearLength | null;
   /** Present when this folder was created from CSV/XLSX bulk import; used to replace on filter change */
   bulkImportSessionId?: string;
+  /**
+   * Model Swap only. When true, allow subtle pose variation (gaze, hand position,
+   * stance) for every image in this folder while preserving image framing and body
+   * orientation. When false / undefined, the new model must adopt the EXACT same pose
+   * as each source image. Default: false.
+   */
+  poseVariation?: boolean;
 }
 
 /** Sentinel value for spreadsheet filter: include all rows */
