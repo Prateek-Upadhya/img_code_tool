@@ -438,6 +438,15 @@ export const POSES: Pose[] = [
     framing: "full-body",
     garmentRelevance: ["topwear", "bottomwear", "onepiece"],
   },
+  {
+    id: "tqf-seated-stool-full",
+    name: "¾ Front Seated on Stool",
+    description: "Full-body shot of the model seated on a wooden stool, the body rotated 45° clockwise about the vertical axis so the model faces diagonally toward the camera (three-quarter front) — the front and one side of the garment are both visible. Upright relaxed torso, shoulders square to the diagonal, one hand resting naturally on the thigh and the other lightly gripping the front edge of the seat; feet planted on the floor or one foot resting on a stool stretcher, knees and lower legs fully in frame. Framed head to toe with a small margin of floor below the feet; the garment (top, bottom, and footwear) is fully visible and unobstructed and remains the hero of the shot. THE WOODEN STOOL — render this EXACT stool every time, identical in every output: a four-legged backless stool with a seat 30 cm above the floor; the seat is a perfectly round disc 32 cm in diameter and 4 cm thick with a gently rounded (eased) top edge; the four legs are solid turned wood, 4 cm square at the top tapering to 3 cm at the floor, splayed outward at a consistent 8° rake on all four sides; the legs are joined by four flat horizontal stretchers forming a square ring set 12 cm above the floor (a simple box-stretcher — no H-stretcher, no foot ring); joinery is clean mortise-and-tenon with NO visible hardware, screws, brackets, nails, or glue lines. Wood: solid medium walnut, a warm mid-brown (approx. hex #6F4E37) with subtle natural tonal variation; straight, even, open grain running lengthwise along each leg and radially across the round seat, with a few faint darker grain streaks but NO knots, cracks, paint, stain blotches, or distress marks. Finish: smooth satin (low-sheen) clear lacquer — soft light reflection, not glossy and not raw matte. The stool is minimal, clean, and unobtrusive and must NOT change shape, proportion, leg count, color, grain, or finish between generations.",
+    icon: "🪑",
+    viewAngle: "three-quarter-front",
+    framing: "full-body",
+    garmentRelevance: ["topwear", "bottomwear", "onepiece"],
+  },
 
   // --- ¾ Front · ¾ Body ---
   {

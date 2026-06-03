@@ -2359,6 +2359,173 @@ export async function editVTONImage({
 }
 
 /**
+ * VTON Contextual Retry — a 2-step Pro→Flash pipeline that turns a user's free-text
+ * change request into a highly contextual, surgically-constrained edit.
+ *
+ * Step A (gemini-3.1-pro-preview): given the CURRENT generated output image, the garment
+ *   product reference(s), the AI model reference, and the full multimodal configuration,
+ *   plus the user's change marked CRITICAL, write ONE minimal, strictly-constrained
+ *   "Change only…" edit instruction.
+ * Step B (gemini-3.1-flash-image-preview / Nano Banana 2): replay the original multi-turn
+ *   VTON context + edit history and apply ONLY that Pro-authored instruction.
+ *
+ * Mirrors `editInfographicImage` but enriched for VTON (garment + model identity + config).
+ */
+export async function contextualRetryVTONImage({
+  apiKey,
+  originalContentParts,
+  imageGenResponseContent,
+  editHistory,
+  generatedImageData,
+  garmentImages,
+  complementaryImages = [],
+  accessories = [],
+  modelImage,
+  background,
+  productInfo,
+  userChangeRequest,
+  aspectRatio,
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  originalContentParts: ContentPart[];
+  imageGenResponseContent: unknown;
+  editHistory?: EditHistoryEntry[];
+  generatedImageData: string;
+  garmentImages: GarmentImage[];
+  complementaryImages?: ComplementaryImage[];
+  accessories?: AccessoryItem[];
+  modelImage: ModelImage | null;
+  background?: BackgroundConfig;
+  productInfo?: string;
+  userChangeRequest: string;
+  aspectRatio: AspectRatio;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; promptCost: StepCost; imageCost: StepCost; responseContent: unknown; editInstruction: string }> {
+  const ai = new GoogleGenAI({ apiKey });
+
+  // ── Step A: Pro writes a minimal, strictly-constrained edit instruction ──
+  const cfgLines: string[] = [];
+  if (productInfo?.trim()) cfgLines.push(`PRODUCT INFO: ${productInfo.trim()}`);
+  if (background) {
+    cfgLines.push(
+      `BACKGROUND: mode=${background.mode}` +
+        (background.mode === "text" && background.textDescription?.trim()
+          ? `, scene="${background.textDescription.trim()}"`
+          : "") +
+        (background.mode === "inspiration"
+          ? `, imageReference=${background.imageReferenceMode ?? "inspiration"}`
+          : "")
+    );
+  }
+  const accLabels = accessories
+    .map((a) => (a.category === "custom" ? a.customDescription?.trim() || "custom accessory" : a.category))
+    .filter(Boolean);
+  if (accLabels.length) cfgLines.push(`ACCESSORIES: ${accLabels.join("; ")}`);
+  cfgLines.push(
+    modelImage
+      ? "SHOT TYPE: on-model — a real person wears the product; preserve the exact person."
+      : "SHOT TYPE: product-only — no human model present."
+  );
+
+  const enrichSystemPrompt = `You are an expert fashion VTON (virtual try-on) art director performing a SURGICAL edit. You are given the CURRENTLY generated try-on image (first image), the garment product reference photo(s) (next images), the AI model reference photo (last image, if present), the multimodal configuration, and the user's requested change. Write a SINGLE, minimal, strictly-constrained edit instruction for an image-editing model.
+
+HARD CONSTRAINTS:
+- Make ONLY the change the user asked for. Change nothing else.
+- Begin the instruction with "Change only" and end it with an explicit clause that everything else — the garment identity, colorway, pattern, fabric and construction; the model's identity (face, skin tone, hair, body proportions); the pose, framing and crop; the background, lighting, shadows and composition — must remain EXACTLY the same and pixel-identical.
+- Preserve the garment's identity and colorway from the product reference photos at all costs; do not redesign, recolor, rebrand, or alter any region the user did not mention.
+- Preserve the model's identity from the model reference photo; do not change the person.
+- Be concrete and unambiguous so the result is reproducible.
+
+USER'S REQUESTED CHANGE (CRITICAL — this is the ONLY thing to change):
+${userChangeRequest.trim()}
+
+MULTIMODAL CONFIGURATION (for context):
+${cfgLines.join("\n")}
+
+Output ONLY the edit instruction text — no preamble, no commentary.`;
+
+  const enrichContents: ContentPart[] = [{ text: enrichSystemPrompt }];
+  const [genMime, genData] = parseDataUrl(generatedImageData);
+  enrichContents.push({ inlineData: { mimeType: genMime, data: genData } });
+  for (const img of garmentImages) {
+    enrichContents.push({ inlineData: { mimeType: img.file.type, data: await fileToBase64(img.file) } });
+  }
+  for (const img of complementaryImages) {
+    enrichContents.push({ inlineData: { mimeType: img.file.type, data: await fileToBase64(img.file) } });
+  }
+  if (modelImage) {
+    enrichContents.push({ inlineData: { mimeType: modelImage.file.type, data: await fileToBase64(modelImage.file) } });
+  }
+
+  const enrichResponse = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents: enrichContents,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+      abortSignal,
+    },
+  });
+
+  const editInstruction = enrichResponse.text?.trim();
+  if (!editInstruction) {
+    throw new Error("No edit instruction returned from Gemini 3.1 Pro");
+  }
+  const promptCost = computeStepCost(
+    "gemini-3.1-pro-preview",
+    "Contextual Retry Prompt (Gemini 3.1 Pro)",
+    extractTokenUsage(enrichResponse)
+  );
+
+  // ── Step B: replay the original multi-turn VTON context and apply only that edit ──
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const contents: any[] = [
+    { role: "user", parts: originalContentParts },
+    imageGenResponseContent,
+  ];
+
+  if (editHistory && editHistory.length > 0) {
+    for (const entry of editHistory) {
+      contents.push({ role: "user", parts: [{ text: entry.userInstruction }] });
+      contents.push(entry.modelResponseContent);
+    }
+  }
+
+  contents.push({ role: "user", parts: [{ text: editInstruction }] });
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image-preview",
+    contents,
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio, imageSize },
+      abortSignal,
+    },
+  });
+
+  const imageCost = computeImageGenCost("Contextual Retry Image (Nano Banana 2)", extractTokenUsage(response), imageSize);
+  const responseContent = response.candidates?.[0]?.content;
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return {
+          imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+          promptCost,
+          imageCost,
+          responseContent,
+          editInstruction,
+        };
+      }
+    }
+  }
+
+  throw new Error("No image generated from contextual retry");
+}
+
+/**
  * Pre-generation check: determine whether a human model is clearly visible in the source image.
  * If no human is detected, Model Swap should be skipped and the original image returned as-is.
  */

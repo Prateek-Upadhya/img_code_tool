@@ -37,7 +37,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, editVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene } from "@/lib/gemini";
+import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene } from "@/lib/gemini";
 import { generateVTONImageAzure } from "@/lib/azure-image";
 import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS } from "@/lib/constants";
 import Image from "next/image";
@@ -112,14 +112,19 @@ function getSequencedFileName(
   ext: string,
   oneIndexed = false,
   skipIndices: number[] = [],
+  folderScoped = false,
 ): string {
   const safeName = baseName.replace(/[<>:"/\\|?*]+/g, "_");
   const counter = computeSkipAwareCounter(sequenceIndex, oneIndexed, skipIndices);
   if (oneIndexed) {
     return `${safeName}_${counter}.${ext}`;
   }
+  // When the file lives INSIDE a folder named `safeName`, a bare `safeName.ext`
+  // for index 0 is identical to its parent folder's name; such an entry gets
+  // dropped from the generated ZIP (the first image goes missing). Suffix it
+  // `_0` in that folder-scoped case so the first image is always included.
   return counter === 0
-    ? `${safeName}.${ext}`
+    ? (folderScoped ? `${safeName}_0.${ext}` : `${safeName}.${ext}`)
     : `${safeName}_${counter}.${ext}`;
 }
 
@@ -1857,29 +1862,38 @@ export function StepGenerate({ store }: StepGenerateProps) {
           isGhostMannequin: poseIsGhostMannequin,
         });
 
-        const editResult = await editVTONImage({
+        const editResult = await contextualRetryVTONImage({
           apiKey,
           originalContentParts,
           imageGenResponseContent: result.imageGenResponseContent,
           editHistory: result.editHistory,
-          editInstruction,
+          generatedImageData: result.imageData,
+          garmentImages,
+          complementaryImages,
+          accessories,
+          modelImage: poseIsProductOnly ? null : modelImage,
+          background,
+          productInfo,
+          userChangeRequest: editInstruction,
           aspectRatio,
           imageSize: imageQuality,
         });
 
         const newEditEntry: EditHistoryEntry = {
-          userInstruction: editInstruction,
+          userInstruction: editResult.editInstruction,
           modelResponseContent: editResult.responseContent,
         };
 
+        const prevCost = result.costBreakdown?.totalCost ?? 0;
         updateResult(result.id, {
           imageData: editResult.imageData,
           status: "completed",
           imageGenResponseContent: editResult.responseContent,
           editHistory: [...(result.editHistory || []), newEditEntry],
           costBreakdown: {
-            steps: [editResult.cost],
-            totalCost: editResult.cost.totalCost + (result.costBreakdown?.totalCost || 0),
+            steps: [...(result.costBreakdown?.steps ?? []), editResult.promptCost, editResult.imageCost],
+            totalCost: prevCost + editResult.promptCost.totalCost + editResult.imageCost.totalCost,
+            retrySteps: result.costBreakdown?.retrySteps,
           },
         });
       } catch (err) {
@@ -1892,7 +1906,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       setEditingResultId(null);
       setEditText("");
     },
-    [apiKey, garmentImages, complementaryImages, modelImage, productCategory, poseAccessories, aspectRatio, imageQuality, updateResult]
+    [apiKey, garmentImages, complementaryImages, modelImage, background, productInfo, productCategory, poseAccessories, aspectRatio, imageQuality, updateResult]
   );
 
   const handleEditBulk = useCallback(
@@ -1902,7 +1916,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       if (!combo) return;
 
       const effectivePoseId = result.customPose ? result.customPose.id : result.pose.id;
-      const { model: effectiveModel, cg: effectiveCg } = resolveOverride(combo, effectivePoseId);
+      const { model: effectiveModel, bg: effectiveBg, cg: effectiveCg } = resolveOverride(combo, effectivePoseId);
 
       const pgImages: GarmentImage[] = combo.primaryFolder.images.map((img) => ({
         id: img.id, file: img.file, preview: img.preview, type: garmentType, isBackView: img.isBackView, footwearSide: img.footwearSide,
@@ -1930,29 +1944,38 @@ export function StepGenerate({ store }: StepGenerateProps) {
           isGhostMannequin: poseIsGhostMannequin,
         });
 
-        const editResult = await editVTONImage({
+        const editResult = await contextualRetryVTONImage({
           apiKey,
           originalContentParts,
           imageGenResponseContent: result.imageGenResponseContent,
           editHistory: result.editHistory,
-          editInstruction,
+          generatedImageData: result.imageData,
+          garmentImages: pgImages,
+          complementaryImages: cgImages,
+          accessories,
+          modelImage: poseIsProductOnly ? null : bulkModelImg,
+          background: effectiveBg,
+          productInfo: combo.primaryFolder.productInfo || "",
+          userChangeRequest: editInstruction,
           aspectRatio,
           imageSize: imageQuality,
         });
 
         const newEditEntry: EditHistoryEntry = {
-          userInstruction: editInstruction,
+          userInstruction: editResult.editInstruction,
           modelResponseContent: editResult.responseContent,
         };
 
+        const prevCost = result.costBreakdown?.totalCost ?? 0;
         updateBulkResult(result.id, {
           imageData: editResult.imageData,
           status: "completed",
           imageGenResponseContent: editResult.responseContent,
           editHistory: [...(result.editHistory || []), newEditEntry],
           costBreakdown: {
-            steps: [editResult.cost],
-            totalCost: editResult.cost.totalCost + (result.costBreakdown?.totalCost || 0),
+            steps: [...(result.costBreakdown?.steps ?? []), editResult.promptCost, editResult.imageCost],
+            totalCost: prevCost + editResult.promptCost.totalCost + editResult.imageCost.totalCost,
+            retrySteps: result.costBreakdown?.retrySteps,
           },
         });
       } catch (err) {
@@ -2332,7 +2355,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           const resp = await fetch(r.imageData);
           const blob = await resp.blob();
           const ext = (blob.type && blob.type.split("/")[1]) || "png";
-          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed, skipIndices), blob);
+          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed, skipIndices, true), blob);
         } catch (e) {
           // eslint-disable-next-line no-console
           console.error("Failed to add image to zip:", e);
@@ -2486,7 +2509,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           const resp = await fetch(r.imageData);
           const blob = await resp.blob();
           const ext = (blob.type && blob.type.split("/")[1]) || "png";
-          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed, skipIndices), blob);
+          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed, skipIndices, true), blob);
         } catch (e) {
           // eslint-disable-next-line no-console
           console.error("Failed to add image to zip:", e);
