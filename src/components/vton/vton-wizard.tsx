@@ -8,6 +8,7 @@ import {
   REPLICATE_WIZARD_STEPS,
   VIDEO_WIZARD_STEPS,
   ROOM_STAGING_WIZARD_STEPS,
+  INFOGRAPHIC_WIZARD_STEPS,
 } from "@/lib/constants";
 import { StepGarments } from "./step-garments";
 import { StepStyling } from "./step-styling";
@@ -29,6 +30,10 @@ import { StepRoomStagingScene } from "./step-room-staging-scene";
 import { StepRoomStagingShots } from "./step-room-staging-shots";
 import { StepRoomStagingDetails } from "./step-room-staging-details";
 import { StepRoomStagingGenerate } from "./step-room-staging-generate";
+import { StepInfographicProducts } from "./step-infographic-products";
+import { StepInfographicBackground } from "./step-infographic-background";
+import { StepInfographicTemplate } from "./step-infographic-template";
+import { StepInfographicGenerate } from "./step-infographic-generate";
 import { AppSidebar } from "./app-sidebar";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -50,6 +55,7 @@ import {
   Copy,
   Video,
   Sofa,
+  LayoutTemplate,
 } from "lucide-react";
 import type { AppMode, FeatureMode, WizardStep } from "@/lib/types";
 import {
@@ -102,6 +108,13 @@ const ROOM_STAGING_STEP_ICONS: Record<number, React.ReactNode> = {
   5: <Sparkles className="w-4 h-4" />,
 };
 
+const INFOGRAPHIC_STEP_ICONS: Record<number, React.ReactNode> = {
+  1: <ImageIcon className="w-4 h-4" />,
+  2: <Palette className="w-4 h-4" />,
+  3: <LayoutTemplate className="w-4 h-4" />,
+  4: <Sparkles className="w-4 h-4" />,
+};
+
 function getFeatureLabel(featureMode: FeatureMode) {
   switch (featureMode) {
     case "vton":
@@ -116,6 +129,8 @@ function getFeatureLabel(featureMode: FeatureMode) {
       return "Product Video";
     case "room-staging":
       return "Room Staging";
+    case "infographic":
+      return "Infographics";
   }
 }
 
@@ -134,13 +149,17 @@ export function VTONWizard() {
     isReplicateGenerating,
     isVideoGenerating,
     isRoomStagingGenerating,
+    isInfographicGenerating,
   } = store;
   const isModelSwap = featureMode === "model-swap";
   const isSwatch = featureMode === "swatch";
   const isReplicate = featureMode === "replicate";
   const isProductVideo = featureMode === "product-video";
   const isRoomStaging = featureMode === "room-staging";
-  const activeWizardSteps = isRoomStaging
+  const isInfographic = featureMode === "infographic";
+  const activeWizardSteps = isInfographic
+    ? INFOGRAPHIC_WIZARD_STEPS
+    : isRoomStaging
     ? ROOM_STAGING_WIZARD_STEPS
     : isProductVideo
     ? VIDEO_WIZARD_STEPS
@@ -152,7 +171,7 @@ export function VTONWizard() {
     ? MODEL_SWAP_WIZARD_STEPS
     : WIZARD_STEPS;
   const maxStep = activeWizardSteps.length;
-  const anyGenerating = isGenerating || isSwatchGenerating || isReplicateGenerating || isVideoGenerating || isRoomStagingGenerating;
+  const anyGenerating = isGenerating || isSwatchGenerating || isReplicateGenerating || isVideoGenerating || isRoomStagingGenerating || isInfographicGenerating;
 
   const goNext = () => {
     const nextStep = (currentStep + 1) as WizardStep;
@@ -188,7 +207,9 @@ export function VTONWizard() {
     }
   };
 
-  const stepIcons = isRoomStaging
+  const stepIcons = isInfographic
+    ? INFOGRAPHIC_STEP_ICONS
+    : isRoomStaging
     ? ROOM_STAGING_STEP_ICONS
     : isProductVideo
     ? VIDEO_STEP_ICONS
@@ -327,7 +348,7 @@ export function VTONWizard() {
               </div>
 
               {/* Single/Bulk toggle */}
-              {!isSwatch && (
+              {!isSwatch && !isInfographic && (
                 <div className="flex items-center rounded-xl border border-border/50 bg-muted/50 p-1 self-start sm:self-end backdrop-blur-sm">
                   <button
                     onClick={() => handleModeSwitch("single")}
@@ -361,7 +382,14 @@ export function VTONWizard() {
 
             {/* Step Content */}
             <div className="min-h-[400px]">
-              {isRoomStaging ? (
+              {isInfographic ? (
+                <>
+                  {currentStep === 1 && <StepInfographicProducts store={store} />}
+                  {currentStep === 2 && <StepInfographicBackground store={store} />}
+                  {currentStep === 3 && <StepInfographicTemplate store={store} />}
+                  {currentStep === 4 && <StepInfographicGenerate store={store} />}
+                </>
+              ) : isRoomStaging ? (
                 <>
                   {currentStep === 1 && <StepRoomStagingProducts store={store} />}
                   {currentStep === 2 && <StepRoomStagingScene store={store} />}

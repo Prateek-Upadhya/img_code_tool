@@ -1,4 +1,4 @@
-import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, Gender, ImageGenModel, ModelSwapBackgroundMode, Pose, PoseFraming, ProductCategory, SetLayoutStyle, SleeveLength, SwatchShape, TopwearLength } from "./types";
+import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelSwapBackgroundMode, Pose, PoseFraming, ProductCategory, SetLayoutStyle, SleeveLength, SwatchShape, TopwearLength } from "./types";
 
 export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; description: string }[] = [
   { value: "clothing", label: "Clothing", description: "Apparel, garments, and fashion items" },
@@ -2561,3 +2561,107 @@ export const ROOM_STAGING_SHOTS: import("./types").RoomStagingShot[] = [
   { id: "rs-dining-setting", name: "Dining Setting", description: "Product in a dining room — under table, on table, or as wall backdrop", icon: "🍽️", viewAngle: "three-quarter-front", framing: "room-wide", requiresRoom: true },
   { id: "rs-entryway", name: "Entryway Setting", description: "Product at entrance or foyer, welcoming and first-impression focused", icon: "🚪", viewAngle: "front", framing: "room-wide", requiresRoom: true },
 ];
+
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║                  BULK INFOGRAPHIC FEATURE                          ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+
+export const INFOGRAPHIC_WIZARD_STEPS = [
+  { step: 1, title: "Products", description: "Upload products, info & brand logo" },
+  { step: 2, title: "Background", description: "Choose the infographic background style" },
+  { step: 3, title: "Template", description: "Template, aspect ratio & styling" },
+  { step: 4, title: "Generate", description: "Generate & refine infographics" },
+] as const;
+
+/**
+ * Product categories surfaced in the infographic wizard.
+ * Footwear is the only active category in v1; clothing is planned for a later iteration.
+ */
+export const INFOGRAPHIC_CATEGORY_OPTIONS: { value: ProductCategory; label: string; icon: string; description: string; comingSoon?: boolean }[] = [
+  { value: "footwear", label: "Footwear", icon: "👟", description: "Shoes, boots, sneakers, sandals — floating & sole-construction layouts" },
+  { value: "clothing", label: "Clothing", icon: "👕", description: "Apparel infographics — coming soon", comingSoon: true },
+];
+
+export const INFOGRAPHIC_BACKGROUND_OPTIONS: { value: InfographicBackgroundStyle; label: string; icon: string; description: string }[] = [
+  { value: "solid-uniform", label: "Solid Uniform", icon: "⬛", description: "A flat, even color that contrasts the footwear — no gradients or texture" },
+  { value: "solid-textured", label: "Solid Textured", icon: "🌫️", description: "A contrasting solid color with subtle gradients & texture that complement the material" },
+  { value: "dreamy", label: "Dreamy", icon: "☁️", description: "Soft, ethereal levitation-photography backdrop with gentle bloom and depth" },
+  { value: "themed", label: "Themed", icon: "🎨", description: "A contextual background derived from the product's material, use-case and story" },
+];
+
+export const INFOGRAPHIC_TEMPLATE_OPTIONS: { value: InfographicTemplate; label: string; icon: string; description: string }[] = [
+  { value: "minimalistic", label: "Minimalistic", icon: "✨", description: "The pair floating in clean space — one shoe shows the sole, the other top & side, with minimal callouts" },
+  { value: "sole-construction", label: "Sole Construction", icon: "🧱", description: "A single shoe shown as an exploded sole-construction stack; layers derived from the feature points" },
+];
+
+export const INFOGRAPHIC_IMAGE_SIZE_OPTIONS: { value: "1K" | "2K" | "4K"; label: string; description: string }[] = [
+  { value: "1K", label: "1K", description: "Fast drafts" },
+  { value: "2K", label: "2K", description: "Recommended — crisp e-commerce quality" },
+  { value: "4K", label: "4K", description: "Highest detail — print-ready" },
+];
+
+/**
+ * Rich, reusable background prompt fragments stitched into the Gemini 3.1 Pro enrichment
+ * instruction. Authored against Nano Banana best practices: positive phrasing, explicit
+ * shadow/gradient direction sync, no design artifacts.
+ */
+export const INFOGRAPHIC_BACKGROUND_SNIPPETS: Record<InfographicBackgroundStyle, string> = {
+  "solid-uniform": `BACKGROUND — SOLID UNIFORM:
+Render a single, perfectly even, flat solid-color background. The background must be completely uniform edge to edge: no gradient, no vignette, no texture, no pattern, no geometric shapes, no rings, no decorative artifacts of any kind.
+
+COLOR SELECTION (critical — do this carefully):
+- First identify EVERY major color region of the footwear, not just the dominant upper: the upper, the SOLE / outsole / midsole, the laces, and any trims or accents.
+- Choose ONE background color whose hue and value SIMULTANEOUSLY contrast ALL of those colors, so both the lightest and the darkest parts of the shoe clearly separate from the backdrop.
+- If the footwear contains DARK elements (e.g. a black sole or dark upper), do NOT pick a dark or deep background shade — it would blend with those dark parts. If it contains NEAR-WHITE elements, avoid near-white / very pale backgrounds for the same reason.
+- Prefer a clean, light-to-mid, gently saturated hue that sets off both extremes at once. Example: a white-and-black shoe → a soft LIGHT BLUE (or a similar soft pastel — light teal, soft lilac, pale warm grey) that contrasts both the white upper and the black sole. A predominantly bright/saturated shoe → a calm neutral mid-tone that lets the product's colors stay the hero.
+State the exact background color as a concrete hex value in the composition so it is reproducible.`,
+  "solid-textured": `BACKGROUND — SOLID TEXTURED:
+Render a solid-color background enriched with a SUBTLE gradient and a fine, tasteful texture. Use your world knowledge to ANALYSE and COMPREHEND the footwear's design, materials, style and overall theme from the reference photo(s), then invent a texture that COMPLEMENTS that style and theme. Do NOT default to any one fixed texture — let the chosen texture vary naturally so it suits this specific shoe and so sibling variations can differ. Keep it refined and understated: it enriches the backdrop without ever becoming a design, logo, pattern, geometric shape, ring or artifact — only a clean, complementary textured solid backdrop.
+
+COLOR SELECTION (critical — do this carefully):
+- First identify EVERY major color region of the footwear, not just the dominant upper: the upper, the SOLE / outsole / midsole, the laces, and any trims or accents.
+- Choose a base background color whose hue and value SIMULTANEOUSLY contrast ALL of those colors, so both the lightest and the darkest parts of the shoe clearly separate from the backdrop.
+- If the footwear contains DARK elements (e.g. a black sole or dark upper), do NOT pick a dark or deep background shade — keep the base light-to-mid so the dark parts stand out. If it contains NEAR-WHITE elements, avoid near-white / very pale backgrounds.
+- Prefer a clean, gently saturated light-to-mid hue that sets off both extremes at once. Example: a white-and-black shoe → a soft LIGHT BLUE (or a similar soft pastel) that contrasts both the white upper and the black sole. Keep the gradient and texture within this same hue family so the base color's contrast role is preserved.
+CRITICAL: the gradient must be gentle and directional — state its bright-to-dark direction explicitly and keep it in sync with the product's lighting and contact-shadow direction (same single light source). State the base background color as a concrete hex value and the gradient direction.`,
+  dreamy: `BACKGROUND — DREAMY:
+Render a soft, ethereal, dreamy backdrop typical of high-end floating / levitation product photography. Use gentle atmospheric depth, soft bloom, a delicate haze, and softly diffused light falloff that makes the footwear feel weightless and suspended. Keep colors harmonious and muted so the product remains the hero; the dreamy atmosphere must never introduce hard shapes, patterns, text, or distracting artifacts. State the dominant background tones as concrete hex values and the light direction so contact shadows stay consistent.`,
+  themed: `BACKGROUND — THEMED:
+Invent a fitting, contextual themed background derived from the product information, the footwear's material, its intended use-case, and its story (e.g. a rugged textured surface for trail shoes, a clean athletic environment for running shoes, a refined surface for formal shoes). The theme must stay subtle, premium and uncluttered — it sets mood and context without competing with the product or its callouts, and never adds readable text, logos, busy patterns, or artifacts. Reserve clean negative space for the callouts. Keep the theme's tones chosen so they contrast ALL major footwear colors (upper AND sole) — if the footwear has dark elements like a black sole, keep the themed tones light-to-mid rather than dark so those parts stay separated. State the chosen theme, its dominant colors as concrete hex values, and the light direction.`,
+};
+
+/**
+ * Rich, reusable template/composition prompt fragments stitched into the enrichment
+ * instruction. Each describes footwear placement/orientation, callout style and the
+ * expected number/arrangement of elements.
+ */
+export const INFOGRAPHIC_TEMPLATE_SNIPPETS: Record<InfographicTemplate, string> = {
+  minimalistic: `TEMPLATE — MINIMALISTIC (FLOATING PAIR):
+Compose a clean, minimalistic infographic showing the PAIR of footwear (exactly two shoes — the same product) suspended in floating-photography style against the chosen background, with plenty of clean negative space.
+- ORIENTATION: one shoe of the pair MUST be angled so its full SOLE / outsole tread is clearly and prominently visible (any flattering angle, but the sole must read unmistakably); the other shoe shows its TOP and SIDE (the upper and profile). The two shoes are arranged in a balanced, elegant composition.
+- GROUNDING: add a HIGHLY SUBTLE contact shadow beneath each shoe so they feel grounded yet weightless. The shadow direction, softness and the background gradient direction must all derive from the SAME single light source and stay in sync.
+- CALLOUTS: place a few minimalistic callouts (typically 3–5) with thin leader lines and small, highly contextual, minimalistic icons chosen to suit the shoe's style. DISTRIBUTE the callouts EQUALLY across BOTH shoes so each shoe carries a roughly equal share (e.g. for 4 callouts, two point to the sole-facing shoe and two to the upper-facing shoe); never cluster them all on one shoe. Each callout label must be short (1–4 words). Associate each label with the correct region of the shoe it describes.
+- COPY: derive the callout text from the product information. If the product info is already bullet points, use them directly; if it is a long paragraph, FIRST summarise it into concise bullet points, then use only those bullets.
+- FEEL: premium, editorial, uncluttered — reference the look of clean floating-product infographics with NO decorative background rings or artifacts.`,
+  "sole-construction": `TEMPLATE — SOLE CONSTRUCTION (EXPLODED STACK):
+Compose a minimalistic infographic showing a SINGLE shoe from the product (exactly one shoe) rendered as an exploded SOLE-CONSTRUCTION diagram: the shoe separated into distinct horizontal layers, stacked and slightly separated vertically to reveal the construction.
+- LAYERS (FIXED — always exactly THREE): render the exploded stack as exactly three distinct horizontal layers, separated vertically top-to-bottom: (1) the UPPER element alone — the tongue for laced footwear, or the single strap for sandals/slides/strap styles, choosing whichever actually matches the reference shoe; (2) the FOOTBED / insole; (3) a THIN SOLE layer (the outsole) kept visibly slim relative to the others. Always exactly three layers regardless of how many materials the product info lists.
+- ORIENTATION: present the shoe and its exploded layers at a consistent, legible angle so each layer reads clearly and separately.
+- GROUNDING: add a highly subtle contact shadow under the stack; shadow and background gradient direction share one light source.
+- CALLOUTS: place exactly one minimalistic callout next to each of the three layers (three total) with a thin leader line and a small contextual icon; each label short (1–4 words) and associated with the exact layer it describes.
+- COPY: derive callout text from the product info; if it is a long paragraph, summarise to bullets first, then use those bullets.
+- FEEL: clean, technical, premium — no decorative background rings or artifacts.`,
+};
+
+/**
+ * Shared Nano-Banana prompting principles injected into both the enrichment system prompt
+ * and the image-generation header. Derived from official Google docs + community guidance.
+ */
+export const INFOGRAPHIC_PROMPTING_PRINCIPLES = `IMAGE-MODEL PROMPTING PRINCIPLES (follow precisely):
+- Describe the final scene as a coherent narrative, not a keyword list. Use POSITIVE phrasing (state what to render) rather than "do not" wherever possible.
+- For every piece of on-image text (headings, callout labels, bullets), wrap the EXACT words in double quotes so they render verbatim. Keep each text element short (≈1–4 words). Use a single legible modern sans-serif, consistent sizing and even spacing. Spell every word correctly.
+- Keep the total amount of on-image text modest; prefer several short labels over dense paragraphs.
+- Treat the attached product photo(s) as the ABSOLUTE source of truth for the footwear's identity: replicate silhouette, proportions, materials, stitching, colorway, sole pattern and existing logos with pixel-level accuracy. Do NOT redesign, rebrand, recolor, or add any logo/text/hardware that is not in the reference. Suppress any internal world-knowledge about what this product "should" look like.
+- State exact object counts ("exactly one pair / exactly one shoe") to avoid duplicated or extra objects.
+- Define ONE light source and reuse its direction for the product lighting, the contact shadow, and any background gradient so they all stay in sync.
+- Reserve clean negative space for callouts; no background rings, frames, watermarks, busy patterns, or decorative artifacts.`;

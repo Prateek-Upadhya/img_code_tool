@@ -22,6 +22,7 @@ import {
   Copy,
   Video,
   Sofa,
+  LayoutTemplate,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { FeatureMode } from "@/lib/types";
@@ -72,6 +73,12 @@ const NAV_ITEMS: {
     label: "Product Video",
     icon: Video,
     description: "AI product videos",
+  },
+  {
+    id: "infographic",
+    label: "Infographics",
+    icon: LayoutTemplate,
+    description: "Bulk product infographics",
   },
 ];
 

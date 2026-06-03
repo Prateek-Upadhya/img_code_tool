@@ -14,6 +14,8 @@ import {
   GarmentType,
   Gender,
   ImageGenModel,
+  InfographicBackgroundStyle,
+  InfographicTemplate,
   ModelImage,
   ModelSwapBackgroundMode,
   Pose,
@@ -40,6 +42,9 @@ import {
   FOOTWEAR_TYPE_OPTIONS,
   SLEEVE_LENGTH_OPTIONS,
   TOPWEAR_LENGTH_OPTIONS,
+  INFOGRAPHIC_BACKGROUND_SNIPPETS,
+  INFOGRAPHIC_TEMPLATE_SNIPPETS,
+  INFOGRAPHIC_PROMPTING_PRINCIPLES,
 } from "./constants";
 
 // Pricing per 1M tokens (USD)
@@ -4795,7 +4800,7 @@ Output ONLY the generation prompt text. ${isProductOnly ? "2-3" : "3-4"} paragra
     parts.push({ inlineData: { mimeType: background.inspirationImage.file.type, data: base64 } });
   }
 
-  let paramsBlock = `\n\n--- GENERATION PARAMETERS ---
+  const paramsBlock = `\n\n--- GENERATION PARAMETERS ---
 Product: ${productTypeLabel}${subTypeLabel ? ` / ${subTypeLabel}` : ""} (${categoryLabel})
 Shape: ${productShape}
 ${productDimensions ? `Dimensions: ${productDimensions}` : ""}
@@ -4908,4 +4913,341 @@ Keep the product exactly the same as in the reference images above. Preserve the
   const cost = computeImageGenCost("Room Staging Image (Nano Banana 2)", tokens, imageSize);
 
   return { imageData, cost };
+}
+
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║          BULK INFOGRAPHIC — TWO-STEP PROMPT & IMAGE PIPELINE       ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+
+interface InfographicBrandInput {
+  /** Whether a brand logo image is attached to the image-generation request. */
+  logoPresent: boolean;
+  /** Free-form brand-logo placement guidance from the user. */
+  placementInstructions?: string;
+}
+
+/**
+ * Step 1 — Use Gemini 3.1 Pro to author a precise, deterministic infographic composition
+ * prompt from the product images + product info + chosen background/template snippets.
+ * The output is a single self-contained image-composition description fed to the image model.
+ */
+export async function generateInfographicPrompt({
+  apiKey,
+  productImages,
+  productInfo,
+  productCategory = "footwear",
+  backgroundStyle,
+  template,
+  brand,
+  aspectRatio,
+  stylingInstructions,
+  variationIndex = 1,
+  variationCount = 1,
+  abortSignal,
+}: {
+  apiKey: string;
+  productImages: { file: File }[];
+  productInfo?: string;
+  productCategory?: ProductCategory;
+  backgroundStyle: InfographicBackgroundStyle;
+  template: InfographicTemplate;
+  brand?: InfographicBrandInput;
+  aspectRatio: AspectRatio;
+  stylingInstructions?: string;
+  /** 1-based variation number within this (product, template) group. */
+  variationIndex?: number;
+  /** Total variations requested for this (product, template) group. */
+  variationCount?: number;
+  abortSignal?: AbortSignal;
+}): Promise<{ enrichedPrompt: string; cost: StepCost }> {
+  const ai = new GoogleGenAI({ apiKey });
+
+  const backgroundSnippet = INFOGRAPHIC_BACKGROUND_SNIPPETS[backgroundStyle];
+  const templateSnippet = INFOGRAPHIC_TEMPLATE_SNIPPETS[template];
+
+  const variationDirective = variationCount > 1
+    ? `═══ VARIATION ═══
+This is variation ${variationIndex} of ${variationCount} for this product and template. Introduce SUBTLE, tasteful differences versus the sibling variations specifically in: (a) the background — shift its exact color/gradient/texture within the chosen background style, (b) the footwear ORIENTATION and angle, and (c) the iconography and callout placement/styling. Keep the SAME product identity, the SAME template/layout intent, and the SAME premium quality across all variations — vary the staging, not the substance. Do not make drastic or jarring changes.
+
+`
+    : "";
+
+  const systemPrompt = `You are an expert e-commerce art director and product-infographic designer. You are given the reference photo(s) of a single ${productCategory} product and information about it. Your task is to author ONE precise, deterministic, self-contained IMAGE-COMPOSITION DESCRIPTION that an image-generation model will follow to produce a finished product infographic. The goal is to consistently replicate the same creative direction across many generations.
+
+Analyse the attached product image(s) carefully (silhouette, materials, colorway, sole, distinctive details) and write the composition so the downstream model reproduces THIS exact product faithfully.
+
+${INFOGRAPHIC_PROMPTING_PRINCIPLES}
+
+═══ BACKGROUND DIRECTION ═══
+${backgroundSnippet}
+
+═══ TEMPLATE / LAYOUT DIRECTION ═══
+${templateSnippet}
+
+${variationDirective}═══ PRODUCT INFORMATION ═══
+${productInfo && productInfo.trim()
+    ? `${productInfo.trim()}
+
+If the information above is a long paragraph, FIRST summarise it into concise bullet points, then derive the callout copy from those bullets only.`
+    : "No explicit product info was provided — analyse the product image(s) and infer a small set of compelling, accurate feature callouts based on what is visibly true of the product."}
+
+${brand?.logoPresent
+    ? `═══ BRAND LOGO ═══
+A brand logo image is attached to the generation request. Specify exactly where and how the logo is placed (e.g. a corner or header), at a tasteful size, preserving its proportions, clearly legible against the background. ${brand.placementInstructions?.trim() ? `Follow this placement guidance: ${brand.placementInstructions.trim()}` : ""}`
+    : ""}
+
+${stylingInstructions?.trim()
+    ? `═══ GLOBAL STYLING INSTRUCTIONS (apply to the whole composition) ═══
+${stylingInstructions.trim()}`
+    : ""}
+
+═══ OUTPUT FORMAT ═══
+Output ONLY the final composition description as flowing, well-structured prose (you may use short labelled lines). It MUST explicitly specify, so the result is reproducible:
+1. The exact placement, orientation and angle of the footwear (which shoe shows what, per the template).
+2. Each callout: its exact quoted text, the region of the product it points to, its leader line and icon, and its position in the frame.
+3. The background exactly per the direction above, including concrete hex colors and the light/gradient direction.
+4. The contact-shadow direction and softness, kept in sync with the lighting and any background gradient.
+5. The brand-logo placement (if a logo is provided).
+6. The target aspect ratio: ${aspectRatio} (mention the canvas orientation in the description).
+Do not include any preamble, commentary, or closing remarks — output the composition description only.`;
+
+  const contents: ContentPart[] = [{ text: systemPrompt }];
+  for (const img of productImages) {
+    const base64 = await fileToBase64(img.file);
+    contents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+  }
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+      abortSignal,
+    },
+  });
+
+  const text = response.text;
+  if (!text) {
+    throw new Error("No infographic composition prompt returned from Gemini 3.1 Pro");
+  }
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeStepCost(
+    "gemini-3.1-pro-preview",
+    "Infographic Prompt (Gemini 3.1 Pro)",
+    tokens
+  );
+
+  return { enrichedPrompt: text.trim(), cost };
+}
+
+/**
+ * Step 2 — Render the infographic with gemini-3.1-flash-image-preview from the enriched
+ * prompt + product reference images (+ optional brand logo). Returns the saved content
+ * parts and response content so the result can be refined via {@link editInfographicImage}.
+ */
+export async function generateInfographicImage({
+  apiKey,
+  prompt,
+  productImages,
+  logoFile,
+  brandPlacementInstructions,
+  aspectRatio,
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  prompt: string;
+  productImages: { file: File }[];
+  logoFile?: File;
+  brandPlacementInstructions?: string;
+  aspectRatio: AspectRatio;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; cost: StepCost; responseContent: unknown; contentParts: ContentPart[] }> {
+  const ai = new GoogleGenAI({ apiKey });
+
+  const contents: ContentPart[] = [];
+
+  contents.push({
+    text: `═══ PRODUCT REFERENCE IMAGES — ABSOLUTE SOURCE OF TRUTH ═══
+The following ${productImages.length} image(s) show the EXACT footwear product to feature in this infographic. Replicate it with pixel-level accuracy: same silhouette, proportions, materials, stitching, colorway, sole pattern, and any existing logos. Do NOT redesign, rebrand, recolor, or add any logo/text/hardware that is not present in these references. Ignore the reference backgrounds — only the product matters. Suppress any internal world-knowledge about what this product "should" look like; trust ONLY these pixels.`,
+  });
+
+  for (const img of productImages) {
+    const base64 = await fileToBase64(img.file);
+    contents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+  }
+
+  if (logoFile) {
+    contents.push({
+      text: `═══ BRAND LOGO REFERENCE ═══
+The image below is the brand logo. Place it tastefully in the infographic, preserving its proportions and keeping it clearly legible.${brandPlacementInstructions?.trim() ? ` Placement guidance: ${brandPlacementInstructions.trim()}` : ""}`,
+    });
+    const logoBase64 = await fileToBase64(logoFile);
+    contents.push({ inlineData: { mimeType: logoFile.type, data: logoBase64 } });
+  }
+
+  contents.push({
+    text: `═══ INFOGRAPHIC COMPOSITION TO RENDER ═══
+${prompt}
+
+${INFOGRAPHIC_PROMPTING_PRINCIPLES}
+
+Render a single, finished, professional product infographic in a ${aspectRatio} canvas — a complete marketing asset with the product, callouts, text and branding baked into the image.`,
+  });
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image-preview",
+    contents,
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio, imageSize },
+      abortSignal,
+    },
+  });
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeImageGenCost("Infographic Image (Nano Banana 2)", tokens, imageSize);
+  const responseContent = response.candidates?.[0]?.content;
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return {
+          imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+          cost,
+          responseContent,
+          contentParts: contents,
+        };
+      }
+    }
+  }
+
+  throw new Error("No infographic image generated from Nano Banana 2");
+}
+
+/**
+ * Contextual retry — follows the enrichment pipeline to make a small, strictly-constrained
+ * edit to a previously generated infographic. Step A asks Gemini 3.1 Pro (given the generated
+ * image + product images + product info + the user's requested change) to write a minimal,
+ * tightly-scoped edit instruction; Step B replays the original multi-turn context and applies
+ * only that edit, keeping everything else pixel-identical.
+ */
+export async function editInfographicImage({
+  apiKey,
+  originalContentParts,
+  imageGenResponseContent,
+  editHistory,
+  generatedImageData,
+  productImages,
+  productInfo,
+  userChangeRequest,
+  aspectRatio,
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  originalContentParts: ContentPart[];
+  imageGenResponseContent: unknown;
+  editHistory?: EditHistoryEntry[];
+  generatedImageData: string;
+  productImages: { file: File }[];
+  productInfo?: string;
+  userChangeRequest: string;
+  aspectRatio: AspectRatio;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; promptCost: StepCost; imageCost: StepCost; responseContent: unknown; editInstruction: string }> {
+  const ai = new GoogleGenAI({ apiKey });
+
+  // ── Step A: Pro writes a minimal, strictly-constrained edit instruction ──
+  const enrichSystemPrompt = `You are an expert product-infographic art director performing a SURGICAL edit. You are given the currently generated infographic image (first image), the original product reference photo(s) (subsequent images), the product information, and the user's requested change. Write a SINGLE, minimal, strictly-constrained edit instruction for an image-editing model.
+
+HARD CONSTRAINTS:
+- Make ONLY the change the user asked for. Change nothing else.
+- Begin the instruction with "Change only" and end it with an explicit clause that everything else — the product identity, colorway, layout, callouts, text, background, lighting, shadows and composition — must remain EXACTLY the same and pixel-identical.
+- Preserve the footwear's identity from the product reference photos at all costs; do not redesign, recolor, rebrand, or alter any region the user did not mention.
+- Keep all existing on-image text spelled and placed exactly as-is unless the user explicitly asked to change it; quote any new/changed text verbatim in double quotes.
+- Be concrete and unambiguous so the result is reproducible.
+
+USER'S REQUESTED CHANGE:
+${userChangeRequest.trim()}
+
+${productInfo?.trim() ? `PRODUCT INFORMATION (for context):\n${productInfo.trim()}\n` : ""}
+Output ONLY the edit instruction text — no preamble, no commentary.`;
+
+  const enrichContents: ContentPart[] = [{ text: enrichSystemPrompt }];
+  const [genMime, genData] = parseDataUrl(generatedImageData);
+  enrichContents.push({ inlineData: { mimeType: genMime, data: genData } });
+  for (const img of productImages) {
+    const base64 = await fileToBase64(img.file);
+    enrichContents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+  }
+
+  const enrichResponse = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents: enrichContents,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+      abortSignal,
+    },
+  });
+
+  const editInstruction = enrichResponse.text?.trim();
+  if (!editInstruction) {
+    throw new Error("No edit instruction returned from Gemini 3.1 Pro");
+  }
+  const promptTokens = extractTokenUsage(enrichResponse);
+  const promptCost = computeStepCost(
+    "gemini-3.1-pro-preview",
+    "Contextual Retry Prompt (Gemini 3.1 Pro)",
+    promptTokens
+  );
+
+  // ── Step B: replay the original multi-turn context and apply only that edit ──
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const contents: any[] = [
+    { role: "user", parts: originalContentParts },
+    imageGenResponseContent,
+  ];
+
+  if (editHistory && editHistory.length > 0) {
+    for (const entry of editHistory) {
+      contents.push({ role: "user", parts: [{ text: entry.userInstruction }] });
+      contents.push(entry.modelResponseContent);
+    }
+  }
+
+  contents.push({ role: "user", parts: [{ text: editInstruction }] });
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image-preview",
+    contents,
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio, imageSize },
+      abortSignal,
+    },
+  });
+
+  const imageTokens = extractTokenUsage(response);
+  const imageCost = computeImageGenCost("Contextual Retry Image (Nano Banana 2)", imageTokens, imageSize);
+  const responseContent = response.candidates?.[0]?.content;
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return {
+          imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+          promptCost,
+          imageCost,
+          responseContent,
+          editInstruction,
+        };
+      }
+    }
+  }
+
+  throw new Error("No image generated from contextual retry");
 }

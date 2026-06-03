@@ -79,6 +79,11 @@ import {
   RoomStagingResult,
   RoomStagingBulkCombination,
   RoomStagingBulkResult,
+  InfographicProductFolder,
+  InfographicBrand,
+  InfographicResult,
+  InfographicBackgroundStyle,
+  InfographicTemplate,
 } from "@/lib/types";
 import { MAX_CAMERA_MOVEMENTS, MAX_MODEL_MOVEMENTS } from "@/lib/constants";
 
@@ -275,6 +280,21 @@ export function useVTONStore() {
   const [roomBulkRoomSettings, setRoomBulkRoomSettings] = useState<BulkModelImage[]>([]);
   const [roomBulkBackgrounds, setRoomBulkBackgrounds] = useState<BulkBackground[]>([]);
   const [roomBulkResults, setRoomBulkResults] = useState<RoomStagingBulkResult[]>([]);
+
+  // --- Bulk Infographic State ---
+  const [infographicCategory, setInfographicCategory] = useState<ProductCategory>("footwear");
+  const [infographicFolders, setInfographicFolders] = useState<InfographicProductFolder[]>([]);
+  const [infographicBrand, setInfographicBrand] = useState<InfographicBrand>({});
+  const [infographicBackgroundStyle, setInfographicBackgroundStyle] = useState<InfographicBackgroundStyle>("solid-textured");
+  const [infographicTemplateCounts, setInfographicTemplateCounts] = useState<Record<InfographicTemplate, number>>({
+    minimalistic: 1,
+    "sole-construction": 0,
+  });
+  const [infographicAspectRatio, setInfographicAspectRatio] = useState<AspectRatio>("3:4");
+  const [infographicImageSize, setInfographicImageSize] = useState<"1K" | "2K" | "4K">("2K");
+  const [infographicStylingInstructions, setInfographicStylingInstructions] = useState("");
+  const [infographicResults, setInfographicResults] = useState<InfographicResult[]>([]);
+  const [isInfographicGenerating, setIsInfographicGenerating] = useState(false);
 
   // --- Single Mode Actions ---
 
@@ -1320,6 +1340,77 @@ export function useVTONStore() {
     setRoomBulkResults((prev) => prev.map((r) => (r.id === id ? { ...r, ...update } : r)));
   }, []);
 
+  // --- Bulk Infographic Actions ---
+  const addInfographicFolder = useCallback((folder: InfographicProductFolder) => {
+    setInfographicFolders((prev) => [...prev, folder]);
+  }, []);
+
+  const removeInfographicFolder = useCallback((id: string) => {
+    setInfographicFolders((prev) => {
+      const folder = prev.find((f) => f.id === id);
+      if (folder) folder.images.forEach((img) => URL.revokeObjectURL(img.preview));
+      return prev.filter((f) => f.id !== id);
+    });
+  }, []);
+
+  const renameInfographicFolder = useCallback((id: string, name: string) => {
+    setInfographicFolders((prev) => prev.map((f) => (f.id === id ? { ...f, name } : f)));
+  }, []);
+
+  const updateInfographicFolderProductInfo = useCallback((id: string, productInfo: string) => {
+    setInfographicFolders((prev) => prev.map((f) => (f.id === id ? { ...f, productInfo } : f)));
+  }, []);
+
+  const addInfographicFolderImage = useCallback(
+    (folderId: string, image: { id: string; file: File; preview: string }) => {
+      setInfographicFolders((prev) =>
+        prev.map((f) => (f.id === folderId ? { ...f, images: [...f.images, image] } : f))
+      );
+    },
+    []
+  );
+
+  const removeInfographicFolderImage = useCallback((folderId: string, imageId: string) => {
+    setInfographicFolders((prev) =>
+      prev.map((f) => {
+        if (f.id !== folderId) return f;
+        const img = f.images.find((i) => i.id === imageId);
+        if (img) URL.revokeObjectURL(img.preview);
+        return { ...f, images: f.images.filter((i) => i.id !== imageId) };
+      })
+    );
+  }, []);
+
+  const setInfographicBrandLogo = useCallback(
+    (logo: { logoFile: File; logoPreview: string } | null) => {
+      setInfographicBrand((prev) => {
+        if (prev.logoPreview) URL.revokeObjectURL(prev.logoPreview);
+        return {
+          ...prev,
+          logoFile: logo?.logoFile,
+          logoPreview: logo?.logoPreview,
+        };
+      });
+    },
+    []
+  );
+
+  const setInfographicBrandPlacement = useCallback((logoPlacementInstructions: string) => {
+    setInfographicBrand((prev) => ({ ...prev, logoPlacementInstructions }));
+  }, []);
+
+  const setInfographicTemplateCount = useCallback((template: InfographicTemplate, count: number) => {
+    setInfographicTemplateCounts((prev) => ({ ...prev, [template]: Math.max(0, count) }));
+  }, []);
+
+  const updateInfographicResult = useCallback((id: string, update: Partial<InfographicResult>) => {
+    setInfographicResults((prev) => prev.map((r) => (r.id === id ? { ...r, ...update } : r)));
+  }, []);
+
+  const resetInfographicResults = useCallback(() => {
+    setInfographicResults([]);
+  }, []);
+
   // Bulk folder actions
   const addRoomPrimaryFolder = useCallback((folder: ProductFolder) => {
     setRoomPrimaryFolders((prev) => [...prev, folder]);
@@ -1509,6 +1600,19 @@ export function useVTONStore() {
 
   const canProceedToStep = useCallback(
     (step: WizardStep): boolean => {
+      // --- BULK INFOGRAPHIC MODE ---
+      if (featureMode === "infographic") {
+        const hasProducts = infographicFolders.some((f) => f.images.length > 0);
+        const hasTemplate = Object.values(infographicTemplateCounts).some((n) => n > 0);
+        switch (step) {
+          case 1: return true;
+          case 2: return hasProducts;            // Background
+          case 3: return hasProducts;            // Template & Output
+          case 4: return hasProducts && hasTemplate; // Generate
+          default: return false;
+        }
+      }
+
       // --- SWATCH MODE ---
       if (featureMode === "swatch") {
         switch (step) {
@@ -1694,7 +1798,7 @@ export function useVTONStore() {
           return false;
       }
     },
-    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings]
+    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts]
   );
 
   return {
@@ -2026,6 +2130,24 @@ export function useVTONStore() {
     roomBulkCombinations,
     roomBulkResults, setRoomBulkResults,
     updateRoomBulkResult, resetRoomBulkResults,
+
+    // Bulk Infographic
+    infographicCategory, setInfographicCategory,
+    infographicFolders, setInfographicFolders,
+    addInfographicFolder, removeInfographicFolder,
+    renameInfographicFolder, updateInfographicFolderProductInfo,
+    addInfographicFolderImage, removeInfographicFolderImage,
+    infographicBrand, setInfographicBrand,
+    setInfographicBrandLogo, setInfographicBrandPlacement,
+    infographicBackgroundStyle, setInfographicBackgroundStyle,
+    infographicTemplateCounts, setInfographicTemplateCounts,
+    setInfographicTemplateCount,
+    infographicAspectRatio, setInfographicAspectRatio,
+    infographicImageSize, setInfographicImageSize,
+    infographicStylingInstructions, setInfographicStylingInstructions,
+    infographicResults, setInfographicResults,
+    updateInfographicResult, resetInfographicResults,
+    isInfographicGenerating, setIsInfographicGenerating,
   };
 }
 

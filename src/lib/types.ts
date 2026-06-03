@@ -279,7 +279,7 @@ export type WizardStep = 1 | 2 | 3 | 4 | 5;
 
 export type AppMode = "single" | "bulk";
 
-export type FeatureMode = "vton" | "model-swap" | "swatch" | "replicate" | "product-video" | "room-staging";
+export type FeatureMode = "vton" | "model-swap" | "swatch" | "replicate" | "product-video" | "room-staging" | "infographic";
 
 export type NamingLogic = "folder-name-sequential" | "folder-name-sequential-1";
 
@@ -993,4 +993,75 @@ export interface RoomStagingShot {
   viewAngle: PoseViewAngle;
   framing: RoomStagingShotFraming;
   requiresRoom: boolean;
+}
+
+// --- Bulk Infographic Types ---
+
+/** Background treatment for a generated infographic. */
+export type InfographicBackgroundStyle =
+  | "solid-uniform"
+  | "solid-textured"
+  | "dreamy"
+  | "themed";
+
+/** Infographic layout/composition template. */
+export type InfographicTemplate = "minimalistic" | "sole-construction";
+
+/** Structural content-part shape shared with the Gemini image pipeline (text or inline image). */
+export type InfographicContentPart =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } };
+
+/** One product in the bulk infographic queue — images + free-form product info. */
+export interface InfographicProductFolder {
+  id: string;
+  name: string;
+  images: Array<{
+    id: string;
+    file: File;
+    preview: string;
+  }>;
+  /** Bullets or a paragraph; long paragraphs are summarised to bullets during enrichment. */
+  productInfo?: string;
+}
+
+/** Optional brand logo + placement guidance applied to every generation in the batch. */
+export interface InfographicBrand {
+  logoFile?: File;
+  logoPreview?: string;
+  logoPlacementInstructions?: string;
+}
+
+/** Result of generating one infographic for one product. */
+export interface InfographicResult {
+  id: string;
+  folderId: string;
+  folderName: string;
+  /** Template this result was generated from. */
+  template: InfographicTemplate;
+  /** 1-based variation number within this (folder, template) group. */
+  variationIndex: number;
+  /** Total variations requested for this (folder, template) group. */
+  variationCount: number;
+  status:
+    | "pending"
+    | "generating-prompt"
+    | "generating-image"
+    | "auto-retrying"
+    | "editing"
+    | "completed"
+    | "cancelled"
+    | "error";
+  /** Enriched composition prompt from step 1 (kept for normal retry + display). */
+  enrichedPrompt?: string;
+  /** Generated image as a data URL. */
+  imageData?: string;
+  /** Model's response Content from the image step — needed for multi-turn contextual retry. */
+  imageGenResponseContent?: unknown;
+  /** Original image-step content parts — replayed for multi-turn contextual retry. */
+  originalContentParts?: InfographicContentPart[];
+  /** History of contextual-retry exchanges for iterative refinement. */
+  editHistory?: EditHistoryEntry[];
+  costBreakdown?: GenerationCostBreakdown;
+  error?: string;
 }
