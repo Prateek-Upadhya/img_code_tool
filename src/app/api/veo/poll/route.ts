@@ -1,29 +1,28 @@
-import { GoogleGenAI } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, readFile, unlink } from "fs/promises";
+import { readFile, unlink } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
+import { getVertexClient } from "@/lib/vertex-server";
 
 export const maxDuration = 60;
 
 interface DownloadRequestBody {
-  apiKey: string;
   videoUri: string;
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: DownloadRequestBody = await request.json();
-    const { apiKey, videoUri } = body;
+    const { videoUri } = body;
 
-    if (!apiKey || !videoUri) {
+    if (!videoUri) {
       return NextResponse.json(
-        { error: "API key and video URI are required" },
+        { error: "Video URI is required" },
         { status: 400 }
       );
     }
 
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = getVertexClient();
 
     const tempPath = join(tmpdir(), `veo-${Date.now()}.mp4`);
 

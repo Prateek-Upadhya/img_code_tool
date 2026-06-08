@@ -127,7 +127,11 @@ export function useVTONStore() {
   const [skipNamingIndicesText, setSkipNamingIndicesText] = useState("");
   const [additionalInfo, setAdditionalInfo] = useState("");
   const [productInfo, setProductInfo] = useState("");
-  const [apiKey, setApiKey] = useState(process.env.NEXT_PUBLIC_GEMINI_API_KEY ?? "");
+  // Vertex AI credentials live server-side (see src/lib/vertex-server.ts); the
+  // browser no longer holds a key. This sentinel keeps the legacy `apiKey`
+  // readiness checks ("apiKey.length > 0" / "!apiKey") satisfied without the user
+  // supplying anything. It is never sent to Google.
+  const [apiKey, setApiKey] = useState("vertex-ai");
   const [results, setResults] = useState<GeneratedResult[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   // True while the once-per-batch background-scene pre-pass is running. This

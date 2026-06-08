@@ -1,8 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { Eye, EyeOff, Key, Check, Volume2, VolumeX } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import { Check, Volume2, VolumeX } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
@@ -30,11 +28,7 @@ export function StepVideoSettings({ store }: { store: VTONStore }) {
     setVideoNegativePrompt,
     videoAdditionalInfo,
     setVideoAdditionalInfo,
-    apiKey,
-    setApiKey,
   } = store;
-
-  const [showKey, setShowKey] = useState(false);
 
   return (
     <div className="space-y-8 animate-fade-in-up">
@@ -220,40 +214,6 @@ export function StepVideoSettings({ store }: { store: VTONStore }) {
           placeholder="Any special directions for the video: specific mood, pacing, color grading..."
           className="min-h-[70px] text-sm resize-none rounded-lg"
         />
-      </div>
-
-      {/* API Key */}
-      <div className="rounded-xl border border-border bg-card p-6">
-        <div className="flex items-center gap-2 mb-3">
-          <Key className="w-4 h-4 text-primary" />
-          <label className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
-            Google Gemini API Key
-          </label>
-        </div>
-        <div className="relative">
-          <Input
-            type={showKey ? "text" : "password"}
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="Enter your Gemini API key"
-            className="pr-10 rounded-lg"
-          />
-          <button
-            type="button"
-            onClick={() => setShowKey(!showKey)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-          >
-            {showKey ? (
-              <EyeOff className="w-4 h-4" />
-            ) : (
-              <Eye className="w-4 h-4" />
-            )}
-          </button>
-        </div>
-        <p className="text-[11px] text-muted-foreground mt-2">
-          Required for both prompt generation (Gemini 3 Pro) and video generation (Veo 3.1).
-          Your key is stored locally and never sent to our servers.
-        </p>
       </div>
     </div>
   );

@@ -1,10 +1,10 @@
-import { GoogleGenAI } from "@google/genai";
+import type { GoogleGenAI } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
+import { getVertexClient } from "@/lib/vertex-server";
 
 export const maxDuration = 600;
 
 interface GenerateVideoRequestBody {
-  apiKey: string;
   prompt: string;
   /** Veo model to use */
   veoModel?: string;
@@ -112,16 +112,13 @@ function extractVideoFromOperation(
 export async function POST(request: NextRequest) {
   try {
     const body: GenerateVideoRequestBody = await request.json();
-    const { apiKey, prompt, veoModel, image, referenceImages, extensionSeconds, extensionPrompt, config } = body;
+    const { prompt, veoModel, image, referenceImages, extensionSeconds, extensionPrompt, config } = body;
 
-    if (!apiKey) {
-      return NextResponse.json({ error: "API key is required" }, { status: 400 });
-    }
     if (!prompt) {
       return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
     }
 
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = getVertexClient();
     const modelId = veoModel || "veo-3.1-generate-preview";
     const hasRefImages = referenceImages && referenceImages.length > 0;
     const needsExtension = extensionSeconds && extensionSeconds > 0;

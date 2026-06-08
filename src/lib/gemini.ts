@@ -1,4 +1,5 @@
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import { ThinkingLevel } from "@google/genai";
+import { getGeminiClient } from "./gemini-client";
 import {
   AccessoryItem,
   AIModel,
@@ -363,7 +364,7 @@ export async function analyzeBackgroundScene({
   inspirationImage: { file: File };
   abortSignal?: AbortSignal;
 }): Promise<{ sceneDescription: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const base64 = await fileToBase64(inspirationImage.file);
 
@@ -538,7 +539,7 @@ export async function generateVTONPrompt({
   /** Optional client-side AbortSignal — cancels the in-flight Gemini request. */
   abortSignal?: AbortSignal;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   // Build content parts
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
@@ -2250,7 +2251,7 @@ export async function generateVTONImage({
   /** Optional client-side AbortSignal — cancels the in-flight Gemini image-gen request. */
   abortSignal?: AbortSignal;
 }): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const contents = await buildVTONImageContentParts({
     prompt,
@@ -2314,7 +2315,7 @@ export async function editVTONImage({
   aspectRatio: AspectRatio;
   imageSize?: "1K" | "2K" | "4K";
 }): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const contents: any[] = [
@@ -2404,7 +2405,7 @@ export async function contextualRetryVTONImage({
   imageSize?: "1K" | "2K" | "4K";
   abortSignal?: AbortSignal;
 }): Promise<{ imageData: string; promptCost: StepCost; imageCost: StepCost; responseContent: unknown; editInstruction: string }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   // ── Step A: Pro writes a minimal, strictly-constrained edit instruction ──
   const cfgLines: string[] = [];
@@ -2538,7 +2539,7 @@ export async function checkHumanVisibility({
   sourceImage: File;
   abortSignal?: AbortSignal;
 }): Promise<{ humanVisible: boolean; reason: string; cost?: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -2659,7 +2660,7 @@ export async function generateModelSwapPrompt({
   poseVariation?: boolean;
   previousMismatchFeedback?: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -3067,7 +3068,7 @@ export async function generateModelSwapImage({
    */
   poseVariation?: boolean;
 }): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const contents = await buildModelSwapImageContentParts({
     prompt,
@@ -3126,7 +3127,7 @@ export async function editModelSwapImage({
   aspectRatio: AspectRatio;
   imageSize?: "1K" | "2K" | "4K";
 }): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const contents: any[] = [
@@ -3197,7 +3198,7 @@ export async function validateGeneratedImage({
   allowPoseVariation?: boolean;
   abortSignal?: AbortSignal;
 }): Promise<ValidationResult & { cost?: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const isFootwear = productCategory === "footwear";
   const productLabel = isFootwear ? "footwear" : validationMode === "room-staging" ? "home decor / furniture product" : "garment/clothing";
@@ -3412,7 +3413,7 @@ export async function generateSwatchImage({
   shape: SwatchShape;
   size: number;
 }): Promise<SwatchGenerationResult> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const base64 = await fileToBase64(imageFile);
 
@@ -3556,7 +3557,7 @@ export async function generateAIInfographic({
   aspectRatio?: AspectRatio;
   imageSize?: "1K" | "2K" | "4K";
 }): Promise<{ imageData: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const contents: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -3694,7 +3695,7 @@ export async function generateSetProductPrompt({
   additionalInfo: string;
   productInfo?: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -3835,7 +3836,7 @@ export async function generateSetProductImage({
   aspectRatio: AspectRatio;
   imageSize?: "1K" | "2K" | "4K";
 }): Promise<{ imageData: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const contents: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -3928,7 +3929,7 @@ export async function generateUGCPrompt({
   additionalInfo: string;
   productInfo?: string;
 }): Promise<{ prompt: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const isFootwear = productCategory === "footwear";
   const isSelfie = scene.shotType === "selfie";
@@ -4095,7 +4096,7 @@ export async function generateUGCImage({
   isSelfie?: boolean;
   imageSize?: "1K" | "2K" | "4K";
 }): Promise<{ imageData: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const isFootwear = productCategory === "footwear";
   const genderLabel = gender === "male" ? "male" : gender === "female" ? "female" : "any gender";
@@ -4181,7 +4182,7 @@ export async function generateReplicatePrompt({
   referenceOutput: File;
   additionalInfo: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -4306,7 +4307,7 @@ export async function generateReplicateImage({
   aspectRatio: AspectRatio;
   imageSize?: "1K" | "2K" | "4K";
 }): Promise<{ imageData: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const contents: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -4415,7 +4416,7 @@ export async function generateVideoPrompt({
   negativePrompt: string;
   additionalInfo: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
   const fullDuration = totalDuration ?? duration;
   const isExtendedBase = fullDuration > duration;
   const isFootwear = productCategory === "footwear";
@@ -4705,7 +4706,7 @@ export async function generateVideoExtensionPrompt({
   productInfo: string;
   additionalInfo: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
   const isFootwear = productCategory === "footwear";
   const genderLabel = gender === "male" ? "men's" : gender === "female" ? "women's" : "unisex";
   const isDynamicTheme = /dynamic|action|sport|runway/i.test(theme);
@@ -4853,7 +4854,7 @@ export async function generateRoomStagingPrompt({
   additionalInfo: string;
   previousMismatchFeedback?: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const isProductOnly = !shot.requiresRoom;
   const categoryLabel = category === "home-decor" ? "Home Decor" : "Furniture";
@@ -5027,7 +5028,7 @@ export async function generateRoomStagingImage({
   imageSize?: "1K" | "2K" | "4K";
   isProductOnly?: boolean;
 }): Promise<{ imageData: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const contents: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -5127,7 +5128,7 @@ export async function generateInfographicPrompt({
   variationCount?: number;
   abortSignal?: AbortSignal;
 }): Promise<{ enrichedPrompt: string; cost: StepCost }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const backgroundSnippet = INFOGRAPHIC_BACKGROUND_SNIPPETS[backgroundStyle];
   const templateSnippet = INFOGRAPHIC_TEMPLATE_SNIPPETS[template];
@@ -5232,7 +5233,7 @@ export async function generateInfographicImage({
   imageSize?: "1K" | "2K" | "4K";
   abortSignal?: AbortSignal;
 }): Promise<{ imageData: string; cost: StepCost; responseContent: unknown; contentParts: ContentPart[] }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   const contents: ContentPart[] = [];
 
@@ -5326,7 +5327,7 @@ export async function editInfographicImage({
   imageSize?: "1K" | "2K" | "4K";
   abortSignal?: AbortSignal;
 }): Promise<{ imageData: string; promptCost: StepCost; imageCost: StepCost; responseContent: unknown; editInstruction: string }> {
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = getGeminiClient(apiKey);
 
   // ── Step A: Pro writes a minimal, strictly-constrained edit instruction ──
   const enrichSystemPrompt = `You are an expert product-infographic art director performing a SURGICAL edit. You are given the currently generated infographic image (first image), the original product reference photo(s) (subsequent images), the product information, and the user's requested change. Write a SINGLE, minimal, strictly-constrained edit instruction for an image-editing model.

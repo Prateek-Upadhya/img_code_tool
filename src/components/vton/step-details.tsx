@@ -40,13 +40,13 @@ export function StepDetails({ store }: StepDetailsProps) {
               )}
             >
               {hasEnvKey
-                ? "Gemini API key loaded from environment"
-                : "Gemini API key missing from environment"}
+                ? "Powered by Vertex AI (server-side credentials)"
+                : "Vertex AI is not configured"}
             </p>
             <p className="text-xs text-muted-foreground">
               {hasEnvKey
-                ? "Model Swap reads NEXT_PUBLIC_GEMINI_API_KEY from your .env.local automatically — no manual entry needed."
-                : "Set NEXT_PUBLIC_GEMINI_API_KEY in .env.local and restart the dev server to enable Model Swap generation."}
+                ? "Model Swap runs on Vertex AI using credentials configured on the server — no API key entry needed."
+                : "Set GCP_PROJECT_ID / GCP_LOCATION and authenticate the server to Vertex AI to enable Model Swap generation."}
             </p>
           </div>
         </div>
