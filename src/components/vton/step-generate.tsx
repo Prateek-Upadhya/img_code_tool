@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import {
   Sparkles,
   Download,
@@ -36,13 +36,15 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import { cn, buildDynamicPoseSeed, pickBucketImage } from "@/lib/utils";
 import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene } from "@/lib/gemini";
 import { generateVTONImageAzure } from "@/lib/azure-image";
-import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS } from "@/lib/constants";
+import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS, TEXT_GEN_MODELS, IMAGE_GEN_MODELS } from "@/lib/constants";
+import { ProviderPicker } from "./provider-picker";
 import Image from "next/image";
 import type { VTONStore } from "@/store/vton-store";
 import type {
+  AccessoryItem,
   BackgroundConfig,
   BulkCombination,
   BulkGeneratedResult,
@@ -409,6 +411,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     bottomwearLength,
     complementaryImages,
     poseAccessories,
+    propBuckets,
     applyAccessoriesToAllPoses,
     background,
     selectedModel,
@@ -475,9 +478,11 @@ export function StepGenerate({ store }: StepGenerateProps) {
     skipNamingIndicesText,
   } = store;
   const { imageQuality, setImageQuality } = store;
-  const { imageGenModel } = store;
+  const { imageGenModel, setImageGenModel, textGenModel, setTextGenModel } = store;
   const isModelSwap = featureMode === "model-swap";
-  const useAzureForFootwear = productCategory === "footwear" && imageGenModel === "gpt-image-2";
+  // gpt-image-2 is selectable for ALL VTON flows (clothing + footwear), so we
+  // route to Azure purely on the selected image model, not the category.
+  const useAzure = imageGenModel === "gpt-image-2";
 
   // Parse the comma-separated user input into a deduped array of non-negative
   // integers. Any non-integer / negative tokens are silently dropped.
@@ -503,7 +508,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
    */
   const generateVTONImageRouted = useCallback(
     (args: Parameters<typeof generateVTONImage>[0]) => {
-      if (useAzureForFootwear) {
+      if (useAzure) {
         return generateVTONImageAzure({
           prompt: args.prompt,
           garmentImages: args.garmentImages,
@@ -517,7 +522,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
       return generateVTONImage(args);
     },
-    [useAzureForFootwear],
+    [useAzure],
   );
 
   const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
@@ -601,6 +606,57 @@ export function StepGenerate({ store }: StepGenerateProps) {
   const hasModel = selectedModel !== null || modelImage !== null;
   const isFootwear = productCategory === "footwear";
 
+  // ----------------------------------------------------------------------
+  // Prop-bucket draw cache
+  // ----------------------------------------------------------------------
+  // Holds the ONE image drawn from each (product, bucket) pair so the pick is
+  // fixed per product — every pose of a product that enables the bucket reuses
+  // the same image, while different products draw independently. Keyed by
+  // `${productKey}::${bucketId}`. A ref (not state) so the cache survives across
+  // renders and retries without triggering re-renders.
+  const bucketPickCacheRef = useRef<Map<string, { file: File; preview: string }>>(new Map());
+
+  /**
+   * Resolves bucket-backed accessories into concrete reference images.
+   *
+   * For each raw accessory that carries a `bucketId`, looks up the bucket in
+   * `propBuckets`; draws one image (cached per `(productKey, bucketId)` so the
+   * pick stays fixed for that product and consistent across retries) and returns
+   * a NEW `AccessoryItem` with `image` populated. Accessories WITHOUT a
+   * `bucketId` pass through unchanged. Bucket refs whose bucket is missing or
+   * empty are dropped (no image to apply). The returned array is what should be
+   * passed to BOTH the prompt call and the image-gen call so they reference the
+   * same prop image.
+   *
+   * @param productKey Stable per-product identity. Single mode uses the constant
+   *   `"single"` (one product → one draw per bucket); bulk mode passes the
+   *   product folder id so each folder draws independently.
+   */
+  const materializeAccessories = useCallback(
+    (rawAccessories: AccessoryItem[], productKey: string): AccessoryItem[] => {
+      const out: AccessoryItem[] = [];
+      for (const acc of rawAccessories) {
+        if (!acc.bucketId) {
+          out.push(acc);
+          continue;
+        }
+        const bucket = propBuckets.find((b) => b.id === acc.bucketId);
+        if (!bucket || bucket.images.length === 0) continue; // missing/empty → drop
+        const cacheKey = `${productKey}::${acc.bucketId}`;
+        let pick = bucketPickCacheRef.current.get(cacheKey);
+        if (!pick) {
+          const drawn = pickBucketImage(bucket);
+          if (!drawn) continue;
+          pick = drawn;
+          bucketPickCacheRef.current.set(cacheKey, pick);
+        }
+        out.push({ ...acc, image: pick });
+      }
+      return out;
+    },
+    [propBuckets]
+  );
+
   const resolveOverride = useCallback(
     (combo: BulkCombination, poseId: string) => {
       const override = bulkPoseOverrides.find(
@@ -677,6 +733,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       try {
         const r = await analyzeBackgroundScene({
           apiKey,
+          textGenModel,
           inspirationImage: background.inspirationImage,
           abortSignal: signal,
         });
@@ -743,7 +800,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
         return;
       }
 
-      const accessories = poseAccessories[result.pose.id] || [];
+      // Materialize bucket-backed accessories into concrete picks (fixed per
+      // product — single mode has one product, so key on "single"). Done BEFORE
+      // the dynamic-pose seed so the `hasProp` check below sees the drawn props.
+      const accessories = materializeAccessories(poseAccessories[result.pose.id] || [], "single");
       const poseIsProductOnly = result.customPose
         ? !result.customPose.isModelShot
         : result.pose.requiresModel === false;
@@ -757,6 +817,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         const promptResult = await generateVTONPrompt({
           apiKey,
+          textGenModel,
           productCategory,
           gender,
           garmentImages,
@@ -779,6 +840,14 @@ export function StepGenerate({ store }: StepGenerateProps) {
           applyAccessoriesToAllPoses,
           targetImageModel: imageGenModel,
           frozenSceneDescription,
+          // Fresh per-generation seed for Dynamic poses so the posture re-varies
+          // on every call; undefined (ignored) for standard poses.
+          dynamicSeed:
+            result.pose.poseType === "dynamic"
+              ? buildDynamicPoseSeed({
+                  hasProp: accessories.length > 0 || complementaryImages.length > 0,
+                })
+              : undefined,
           abortSignal: signal,
         });
         collectedCosts.push(promptResult.cost);
@@ -813,6 +882,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         validateGeneratedImage({
           apiKey,
+          textGenModel,
           originalImages: garmentImages.map((g) => g.file),
           generatedImageData: imageResult.imageData,
           productCategory,
@@ -902,6 +972,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         const promptResult = await generateUGCPrompt({
           apiKey,
+          textGenModel,
           productCategory,
           gender,
           garmentImages,
@@ -1007,6 +1078,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     bottomwearLength,
     complementaryImages,
     poseAccessories,
+    materializeAccessories,
     applyAccessoriesToAllPoses,
     background,
     modelImage,
@@ -1015,6 +1087,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     productInfo,
     imageQuality,
     imageGenModel,
+    textGenModel,
     generateVTONImageRouted,
     setResults,
     updateResult,
@@ -1076,6 +1149,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         try {
           const r = await analyzeBackgroundScene({
             apiKey,
+            textGenModel,
             inspirationImage: { file },
             abortSignal: signal,
           });
@@ -1193,10 +1267,16 @@ export function StepGenerate({ store }: StepGenerateProps) {
         collectedCosts.length = 0;
         updateBulkResult(result.id, { status: "generating-prompt", error: undefined });
 
-        const accessories = poseAccessories[result.pose.id] || [];
+        // Materialize bucket-backed accessories with a per-product draw keyed on
+        // the product folder id, so each folder gets its own consistent pick.
+        const accessories = materializeAccessories(
+          poseAccessories[result.pose.id] || [],
+          combo.primaryFolder.id
+        );
 
         const promptResult = await generateVTONPrompt({
           apiKey,
+          textGenModel,
           productCategory,
           gender,
           garmentImages: pgImages,
@@ -1228,6 +1308,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
           applyAccessoriesToAllPoses,
           targetImageModel: imageGenModel,
           frozenSceneDescription,
+          // Fresh per-generation seed for Dynamic poses; undefined for standard poses.
+          dynamicSeed:
+            result.pose.poseType === "dynamic"
+              ? buildDynamicPoseSeed({
+                  hasProp: accessories.length > 0 || cgImages.length > 0,
+                })
+              : undefined,
           abortSignal: signal,
         });
         collectedCosts.push(promptResult.cost);
@@ -1262,6 +1349,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         validateGeneratedImage({
           apiKey,
+          textGenModel,
           originalImages: pgImages.map((g) => g.file),
           generatedImageData: imageResult.imageData,
           productCategory,
@@ -1384,6 +1472,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
           const promptResult = await generateUGCPrompt({
             apiKey,
+            textGenModel,
             productCategory,
             gender,
             garmentImages: pgImages,
@@ -1488,12 +1577,14 @@ export function StepGenerate({ store }: StepGenerateProps) {
     topwearLength,
     bottomwearLength,
     poseAccessories,
+    materializeAccessories,
     applyAccessoriesToAllPoses,
     aspectRatio,
     additionalInfo,
     productInfo,
     imageQuality,
     imageGenModel,
+    textGenModel,
     generateVTONImageRouted,
     resolveOverride,
     setBulkResults,
@@ -1523,10 +1614,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
       const generate = async () => {
         collectedCosts.length = 0;
         updateResult(result.id, { status: "generating-prompt", error: undefined });
-        const accessories = poseAccessories[result.pose.id] || [];
+        // Reuse the same per-product bucket draw as the original generation
+        // (single product → "single"), so retries keep the same prop image.
+        const accessories = materializeAccessories(poseAccessories[result.pose.id] || [], "single");
 
         const promptResult = await generateVTONPrompt({
           apiKey,
+          textGenModel,
           productCategory,
           gender,
           garmentImages,
@@ -1548,6 +1642,14 @@ export function StepGenerate({ store }: StepGenerateProps) {
           productInfo,
           applyAccessoriesToAllPoses,
           targetImageModel: imageGenModel,
+          // Fresh per-retry seed for Dynamic poses so every retry re-varies the
+          // posture; undefined for standard poses.
+          dynamicSeed:
+            result.pose.poseType === "dynamic"
+              ? buildDynamicPoseSeed({
+                  hasProp: accessories.length > 0 || complementaryImages.length > 0,
+                })
+              : undefined,
         });
         collectedCosts.push(promptResult.cost);
         updateResult(result.id, { prompt: promptResult.text, status: "generating-image" });
@@ -1579,6 +1681,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         validateGeneratedImage({
           apiKey,
+          textGenModel,
           originalImages: garmentImages.map((g) => g.file),
           generatedImageData: imageResult.imageData,
           productCategory,
@@ -1628,6 +1731,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       bottomwearLength,
       complementaryImages,
       poseAccessories,
+      materializeAccessories,
       applyAccessoriesToAllPoses,
       background,
       aspectRatio,
@@ -1635,6 +1739,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       productInfo,
       imageQuality,
       imageGenModel,
+      textGenModel,
       generateVTONImageRouted,
       updateResult,
     ]
@@ -1682,10 +1787,16 @@ export function StepGenerate({ store }: StepGenerateProps) {
       const generate = async () => {
         collectedCosts.length = 0;
         updateBulkResult(result.id, { status: "generating-prompt", error: undefined });
-        const accessories = poseAccessories[result.pose.id] || [];
+        // Reuse the same per-product bucket draw as the original bulk generation
+        // (keyed on the product folder id) so retries keep the same prop image.
+        const accessories = materializeAccessories(
+          poseAccessories[result.pose.id] || [],
+          combo.primaryFolder.id
+        );
 
         const promptResult = await generateVTONPrompt({
           apiKey,
+          textGenModel,
           productCategory,
           gender,
           garmentImages: pgImages,
@@ -1716,6 +1827,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
           productInfo: combo.primaryFolder.productInfo || "",
           applyAccessoriesToAllPoses,
           targetImageModel: imageGenModel,
+          // Fresh per-retry seed for Dynamic poses; undefined for standard poses.
+          dynamicSeed:
+            result.pose.poseType === "dynamic"
+              ? buildDynamicPoseSeed({
+                  hasProp: accessories.length > 0 || cgImages.length > 0,
+                })
+              : undefined,
         });
         collectedCosts.push(promptResult.cost);
         updateBulkResult(result.id, { prompt: promptResult.text, status: "generating-image" });
@@ -1747,6 +1865,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         validateGeneratedImage({
           apiKey,
+          textGenModel,
           originalImages: pgImages.map((g) => g.file),
           generatedImageData: imageResult.imageData,
           productCategory,
@@ -1793,12 +1912,14 @@ export function StepGenerate({ store }: StepGenerateProps) {
       topwearLength,
       bottomwearLength,
       poseAccessories,
+      materializeAccessories,
       applyAccessoriesToAllPoses,
       aspectRatio,
       additionalInfo,
       productInfo,
       imageQuality,
       imageGenModel,
+      textGenModel,
       generateVTONImageRouted,
       resolveOverride,
       updateBulkResult,
@@ -1850,7 +1971,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       updateResult(result.id, { status: "editing", error: undefined });
 
       try {
-        const accessories = poseAccessories[result.pose.id] || [];
+        const accessories = materializeAccessories(poseAccessories[result.pose.id] || [], "single");
         const originalContentParts = await buildVTONImageContentParts({
           prompt: result.prompt,
           garmentImages,
@@ -1864,6 +1985,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         const editResult = await contextualRetryVTONImage({
           apiKey,
+          textGenModel,
           originalContentParts,
           imageGenResponseContent: result.imageGenResponseContent,
           editHistory: result.editHistory,
@@ -1906,7 +2028,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       setEditingResultId(null);
       setEditText("");
     },
-    [apiKey, garmentImages, complementaryImages, modelImage, background, productInfo, productCategory, poseAccessories, aspectRatio, imageQuality, updateResult]
+    [apiKey, textGenModel, garmentImages, complementaryImages, modelImage, background, productInfo, productCategory, poseAccessories, materializeAccessories, aspectRatio, imageQuality, updateResult]
   );
 
   const handleEditBulk = useCallback(
@@ -1932,7 +2054,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
       updateBulkResult(result.id, { status: "editing", error: undefined });
 
       try {
-        const accessories = poseAccessories[result.pose.id] || [];
+        const accessories = materializeAccessories(
+          poseAccessories[result.pose.id] || [],
+          combo.primaryFolder.id
+        );
         const originalContentParts = await buildVTONImageContentParts({
           prompt: result.prompt,
           garmentImages: pgImages,
@@ -1946,6 +2071,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         const editResult = await contextualRetryVTONImage({
           apiKey,
+          textGenModel,
           originalContentParts,
           imageGenResponseContent: result.imageGenResponseContent,
           editHistory: result.editHistory,
@@ -1988,7 +2114,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       setEditingResultId(null);
       setEditText("");
     },
-    [apiKey, bulkCombinations, garmentType, productCategory, poseAccessories, aspectRatio, imageQuality, resolveOverride, updateBulkResult]
+    [apiKey, textGenModel, bulkCombinations, garmentType, productCategory, poseAccessories, materializeAccessories, aspectRatio, imageQuality, resolveOverride, updateBulkResult]
   );
 
   const handleEditModelSwap = useCallback(
@@ -2778,6 +2904,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
             const promptResult = await generateSetProductPrompt({
               apiKey,
+              textGenModel,
               productCategory,
               gender,
               garmentType,
@@ -2870,6 +2997,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
           const promptResult = await generateSetProductPrompt({
             apiKey,
+            textGenModel,
             productCategory,
             gender,
             garmentType,
@@ -2930,7 +3058,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     }
   }, [
-    apiKey, mode, productCategory, gender, garmentType, footwearType, fit,
+    apiKey, textGenModel, mode, productCategory, gender, garmentType, footwearType, fit,
     setProductVariants, setProductLayout, setProductBulkCombinations,
     background, selectedModel, modelImage, aspectRatio, additionalInfo,
     productInfo, imageQuality,
@@ -2965,7 +3093,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
       // Pre-check: is a human model visible in the source image?
       updateModelSwapResult(result.id, { status: "checking-human", error: undefined });
-      const visibilityCheck = await checkHumanVisibility({ apiKey, sourceImage: sourceImg.file });
+      const visibilityCheck = await checkHumanVisibility({ apiKey, textGenModel, sourceImage: sourceImg.file });
       if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
 
       if (!visibilityCheck.humanVisible) {
@@ -2991,6 +3119,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         const promptResult = await generateModelSwapPrompt({
           apiKey,
+          textGenModel,
           gender,
           sourceImage: { file: sourceImg.file, preview: sourceImg.preview },
           model: selectedModel,
@@ -3029,6 +3158,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         validateGeneratedImage({
           apiKey,
+          textGenModel,
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
@@ -3074,7 +3204,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       setIsGenerating(false);
     }
   }, [
-    garmentImages, selectedModel, modelImage, apiKey, gender,
+    garmentImages, selectedModel, modelImage, apiKey, textGenModel, gender,
     modelSwapBgMode, background, aspectRatio, additionalInfo, productInfo,
     imageQuality, setModelSwapResults, updateModelSwapResult, setIsGenerating,
   ]);
@@ -3124,7 +3254,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
       // Pre-check: is a human model visible in the source image?
       updateModelSwapBulkResult(result.id, { status: "checking-human", error: undefined });
-      const visibilityCheck = await checkHumanVisibility({ apiKey, sourceImage: sourceImg.file });
+      const visibilityCheck = await checkHumanVisibility({ apiKey, textGenModel, sourceImage: sourceImg.file });
       if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
 
       if (!visibilityCheck.humanVisible) {
@@ -3149,6 +3279,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         const promptResult = await generateModelSwapPrompt({
           apiKey,
+          textGenModel,
           gender,
           sourceImage: { file: sourceImg.file, preview: sourceImg.preview },
           model: null,
@@ -3187,6 +3318,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         validateGeneratedImage({
           apiKey,
+          textGenModel,
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
@@ -3232,7 +3364,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       setIsGenerating(false);
     }
   }, [
-    modelSwapBulkCombinations, apiKey, gender, modelSwapBgMode,
+    modelSwapBulkCombinations, apiKey, textGenModel, gender, modelSwapBgMode,
     aspectRatio, additionalInfo, productInfo, imageQuality,
     setModelSwapBulkResults, updateModelSwapBulkResult, setIsGenerating,
   ]);
@@ -3256,7 +3388,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
       // Pre-check: is a human model visible in the source image?
       updateModelSwapResult(result.id, { status: "checking-human", error: undefined });
-      const visibilityCheck = await checkHumanVisibility({ apiKey, sourceImage: sourceImg.file });
+      const visibilityCheck = await checkHumanVisibility({ apiKey, textGenModel, sourceImage: sourceImg.file });
       if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
 
       if (!visibilityCheck.humanVisible) {
@@ -3279,6 +3411,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateModelSwapResult(result.id, { status: "generating-prompt", error: undefined });
         const promptResult = await generateModelSwapPrompt({
           apiKey,
+          textGenModel,
           gender,
           sourceImage: { file: sourceImg.file, preview: sourceImg.preview },
           model: selectedModel,
@@ -3317,6 +3450,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         validateGeneratedImage({
           apiKey,
+          textGenModel,
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
@@ -3352,7 +3486,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         }
       }
     },
-    [apiKey, gender, selectedModel, modelImage, garmentImages, modelSwapBgMode, background, aspectRatio, additionalInfo, productInfo, imageQuality, updateModelSwapResult]
+    [apiKey, textGenModel, gender, selectedModel, modelImage, garmentImages, modelSwapBgMode, background, aspectRatio, additionalInfo, productInfo, imageQuality, updateModelSwapResult]
   );
 
   const handleRetryAllMismatchedModelSwap = useCallback(async () => {
@@ -3418,7 +3552,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
       // Pre-check: is a human model visible in the source image?
       updateModelSwapBulkResult(result.id, { status: "checking-human", error: undefined });
-      const visibilityCheck = await checkHumanVisibility({ apiKey, sourceImage: sourceImg.file });
+      const visibilityCheck = await checkHumanVisibility({ apiKey, textGenModel, sourceImage: sourceImg.file });
       if (visibilityCheck.cost) collectedCosts.push(visibilityCheck.cost);
 
       if (!visibilityCheck.humanVisible) {
@@ -3441,6 +3575,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateModelSwapBulkResult(result.id, { status: "generating-prompt", error: undefined, imageData: "" });
         const promptResult = await generateModelSwapPrompt({
           apiKey,
+          textGenModel,
           gender,
           sourceImage: { file: sourceImg.file, preview: sourceImg.preview },
           model: null,
@@ -3479,6 +3614,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
         validateGeneratedImage({
           apiKey,
+          textGenModel,
           originalImages: [sourceImg.file],
           generatedImageData: imageResult.imageData,
           validationMode: "model-swap",
@@ -3514,7 +3650,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         }
       }
     },
-    [apiKey, gender, modelSwapBulkCombinations, modelSwapBgMode, aspectRatio, additionalInfo, productInfo, imageQuality, updateModelSwapBulkResult]
+    [apiKey, textGenModel, gender, modelSwapBulkCombinations, modelSwapBgMode, aspectRatio, additionalInfo, productInfo, imageQuality, updateModelSwapBulkResult]
   );
 
   const handleRetryAllMismatchedModelSwapBulk = useCallback(async () => {
@@ -3531,6 +3667,30 @@ export function StepGenerate({ store }: StepGenerateProps) {
       setIsGenerating(false);
     }
   }, [modelSwapBulkResults, isGenerating, handleRetryModelSwapBulk, setIsGenerating]);
+
+  // Compact provider pickers shown at the top of every results/regenerate view,
+  // so the user can switch text/image backends before clicking Retry/Regenerate.
+  // Switching writes straight to the store, which the retry handlers read live.
+  const providerPickerRow = (
+    <div className="rounded-xl border border-border bg-card p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <ProviderPicker
+        compact
+        title="Prompt Model"
+        options={TEXT_GEN_MODELS}
+        value={textGenModel}
+        onChange={setTextGenModel}
+      />
+      {featureMode === "vton" && (
+        <ProviderPicker
+          compact
+          title="Image Model"
+          options={IMAGE_GEN_MODELS}
+          value={imageGenModel}
+          onChange={setImageGenModel}
+        />
+      )}
+    </div>
+  );
 
   // ======================================================================
   // MODEL SWAP - BULK MODE RENDER
@@ -3549,6 +3709,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     return (
       <div className="space-y-6">
+        {providerPickerRow}
         {/* Bulk Summary */}
         <div className="rounded-xl border border-border bg-card p-6 space-y-4">
           <div className="flex items-center gap-2">
@@ -3883,6 +4044,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     return (
       <div className="space-y-6">
+        {providerPickerRow}
         {/* Summary */}
         <div className="rounded-xl border border-border bg-card p-6 space-y-4">
           <div className="flex items-center gap-2">
@@ -4220,6 +4382,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     return (
       <div className="space-y-6">
+        {providerPickerRow}
         {/* Summary */}
         <div className="rounded-xl border border-border bg-card p-6 space-y-4">
           <div className="flex items-center gap-2">
@@ -4482,6 +4645,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     return (
       <div className="space-y-6">
+        {providerPickerRow}
         {/* Bulk Summary */}
         <div className="rounded-xl border border-border bg-card p-6 space-y-4">
           <div className="flex items-center gap-2">
@@ -5341,6 +5505,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
   return (
     <div className="space-y-6">
+      {providerPickerRow}
       {/* Summary */}
       <div className="rounded-xl border border-border bg-card p-6 space-y-4">
         <div className="flex items-center gap-2">

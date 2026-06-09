@@ -10,8 +10,10 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import type { AccessoryCategory, AccessoryItem, CustomPose, FootwearType, GarmentType, NamingLogic, Pose, PoseFraming, PoseViewAngle, UGCScene, UGCShotType } from "@/lib/types";
+import type { AccessoryCategory, AccessoryItem, CustomPose, FootwearType, GarmentType, NamingLogic, Pose, PoseFraming, PoseViewAngle, PropBucket, UGCScene, UGCShotType } from "@/lib/types";
 import type { VTONStore } from "@/store/vton-store";
+import { ImageUploadZone } from "./image-upload-zone";
+import { Layers } from "lucide-react";
 
 const CLOTHING_VIEW_ANGLE_GROUPS: { viewAngle: PoseViewAngle; label: string; description: string }[] = [
   { viewAngle: "front", label: "Front", description: "Camera facing the model" },
@@ -386,6 +388,8 @@ function PoseAccessoriesPanel({
   removeCustomAccessory,
   setCustomAccessoryImage,
   removeCustomAccessoryImage,
+  propBuckets = [],
+  togglePoseBucket,
   isFootwear = false,
 }: {
   poseId: string;
@@ -400,9 +404,15 @@ function PoseAccessoriesPanel({
   removeCustomAccessory: (poseId: string, accessoryId: string) => void;
   setCustomAccessoryImage: (poseId: string, accessoryId: string, file: File) => void;
   removeCustomAccessoryImage: (poseId: string, accessoryId: string) => void;
+  /** User-created prop buckets surfaced as per-pose toggles. */
+  propBuckets?: PropBucket[];
+  togglePoseBucket?: (poseId: string, bucketId: string) => void;
   isFootwear?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+
+  const isBucketSelected = (bucketId: string) =>
+    accessories.some((a) => a.bucketId === bucketId);
 
   const filteredCategories = isFootwear
     ? ACCESSORY_CATEGORIES.filter((c) => c.value !== "shoes")
@@ -502,6 +512,45 @@ function PoseAccessoriesPanel({
             })}
           </div>
 
+          {/* Prop bucket toggles — one image is drawn at random per product */}
+          {propBuckets.length > 0 && togglePoseBucket && (
+            <div className="space-y-1.5">
+              <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+                <Layers className="w-3 h-3" />
+                Prop buckets — one image is picked at random per product at generation
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {propBuckets.map((bucket) => {
+                  const selected = isBucketSelected(bucket.id);
+                  const empty = bucket.images.length === 0;
+                  return (
+                    <button
+                      key={bucket.id}
+                      onClick={() => togglePoseBucket(poseId, bucket.id)}
+                      disabled={empty}
+                      title={empty ? "Add images to this bucket first" : undefined}
+                      className={cn(
+                        "flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-colors border",
+                        empty && "opacity-50 cursor-not-allowed",
+                        selected
+                          ? "bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border-indigo-500/40 shadow-sm"
+                          : "bg-card text-muted-foreground border-border hover:border-indigo-400/30 hover:text-foreground"
+                      )}
+                    >
+                      <Layers className="w-3 h-3" />
+                      {bucket.name || "Bucket"} ({bucket.images.length})
+                      {selected && (
+                        <span className="ml-0.5 flex items-center justify-center w-3.5 h-3.5 rounded-full text-[8px] bg-indigo-500 text-white">
+                          <Check className="w-2 h-2" />
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Selected preset accessories image upload slots */}
           {presetAccessories.length > 0 && (
             <div className="space-y-2">
@@ -561,6 +610,158 @@ function PoseAccessoriesPanel({
           >
             <Plus className="w-3.5 h-3.5" />
             Add Custom Accessory
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Prop bucket card (one named bucket: rename, category, images)      */
+/* ------------------------------------------------------------------ */
+const BUCKET_CATEGORY_OPTIONS: { value: AccessoryCategory | "custom"; label: string; icon: string }[] = [
+  { value: "custom", label: "Generic Prop", icon: "✦" },
+  ...ACCESSORY_CATEGORIES.map((c) => ({ value: c.value, label: c.label, icon: c.icon })),
+];
+
+function PropBucketCard({
+  bucket,
+  renamePropBucket,
+  setPropBucketCategory,
+  addPropBucketImages,
+  removePropBucketImage,
+  deletePropBucket,
+}: {
+  bucket: PropBucket;
+  renamePropBucket: (bucketId: string, name: string) => void;
+  setPropBucketCategory: (bucketId: string, category: AccessoryCategory | "custom") => void;
+  addPropBucketImages: (bucketId: string, files: File[]) => void;
+  removePropBucketImage: (bucketId: string, imageIndex: number) => void;
+  deletePropBucket: (bucketId: string) => void;
+}) {
+  // The shared ImageUploadZone keys/removes by id; map bucket images (which have
+  // no stable id) to index-based ids for that contract.
+  const zoneImages = bucket.images.map((img, i) => ({
+    id: String(i),
+    file: img.file,
+    preview: img.preview,
+  }));
+
+  return (
+    <div className="rounded-lg border border-indigo-400/30 bg-indigo-500/[0.03] p-3.5 space-y-3">
+      <div className="flex items-center gap-2">
+        <Layers className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+        <Input
+          value={bucket.name}
+          onChange={(e) => renamePropBucket(bucket.id, e.target.value)}
+          placeholder="Bucket name (e.g. Footwear)"
+          className="h-8 text-sm flex-1"
+        />
+        <select
+          value={bucket.category}
+          onChange={(e) => setPropBucketCategory(bucket.id, e.target.value as AccessoryCategory | "custom")}
+          className="h-8 rounded-md border border-border bg-card px-2 text-xs text-foreground"
+        >
+          {BUCKET_CATEGORY_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.icon} {opt.label}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={() => deletePropBucket(bucket.id)}
+          className="p-1.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors shrink-0"
+          title="Delete bucket"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
+
+      <ImageUploadZone
+        images={zoneImages}
+        onAdd={(files) => addPropBucketImages(bucket.id, files)}
+        onRemove={(id) => removePropBucketImage(bucket.id, Number(id))}
+        maxImages={20}
+        label={`${bucket.images.length} reference image${bucket.images.length !== 1 ? "s" : ""}`}
+        description="One of these is chosen at random per product at generation time."
+        compact
+      />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Prop bucket manager (create / manage named multi-image buckets)    */
+/* ------------------------------------------------------------------ */
+function PropBucketManager({
+  propBuckets,
+  createPropBucket,
+  renamePropBucket,
+  setPropBucketCategory,
+  addPropBucketImages,
+  removePropBucketImage,
+  deletePropBucket,
+}: {
+  propBuckets: PropBucket[];
+  createPropBucket: (name: string, category?: AccessoryCategory | "custom") => string;
+  renamePropBucket: (bucketId: string, name: string) => void;
+  setPropBucketCategory: (bucketId: string, category: AccessoryCategory | "custom") => void;
+  addPropBucketImages: (bucketId: string, files: File[]) => void;
+  removePropBucketImage: (bucketId: string, imageIndex: number) => void;
+  deletePropBucket: (bucketId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-muted/30 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <Layers className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+          <span className="text-sm font-medium text-foreground">Prop Buckets</span>
+          {propBuckets.length > 0 && (
+            <Badge variant="secondary" className="text-[11px]">
+              {propBuckets.length}
+            </Badge>
+          )}
+        </div>
+        {expanded ? (
+          <ChevronUp className="w-4 h-4 text-muted-foreground" />
+        ) : (
+          <ChevronDown className="w-4 h-4 text-muted-foreground" />
+        )}
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-3 border-t border-border">
+          <p className="text-xs text-muted-foreground pt-3">
+            Create named buckets of interchangeable prop images (e.g. a
+            &ldquo;Footwear&rdquo; bucket with 5 shoes). Each bucket can then be
+            toggled under any pose; one image is drawn at random per product at
+            generation, and the same draw is reused across that product&rsquo;s poses.
+          </p>
+
+          {propBuckets.map((bucket) => (
+            <PropBucketCard
+              key={bucket.id}
+              bucket={bucket}
+              renamePropBucket={renamePropBucket}
+              setPropBucketCategory={setPropBucketCategory}
+              addPropBucketImages={addPropBucketImages}
+              removePropBucketImage={removePropBucketImage}
+              deletePropBucket={deletePropBucket}
+            />
+          ))}
+
+          <button
+            onClick={() => createPropBucket(`Bucket ${propBuckets.length + 1}`)}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors border border-dashed border-indigo-400/40 text-indigo-700 dark:text-indigo-400 hover:bg-indigo-500/5 hover:border-indigo-400/60"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Create Bucket
           </button>
         </div>
       )}
@@ -1184,6 +1385,11 @@ function FramingAccordionContent({
                 No Model
               </Badge>
             )}
+            {pose.poseType === "dynamic" && (
+              <Badge className="absolute top-1.5 left-1.5 text-[8px] py-0 px-1 h-3.5 bg-violet-500/10 text-violet-700 dark:text-violet-400 border-violet-500/30">
+                Dynamic
+              </Badge>
+            )}
             <PoseThumbnail poseId={pose.id} icon={pose.icon} isFootwear={isFootwear} />
             <div className="space-y-0.5">
               <p className="text-xs font-medium leading-tight">{pose.name}</p>
@@ -1778,6 +1984,14 @@ export function StepOutput({ store }: StepOutputProps) {
     applyAccessoriesToAllPoses,
     setApplyAccessoriesToAllPoses,
     syncAccessoriesToAllPoses,
+    propBuckets,
+    createPropBucket,
+    renamePropBucket,
+    setPropBucketCategory,
+    addPropBucketImages,
+    removePropBucketImage,
+    deletePropBucket,
+    togglePoseBucket,
     hasModel,
     featureMode,
     imageGenModel,
@@ -1887,15 +2101,15 @@ export function StepOutput({ store }: StepOutputProps) {
 
   return (
     <div className="space-y-8">
-      {/* Image Generation Model (Footwear VTON only) */}
-      {featureMode === "vton" && isFootwear && (
+      {/* Image Generation Model (all VTON flows) */}
+      {featureMode === "vton" && (
         <div className="space-y-4">
           <div>
             <h3 className="text-base font-semibold text-foreground">
               Image Generation Model
             </h3>
             <p className="text-sm text-muted-foreground mt-0.5">
-              Choose which AI engine renders the final footwear photo. Prompt enrichment always runs through Gemini 3.1 Pro.
+              Choose which AI engine renders the final photo. Available for both clothing and footwear.
             </p>
           </div>
 
@@ -2141,6 +2355,17 @@ export function StepOutput({ store }: StepOutputProps) {
             </button>
           )}
 
+          {/* Prop bucket manager — create reusable multi-image buckets */}
+          <PropBucketManager
+            propBuckets={propBuckets}
+            createPropBucket={createPropBucket}
+            renamePropBucket={renamePropBucket}
+            setPropBucketCategory={setPropBucketCategory}
+            addPropBucketImages={addPropBucketImages}
+            removePropBucketImage={removePropBucketImage}
+            deletePropBucket={deletePropBucket}
+          />
+
           <div className="space-y-2">
             {applyAccessoriesToAllPoses ? (
               <PoseAccessoriesPanel
@@ -2190,6 +2415,11 @@ export function StepOutput({ store }: StepOutputProps) {
                   removeCustomAccessoryImage(poseId, accId);
                   setTimeout(() => syncAccessoriesToAllPoses(poseId), 0);
                 }}
+                propBuckets={propBuckets}
+                togglePoseBucket={(poseId, bucketId) => {
+                  togglePoseBucket(poseId, bucketId);
+                  setTimeout(() => syncAccessoriesToAllPoses(poseId), 0);
+                }}
                 isFootwear={isFootwear}
               />
             ) : (
@@ -2211,6 +2441,8 @@ export function StepOutput({ store }: StepOutputProps) {
                     removeCustomAccessory={removeCustomAccessory}
                     setCustomAccessoryImage={setCustomAccessoryImage}
                     removeCustomAccessoryImage={removeCustomAccessoryImage}
+                    propBuckets={propBuckets}
+                    togglePoseBucket={togglePoseBucket}
                     isFootwear={isFootwear}
                   />
                 ))}
@@ -2231,6 +2463,8 @@ export function StepOutput({ store }: StepOutputProps) {
                     removeCustomAccessory={removeCustomAccessory}
                     setCustomAccessoryImage={setCustomAccessoryImage}
                     removeCustomAccessoryImage={removeCustomAccessoryImage}
+                    propBuckets={propBuckets}
+                    togglePoseBucket={togglePoseBucket}
                     isFootwear={isFootwear}
                   />
                 ))}

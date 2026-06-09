@@ -19,6 +19,7 @@ import {
   BulkPoseOverride,
   ComplementaryImage,
   CustomPose,
+  PropBucket,
   FeatureMode,
   FitType,
   FootwearSide,
@@ -28,6 +29,7 @@ import {
   Gender,
   GeneratedResult,
   ImageGenModel,
+  TextGenModel,
   ModelImage,
   ModelSwapBackgroundMode,
   SleeveLength,
@@ -109,6 +111,10 @@ export function useVTONStore() {
   const [bottomwearLength, setBottomwearLength] = useState<BottomwearLength | null>(null);
   const [complementaryImages, setComplementaryImages] = useState<ComplementaryImage[]>([]);
   const [poseAccessories, setPoseAccessories] = useState<Record<string, AccessoryItem[]>>({});
+  // User-created prop buckets. Each bucket holds multiple interchangeable
+  // reference images and can be enabled per pose; at generation time one image
+  // is drawn per product (see step-generate.tsx materializeAccessories).
+  const [propBuckets, setPropBuckets] = useState<PropBucket[]>([]);
   const [applyAccessoriesToAllPoses, setApplyAccessoriesToAllPosesRaw] = useState(false);
   const [background, setBackground] = useState<BackgroundConfig>(defaultBackground);
   const [selectedModel, setSelectedModel] = useState<AIModel | null>(null);
@@ -116,6 +122,7 @@ export function useVTONStore() {
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("3:4");
   const [imageQuality, setImageQuality] = useState<"1K" | "2K" | "4K">("2K");
   const [imageGenModel, setImageGenModel] = useState<ImageGenModel>("gemini");
+  const [textGenModel, setTextGenModel] = useState<TextGenModel>("gemini");
   const [selectedPoses, setSelectedPoses] = useState<Pose[]>([]);
   const [customPoses, setCustomPoses] = useState<CustomPose[]>([]);
   const [namingLogic, setNamingLogic] = useState<NamingLogic>("folder-name-sequential");
@@ -507,6 +514,114 @@ export function useVTONStore() {
     },
     []
   );
+
+  // --- Prop Bucket Actions ---
+
+  /**
+   * Creates a new, empty prop bucket and returns its id. The id scheme mirrors
+   * the accessory id scheme used elsewhere in this store (`<prefix>-<ts>-<rand>`).
+   */
+  const createPropBucket = useCallback(
+    (name: string, category: AccessoryCategory | "custom" = "custom"): string => {
+      const id = `bucket-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      setPropBuckets((prev) => [...prev, { id, name, category, images: [] }]);
+      return id;
+    },
+    []
+  );
+
+  const renamePropBucket = useCallback((bucketId: string, name: string) => {
+    setPropBuckets((prev) => prev.map((b) => (b.id === bucketId ? { ...b, name } : b)));
+  }, []);
+
+  const setPropBucketCategory = useCallback(
+    (bucketId: string, category: AccessoryCategory | "custom") => {
+      setPropBuckets((prev) => prev.map((b) => (b.id === bucketId ? { ...b, category } : b)));
+      // Keep already-toggled pose accessories in sync with the bucket's category
+      // so the meta-prompter frames the drawn image correctly.
+      setPoseAccessories((prev) => {
+        const updated: Record<string, AccessoryItem[]> = {};
+        for (const [pid, accs] of Object.entries(prev)) {
+          updated[pid] = accs.map((a) =>
+            a.bucketId === bucketId ? { ...a, category: category as AccessoryCategory } : a
+          );
+        }
+        return updated;
+      });
+    },
+    []
+  );
+
+  const addPropBucketImages = useCallback((bucketId: string, files: File[]) => {
+    setPropBuckets((prev) =>
+      prev.map((b) => {
+        if (b.id !== bucketId) return b;
+        const newImages = files.map((file) => ({
+          file,
+          preview: URL.createObjectURL(file),
+        }));
+        return { ...b, images: [...b.images, ...newImages] };
+      })
+    );
+  }, []);
+
+  const removePropBucketImage = useCallback((bucketId: string, imageIndex: number) => {
+    setPropBuckets((prev) =>
+      prev.map((b) => {
+        if (b.id !== bucketId) return b;
+        const target = b.images[imageIndex];
+        if (target) URL.revokeObjectURL(target.preview);
+        return { ...b, images: b.images.filter((_, i) => i !== imageIndex) };
+      })
+    );
+  }, []);
+
+  const deletePropBucket = useCallback((bucketId: string) => {
+    setPropBuckets((prev) => {
+      const removed = prev.find((b) => b.id === bucketId);
+      if (removed) removed.images.forEach((img) => URL.revokeObjectURL(img.preview));
+      return prev.filter((b) => b.id !== bucketId);
+    });
+    // Drop any pose-level references to this bucket from every pose.
+    setPoseAccessories((prev) => {
+      const updated: Record<string, AccessoryItem[]> = {};
+      for (const [pid, accs] of Object.entries(prev)) {
+        updated[pid] = accs.filter((a) => a.bucketId !== bucketId);
+      }
+      return updated;
+    });
+  }, []);
+
+  /**
+   * Toggles a bucket reference on/off for one pose. Mirrors {@link toggleAccessory}:
+   * adds an `AccessoryItem` carrying `bucketId` (and the bucket's category) when
+   * absent, or removes it when present. The `image` is intentionally left
+   * undefined — it is materialized at generation time.
+   */
+  const togglePoseBucket = useCallback((poseId: string, bucketId: string) => {
+    setPropBuckets((bucketsPrev) => {
+      const bucket = bucketsPrev.find((b) => b.id === bucketId);
+      setPoseAccessories((prev) => {
+        const poseAccs = prev[poseId] || [];
+        const exists = poseAccs.find((a) => a.bucketId === bucketId);
+        if (exists) {
+          return { ...prev, [poseId]: poseAccs.filter((a) => a.bucketId !== bucketId) };
+        }
+        return {
+          ...prev,
+          [poseId]: [
+            ...poseAccs,
+            {
+              id: `acc-bucket-${bucketId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              category: (bucket?.category ?? "custom") as AccessoryCategory,
+              bucketId,
+            },
+          ],
+        };
+      });
+      return bucketsPrev;
+    });
+  }, []);
 
   const togglePose = useCallback((pose: Pose) => {
     setSelectedPoses((prev) => {
@@ -1853,6 +1968,15 @@ export function useVTONStore() {
     applyAccessoriesToAllPoses,
     setApplyAccessoriesToAllPoses,
     syncAccessoriesToAllPoses,
+    // Prop Buckets
+    propBuckets,
+    createPropBucket,
+    renamePropBucket,
+    setPropBucketCategory,
+    addPropBucketImages,
+    removePropBucketImage,
+    deletePropBucket,
+    togglePoseBucket,
     background,
     setBackground,
     selectedModel,
@@ -1865,6 +1989,8 @@ export function useVTONStore() {
     setImageQuality,
     imageGenModel,
     setImageGenModel,
+    textGenModel,
+    setTextGenModel,
     selectedPoses,
     togglePose,
     movePoseInSequence,

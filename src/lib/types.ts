@@ -7,6 +7,13 @@ export type ProductCategory = "clothing" | "footwear";
  */
 export type ImageGenModel = "gemini" | "gpt-image-2";
 
+/**
+ * Provider used to generate prompts / run analysis stages (text in, text out).
+ * - `gemini`: Vertex AI gemini-3.1-pro-preview. Default meta-prompter.
+ * - `gpt-5.4-pro`: Azure OpenAI gpt-5.4-pro (Responses API). Redundant provider.
+ */
+export type TextGenModel = "gemini" | "gpt-5.4-pro";
+
 export type Gender = "male" | "female" | "unisex";
 
 export type GarmentType = "topwear" | "bottomwear" | "onepiece";
@@ -120,6 +127,34 @@ export interface AccessoryItem {
   };
   /** Free-text description for custom accessories (category === "custom") */
   customDescription?: string;
+  /**
+   * Pose-level reference to a {@link PropBucket}. When set, this accessory is a
+   * placeholder for "draw one image from this bucket". `image` stays UNDEFINED
+   * in store state and is materialized at generation time (see
+   * `materializeAccessories` in `step-generate.tsx`): one image is drawn from
+   * the bucket and the draw is held fixed per product so every pose of that
+   * product reuses the same pick, while different products draw independently.
+   */
+  bucketId?: string;
+}
+
+/**
+ * A named, user-created collection of interchangeable prop / accessory reference
+ * images (e.g. a "Footwear" bucket holding 5 shoe images, or a "Sunglasses"
+ * bucket holding 5 eyewear images). Each bucket surfaces as a selectable option
+ * under every model-shot pose. When a pose enables a bucket, ONE image is drawn
+ * at random from `images` at generation time — fixed per product, independent
+ * across products — and applied via the existing accessory image plumbing.
+ */
+export interface PropBucket {
+  id: string;
+  name: string;
+  /**
+   * Which accessory category the drawn image represents (so the meta-prompter
+   * frames it correctly). `"custom"` for a free-form prop with no fixed category.
+   */
+  category: AccessoryCategory | "custom";
+  images: { file: File; preview: string }[];
 }
 
 export type BackgroundMode = "inspiration" | "text";
@@ -189,6 +224,15 @@ export interface Pose {
   framing: PoseFraming;
   garmentRelevance: (GarmentType | FootwearType)[];
   requiresModel?: boolean; // defaults to true; false for product-only shots
+  /**
+   * Pose generation flavour. Absence (or `"standard"`) means a fixed, canonical
+   * pose described verbatim by `description`. `"dynamic"` means the orientation
+   * (`viewAngle`) and framing (`framing`) stay LOCKED, but the actual posture —
+   * weight shift, gaze, head tilt, arm/hand & leg placement, micro-mood — is
+   * freshly re-randomised on every generation and every retry via a per-call
+   * VARIATION SEED (see `buildDynamicPoseSeed` + the `DYNAMIC_POSE_DIRECTIVE`).
+   */
+  poseType?: "standard" | "dynamic";
 }
 
 export type CustomPoseReferenceMode = "pose" | "image";

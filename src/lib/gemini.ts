@@ -1,5 +1,6 @@
 import { ThinkingLevel } from "@google/genai";
 import { getGeminiClient } from "./gemini-client";
+import { getTextClient } from "./text-client";
 import {
   AccessoryItem,
   AIModel,
@@ -20,12 +21,14 @@ import {
   ModelImage,
   ModelSwapBackgroundMode,
   Pose,
+  PoseViewAngle,
   ProductCategory,
   SetLayoutStyle,
   SetVariantFolder,
   SleeveLength,
   StepCost,
   SwatchShape,
+  TextGenModel,
   TokenUsage,
   TopwearLength,
   UGCScene,
@@ -54,7 +57,18 @@ const MODEL_PRICING: Record<string, { input: number; outputText: number }> = {
   "gemini-3.1-pro-preview":          { input: 2.00, outputText: 12.00 },
   "gemini-3.1-flash-image-preview":  { input: 0.15, outputText: 0.60 },
   "gemini-3-flash-preview":          { input: 0.50, outputText: 3.00 },
+  // Azure OpenAI gpt-5.4-pro — placeholder pricing; update with contract rates.
+  "gpt-5.4-pro":                     { input: 5.00, outputText: 15.00 },
 };
+
+/**
+ * Maps the active text provider to the model string used for cost accounting +
+ * the model label shown to the user. Gemini stays on `gemini-3.1-pro-preview`;
+ * the Azure provider is billed/labelled as `gpt-5.4-pro`.
+ */
+function textCostModel(textGenModel: TextGenModel = "gemini"): string {
+  return textGenModel === "gpt-5.4-pro" ? "gpt-5.4-pro" : "gemini-3.1-pro-preview";
+}
 
 // Flat per-image output cost for Nano Banana 2 (gemini-3.1-flash-image-preview)
 const IMAGE_OUTPUT_COST: Record<string, number> = {
@@ -191,6 +205,64 @@ These variations must stay STRICTLY within the pose's canonical identity (a "fro
 ADDITIONAL INSTRUCTIONS INTEGRATION (CRITICAL):
 If the user's ADDITIONAL INSTRUCTIONS field (see SCENE PARAMETERS below) contains guidance about posture, stance, gaze, head tilt, arm/hand positioning, facial expression, mood, or styling attitude, you MUST weave those instructions directly into the pose description you produce. Treat ADDITIONAL INSTRUCTIONS as AUTHORITATIVE USER INTENT for posture and expression — describe the pose in terms that explicitly reflect those cues (e.g., if the user writes "confident, slight smirk, arms crossed", the output prompt must describe a confident stance with a slight smirk and arms crossed, not a generic smile with relaxed arms). When ADDITIONAL INSTRUCTIONS specify a mood or styling direction that will be reused across many products, translate it into concrete body-language micro-variations per generation so each output in the batch reads as a different moment within the same mood.
 `;
+
+/**
+ * Builds the DYNAMIC POSE directive — included in the meta-prompt ONLY when
+ * `pose.poseType === "dynamic"`. Unlike the canonical posing directive (which
+ * nudges SUBTLE per-generation variation around a fixed described stance), this
+ * directive instructs the meta-prompter to INVENT a fresh, fully-varied candid
+ * posture every single generation, driven by the concrete `dynamicSeed` cues —
+ * while keeping the orientation (`viewAngle`) and framing (`framing`)
+ * NON-NEGOTIABLE.
+ *
+ * It composes cleanly with the existing realism + posing directives (it does
+ * NOT restate the skin/hair anchors — those still flow from VTON_REALISM_DIRECTIVE)
+ * and re-asserts the FRAMING & CROP CONTRACT plus, for side angles, a
+ * soft-profile orientation lock equivalent to the one used for the canonical
+ * `-left-full` / `-right-full` side poses.
+ *
+ * @param pose         the Dynamic pose (carries the locked viewAngle + framing).
+ * @param dynamicSeed  per-generation VARIATION SEED from `buildDynamicPoseSeed`.
+ * @param hasProp      whether any accessory or complementary garment is present.
+ */
+function buildDynamicPoseDirective(pose: Pose, dynamicSeed: string | undefined, hasProp: boolean): string {
+  const orientationLabel: Record<PoseViewAngle, string> = {
+    front: "FRONTAL (the model faces the camera; chest and face toward the lens)",
+    side: "SIDE-PROFILE (a flattering soft ≈75–80° profile, NOT a hard 90° silhouette)",
+    back: "BACK (the camera is fully behind the model; the back of the garment faces the lens)",
+    "three-quarter-front": "THREE-QUARTER FRONT (body angled ~45° off the lens, front of the garment still dominant)",
+    "three-quarter-back": "THREE-QUARTER BACK (body angled ~45° away, back of the garment dominant)",
+    "top-down": "TOP-DOWN (overhead camera looking down)",
+    bottom: "BOTTOM-UP (low camera looking up)",
+    ghost: "GHOST",
+  };
+
+  const sideLock = pose.viewAngle === "side" ? `
+- SIDE-PROFILE ORIENTATION LOCK: the model's body is rotated ~75–80° about the vertical axis into a flattering soft profile with the chest opened only ~10–15° back toward the lens (a sliver of the garment front gently visible). The gaze is OFF-CAMERA, directed out in the same direction the body faces. NEVER mirror, flip, hard-rotate to a 90° silhouette, or have the model make eye contact with the lens. Pick ONE consistent facing direction and keep the whole posture coherent with it.` : "";
+
+  return `
+═══ DYNAMIC POSE DIRECTIVE (MANDATORY — this is a "Dynamic" pose) ═══
+
+This pose is INTENTIONALLY VARIABLE. Your job is to INVENT a fresh, natural, candid full posture for THIS single generation — a different believable moment every time — WITHOUT ever changing the locked camera relationship. Two things are absolutely fixed and override everything below:
+
+1. ORIENTATION LOCK — the viewing angle is ${orientationLabel[pose.viewAngle]}. This is NON-NEGOTIABLE. Never rotate beyond it, never turn a front into a three-quarter or a side, never reveal the back of a frontal shot, never mirror or flip the established facing.${sideLock}
+2. FRAMING & CROP LOCK — reproduce the FRAMING & CROP CONTRACT for the "${pose.framing}" framing EXACTLY as specified above (same shot type, focal length, camera distance/height, subject fill, and top/bottom/left/right crop anatomical anchors). Never zoom in or out, never tighten or loosen the crop, never change which body parts are in frame.
+
+INVENT THE POSTURE FROM THE SEED:
+${dynamicSeed ? `Use the following VARIATION SEED as concrete, authoritative cues and translate EACH cue into vivid, specific body-language prose in your output prompt (weight shift, gaze, head tilt, arm/hand action, leg/foot action, and overall micro-mood). The rendered posture MUST be EXACTLY what these cues describe — high text-image alignment is the goal.
+   ${dynamicSeed}` : `Invent a fresh weight shift, gaze direction, head tilt, arm/hand action, leg/foot action, and micro-mood that read as a genuine candid moment. Describe them as specific, vivid body-language prose so the rendered posture matches the description exactly.`}
+The result must read as a real-person editorial / street-style frame — relaxed, asymmetric, alive — never a stiff mannequin and never a repeat of a previous frame.
+${hasProp ? `
+PROP / COMPLEMENTARY-GARMENT INTERACTION (MANDATORY — at least one prop or complementary garment is present):
+The invented posture MUST show the model NATURALLY handling or interacting with one of the provided accessories or complementary garments — holding, adjusting, wearing, reaching for, or carrying it — in a way that suits that item's real-world nature (e.g. a bag carried by its strap, sunglasses lifted toward the face, a jacket drawn across the body). The interaction must NOT break the ORIENTATION or FRAMING lock above, must NOT hide or obscure the primary garment, and must keep the primary garment the clear hero of the shot.` : ""}
+
+ABSOLUTE NEGATIVE CONSTRAINTS (the shot is INVALID if any is true):
+- The orientation drifted from ${orientationLabel[pose.viewAngle].split(" (")[0]} (e.g. a front became a three-quarter or side, or the facing was mirrored/flipped) → INVALID.
+- The crop / framing changed from "${pose.framing}" (zoomed in/out, different body parts in frame) → INVALID.
+- The posture is stiff, symmetric, or mannequin-like → INVALID.
+This directive AUGMENTS the realism and natural-posing directives below — do NOT duplicate their skin/hair/eye anchors here; describe ONLY the posture, gaze, and interaction.
+`;
+}
 
 /**
  * Conditional directive for the "Lifestyle Interaction" mid-thigh front pose
@@ -357,14 +429,17 @@ Your extracted description must work identically for ANY ${productLabel} placed 
  */
 export async function analyzeBackgroundScene({
   apiKey,
+  textGenModel = "gemini",
   inspirationImage,
   abortSignal,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   inspirationImage: { file: File };
   abortSignal?: AbortSignal;
 }): Promise<{ sceneDescription: string; cost: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
 
   const base64 = await fileToBase64(inspirationImage.file);
 
@@ -461,7 +536,7 @@ Do not output anything outside the sections above — no preface, no commentary,
 
   const tokens = extractTokenUsage(response);
   const cost = computeStepCost(
-    "gemini-3.1-pro-preview",
+    textCostModel(textGenModel),
     "Background Scene Analysis (Gemini 3.1 Pro)",
     tokens
   );
@@ -474,6 +549,7 @@ Do not output anything outside the sections above — no preface, no commentary,
  */
 export async function generateVTONPrompt({
   apiKey,
+  textGenModel = "gemini",
   productCategory = "clothing",
   gender,
   garmentImages,
@@ -496,9 +572,12 @@ export async function generateVTONPrompt({
   applyAccessoriesToAllPoses = false,
   targetImageModel = "gemini",
   frozenSceneDescription,
+  dynamicSeed,
   abortSignal,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   productCategory?: ProductCategory;
   gender: Gender;
   garmentImages: GarmentImage[];
@@ -536,10 +615,18 @@ export async function generateVTONPrompt({
    * drifting object positions. Takes precedence over `background.mode`.
    */
   frozenSceneDescription?: string;
+  /**
+   * Per-generation VARIATION SEED for "Dynamic" poses (`pose.poseType ===
+   * "dynamic"`), produced FRESH on every call by `buildDynamicPoseSeed`. When
+   * present, it drives the DYNAMIC POSE DIRECTIVE so each generation/retry
+   * invents a different candid posture inside the locked orientation + framing.
+   * Ignored for non-dynamic poses.
+   */
+  dynamicSeed?: string;
   /** Optional client-side AbortSignal — cancels the in-flight Gemini request. */
   abortSignal?: AbortSignal;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
 
   // Build content parts
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
@@ -560,6 +647,21 @@ export async function generateVTONPrompt({
   // Determine what garment details to emphasize based on pose view angle, framing, and garment type
   const viewAngle = pose.viewAngle;
   const framing = pose.framing;
+
+  /**
+   * DYNAMIC POSE directive — only non-empty for on-model "Dynamic" poses
+   * (`pose.poseType === "dynamic"`). Custom poses and product-only / ghost
+   * shots never carry `poseType: "dynamic"`, so this stays empty for them.
+   * `hasProp` drives the mandatory prop/complementary-garment interaction clause.
+   */
+  const dynamicPoseDirective =
+    !isProductOnlyShot && pose.poseType === "dynamic"
+      ? buildDynamicPoseDirective(
+          pose,
+          dynamicSeed,
+          accessories.length > 0 || complementaryImages.length > 0,
+        )
+      : "";
 
   // === VIEW ANGLE INSTRUCTIONS ===
   let viewSpecificGarmentInstruction = "";
@@ -1162,9 +1264,9 @@ Frame these overrides POSITIVELY in the output prompt (describe what IS, using a
   //   output-size header; we keep the existing "8K resolution" verbatim clause.
   // - gpt-image-2 receives unlabeled multipart image[] entries and renders at the
   //   explicit WxH we pass via the API, so the resolution keyword is dropped.
-  // Only consumed by the footwear branches below; the clothing branch is
-  // Gemini-only today.
-  const isGptTarget = isFootwear && targetImageModel === "gpt-image-2";
+  // gpt-image-2 is now selectable for ALL VTON flows (clothing + footwear), so
+  // the prompt tuning keys purely off the chosen target model, not the category.
+  const isGptTarget = targetImageModel === "gpt-image-2";
   const modelAudience = isGptTarget
     ? "GPT-Image-2 (Azure OpenAI)"
     : "Nano Banana 2 (gemini-3.1-flash-image-preview)";
@@ -1340,6 +1442,8 @@ ${!isProductOnlyShot ? `- FOOTWEAR SCALE, FIT & PROPORTION LOCK (MANDATORY — t
 
 ${!isProductOnlyShot ? VTON_REALISM_DIRECTIVE : ""}
 
+${dynamicPoseDirective}
+
 ${!isProductOnlyShot && modelImage ? "A reference photo of the model is provided. Include in your prompt: 'Use the EXACT person shown in the model reference image — same face, skin tone, hair, and body proportions.'" : ""}
 
 Output ONLY the generation prompt text following the mandatory structure — no preamble, no explanation, no metadata.`,
@@ -1457,6 +1561,8 @@ ${!isProductOnlyShot && !isGhostMannequin ? CLOTHING_VTON_POSING_DIRECTIVE : ""}
 
 ${!isProductOnlyShot && pose.id === "front-lifestyle-interaction-mid" ? LIFESTYLE_INTERACTION_DIRECTIVE : ""}
 
+${dynamicPoseDirective}
+
 ${fit ? `The prompt MUST instruct the image generator to faithfully reproduce every visual detail from the provided garment images (sleeve length, neckline, color, pattern, fabric texture, construction details). However, the FIT/SIZING of the garment${isProductOnlyShot ? "" : " on the model's body"} MUST follow the user's selection of "${fit}" fit, NOT your visual interpretation of the images.` : `The prompt MUST instruct the image generator to faithfully reproduce every detail from the provided garment images. Emphasize that the garment details must match the reference images exactly.`}
 ${lengthOverridesBlock ? `\nLENGTH OVERRIDE REMINDER: The user-specified garment length(s) listed in the AUTHORITATIVE GARMENT LENGTH OVERRIDES block above are MANDATORY. The output prompt MUST describe each user-specified length using the exact phrase and the anatomical-anchor sentence given for that length. Do NOT default to the visual interpretation of the reference images for those dimensions, and do NOT use any conflicting length descriptor anywhere in the output.\n` : ""}
 ${isProductOnlyShot ? "IMPORTANT: This is a PRODUCT-ONLY shot. Do NOT include any human model, mannequin body, or person in the generated image. Show ONLY the garment product." : modelImage ? "A reference photo of the model is provided. The prompt must instruct the generator to use the EXACT same person from this reference photo - same face, skin tone, hair, and body proportions." : ""}
@@ -1497,6 +1603,8 @@ IMPORTANT FRAMING RULE: The image MUST be framed exactly as specified in the FRA
 ${!isProductOnlyShot && !isGhostMannequin ? CLOTHING_VTON_POSING_DIRECTIVE : ""}
 
 ${!isProductOnlyShot && pose.id === "front-lifestyle-interaction-mid" ? LIFESTYLE_INTERACTION_DIRECTIVE : ""}
+
+${dynamicPoseDirective}
 
 LIGHTING DIRECTIVE (apply to ALL clothing VTON outputs):
 Derive the lighting description entirely from the user's background description in SCENE PARAMETERS — match the light quality, direction, color temperature, and atmosphere to the environment the user has asked for. Describe the lighting in positive, photographer-style terms (what the scene looks like), never in negative terms such as "no X" or "without X".
@@ -1959,7 +2067,7 @@ Now write the ${isGhostMannequin ? "ghost mannequin" : isProductOnlyShot ? "prod
   }
 
   const tokens = extractTokenUsage(response);
-  const cost = computeStepCost("gemini-3.1-pro-preview", "Prompt Generation (Gemini 3.1 Pro)", tokens);
+  const cost = computeStepCost(textCostModel(textGenModel), "Prompt Generation (Gemini 3.1 Pro)", tokens);
 
   return { text, cost };
 }
@@ -2374,6 +2482,7 @@ export async function editVTONImage({
  */
 export async function contextualRetryVTONImage({
   apiKey,
+  textGenModel = "gemini",
   originalContentParts,
   imageGenResponseContent,
   editHistory,
@@ -2390,6 +2499,8 @@ export async function contextualRetryVTONImage({
   abortSignal,
 }: {
   apiKey: string;
+  /** Provider for the Pro edit-instruction step (Step A). Default: gemini. */
+  textGenModel?: TextGenModel;
   originalContentParts: ContentPart[];
   imageGenResponseContent: unknown;
   editHistory?: EditHistoryEntry[];
@@ -2405,6 +2516,9 @@ export async function contextualRetryVTONImage({
   imageSize?: "1K" | "2K" | "4K";
   abortSignal?: AbortSignal;
 }): Promise<{ imageData: string; promptCost: StepCost; imageCost: StepCost; responseContent: unknown; editInstruction: string }> {
+  // Pro edit-instruction step (A) honours the selected text provider; the image
+  // replay step (B) always runs on Gemini / Nano Banana 2.
+  const aiText = getTextClient(textGenModel);
   const ai = getGeminiClient(apiKey);
 
   // ── Step A: Pro writes a minimal, strictly-constrained edit instruction ──
@@ -2461,7 +2575,7 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
     enrichContents.push({ inlineData: { mimeType: modelImage.file.type, data: await fileToBase64(modelImage.file) } });
   }
 
-  const enrichResponse = await ai.models.generateContent({
+  const enrichResponse = await aiText.models.generateContent({
     model: "gemini-3.1-pro-preview",
     contents: enrichContents,
     config: {
@@ -2475,7 +2589,7 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
     throw new Error("No edit instruction returned from Gemini 3.1 Pro");
   }
   const promptCost = computeStepCost(
-    "gemini-3.1-pro-preview",
+    textCostModel(textGenModel),
     "Contextual Retry Prompt (Gemini 3.1 Pro)",
     extractTokenUsage(enrichResponse)
   );
@@ -2532,14 +2646,17 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
  */
 export async function checkHumanVisibility({
   apiKey,
+  textGenModel = "gemini",
   sourceImage,
   abortSignal,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   sourceImage: File;
   abortSignal?: AbortSignal;
 }): Promise<{ humanVisible: boolean; reason: string; cost?: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
 
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -2582,7 +2699,7 @@ Do NOT include any other text.`,
     });
 
     const tokens = extractTokenUsage(response);
-    const cost = computeStepCost("gemini-3.1-pro-preview", "Human Visibility Check (Gemini 3.1 Pro)", tokens);
+    const cost = computeStepCost(textCostModel(textGenModel), "Human Visibility Check (Gemini 3.1 Pro)", tokens);
 
     const text = response.text?.trim() ?? "";
     const visibleLine = text.split("\n").find((l) => l.startsWith("HUMAN_VISIBLE:"));
@@ -2631,6 +2748,7 @@ Do NOT include any other text.`,
  */
 export async function generateModelSwapPrompt({
   apiKey,
+  textGenModel = "gemini",
   gender,
   sourceImage,
   model,
@@ -2644,6 +2762,8 @@ export async function generateModelSwapPrompt({
   previousMismatchFeedback,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   gender: Gender;
   sourceImage: { file: File; preview: string };
   model: AIModel | null;
@@ -2660,7 +2780,7 @@ export async function generateModelSwapPrompt({
   poseVariation?: boolean;
   previousMismatchFeedback?: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
 
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -2906,7 +3026,7 @@ indistinguishable from a real professional photoshoot of that new model.`,
   }
 
   const tokens = extractTokenUsage(response);
-  const cost = computeStepCost("gemini-3.1-pro-preview", "Prompt Generation (Gemini 3.1 Pro)", tokens);
+  const cost = computeStepCost(textCostModel(textGenModel), "Prompt Generation (Gemini 3.1 Pro)", tokens);
 
   return { text, cost };
 }
@@ -3177,6 +3297,7 @@ export async function editModelSwapImage({
  */
 export async function validateGeneratedImage({
   apiKey,
+  textGenModel = "gemini",
   originalImages,
   generatedImageData,
   productCategory = "clothing",
@@ -3185,6 +3306,8 @@ export async function validateGeneratedImage({
   abortSignal,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   originalImages: File[];
   generatedImageData: string;
   productCategory?: ProductCategory;
@@ -3198,7 +3321,7 @@ export async function validateGeneratedImage({
   allowPoseVariation?: boolean;
   abortSignal?: AbortSignal;
 }): Promise<ValidationResult & { cost?: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
 
   const isFootwear = productCategory === "footwear";
   const productLabel = isFootwear ? "footwear" : validationMode === "room-staging" ? "home decor / furniture product" : "garment/clothing";
@@ -3339,7 +3462,7 @@ Do NOT include any other text.`,
     });
 
     const vTokens = extractTokenUsage(response);
-    const vCost = computeStepCost("gemini-3.1-pro-preview", "Verification (Gemini 3.1 Pro)", vTokens);
+    const vCost = computeStepCost(textCostModel(textGenModel), "Verification (Gemini 3.1 Pro)", vTokens);
 
     const text = response.text?.trim() ?? "";
 
@@ -3666,6 +3789,7 @@ CRITICAL: This must be a COMPLETE, FINISHED infographic image — not just the p
  */
 export async function generateSetProductPrompt({
   apiKey,
+  textGenModel = "gemini",
   productCategory = "clothing",
   gender,
   garmentType,
@@ -3681,6 +3805,8 @@ export async function generateSetProductPrompt({
   productInfo,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   productCategory?: ProductCategory;
   gender: Gender;
   garmentType: GarmentType;
@@ -3695,7 +3821,7 @@ export async function generateSetProductPrompt({
   additionalInfo: string;
   productInfo?: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
 
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -3804,7 +3930,7 @@ Write the SET PRODUCT image generation prompt now. 3-5 detailed paragraphs cover
   });
 
   const tokens = extractTokenUsage(response);
-  const cost = computeStepCost("gemini-3.1-pro-preview", "Set Product Prompt (Gemini 3.1 Pro)", tokens);
+  const cost = computeStepCost(textCostModel(textGenModel), "Set Product Prompt (Gemini 3.1 Pro)", tokens);
 
   const text = response.candidates?.[0]?.content?.parts
     ?.filter((p: { text?: string }) => p.text)
@@ -3906,6 +4032,7 @@ export async function generateSetProductImage({
  */
 export async function generateUGCPrompt({
   apiKey,
+  textGenModel = "gemini",
   productCategory = "clothing",
   gender,
   garmentImages,
@@ -3918,6 +4045,8 @@ export async function generateUGCPrompt({
   productInfo,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   productCategory?: ProductCategory;
   gender: Gender;
   garmentImages: GarmentImage[];
@@ -3929,7 +4058,7 @@ export async function generateUGCPrompt({
   additionalInfo: string;
   productInfo?: string;
 }): Promise<{ prompt: string; cost: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
 
   const isFootwear = productCategory === "footwear";
   const isSelfie = scene.shotType === "selfie";
@@ -4062,7 +4191,7 @@ Now write the UGC image generation prompt.`,
   });
 
   const tokens = extractTokenUsage(response);
-  const cost = computeStepCost("gemini-3.1-pro-preview", "UGC Prompt (Gemini 3.1 Pro)", tokens);
+  const cost = computeStepCost(textCostModel(textGenModel), "UGC Prompt (Gemini 3.1 Pro)", tokens);
 
   const text = response.text?.trim();
   if (!text) throw new Error("No UGC prompt generated from Gemini 3.1 Pro");
@@ -4173,16 +4302,19 @@ export async function generateUGCImage({
  */
 export async function generateReplicatePrompt({
   apiKey,
+  textGenModel = "gemini",
   assetImages,
   referenceOutput,
   additionalInfo,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   assetImages: File[];
   referenceOutput: File;
   additionalInfo: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
 
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -4270,7 +4402,7 @@ Output ONLY the generation prompt text.`,
   });
 
   const tokens = extractTokenUsage(response);
-  const cost = computeStepCost("gemini-3.1-pro-preview", "Replicate Prompt (Gemini 3.1 Pro)", tokens);
+  const cost = computeStepCost(textCostModel(textGenModel), "Replicate Prompt (Gemini 3.1 Pro)", tokens);
 
   let text = "";
   if (response.candidates && response.candidates[0]?.content?.parts) {
@@ -4376,6 +4508,7 @@ export async function generateReplicateImage({
 
 export async function generateVideoPrompt({
   apiKey,
+  textGenModel = "gemini",
   productCategory = "clothing",
   gender,
   productImages,
@@ -4396,6 +4529,8 @@ export async function generateVideoPrompt({
   additionalInfo,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   productCategory: ProductCategory;
   gender: Gender;
   productImages: { file: File; preview: string }[];
@@ -4416,7 +4551,7 @@ export async function generateVideoPrompt({
   negativePrompt: string;
   additionalInfo: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
   const fullDuration = totalDuration ?? duration;
   const isExtendedBase = fullDuration > duration;
   const isFootwear = productCategory === "footwear";
@@ -4637,7 +4772,7 @@ Output ONLY the prompt — no preamble, headers, or explanation.`;
   });
 
   const tokens = extractTokenUsage(response);
-  const cost = computeStepCost("gemini-3.1-pro-preview", "Video Prompt (Gemini 3.1 Pro)", tokens);
+  const cost = computeStepCost(textCostModel(textGenModel), "Video Prompt (Gemini 3.1 Pro)", tokens);
 
   const rawText = response.text?.trim();
   if (!rawText) throw new Error("No video prompt generated");
@@ -4679,6 +4814,7 @@ Output ONLY the prompt — no preamble, headers, or explanation.`;
 
 export async function generateVideoExtensionPrompt({
   apiKey,
+  textGenModel = "gemini",
   basePrompt,
   extensionCameraMovement,
   extensionCameraMovementDescription,
@@ -4693,6 +4829,8 @@ export async function generateVideoExtensionPrompt({
   additionalInfo,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   basePrompt: string;
   extensionCameraMovement: string;
   extensionCameraMovementDescription: string;
@@ -4706,7 +4844,7 @@ export async function generateVideoExtensionPrompt({
   productInfo: string;
   additionalInfo: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
   const isFootwear = productCategory === "footwear";
   const genderLabel = gender === "male" ? "men's" : gender === "female" ? "women's" : "unisex";
   const isDynamicTheme = /dynamic|action|sport|runway/i.test(theme);
@@ -4791,7 +4929,7 @@ Output ONLY the prompt — no preamble, headers, or explanation.`;
   });
 
   const tokens = extractTokenUsage(response);
-  const cost = computeStepCost("gemini-3.1-pro-preview", "Video Extension Prompt (Gemini 3.1 Pro)", tokens);
+  const cost = computeStepCost(textCostModel(textGenModel), "Video Extension Prompt (Gemini 3.1 Pro)", tokens);
 
   const rawText = response.text?.trim();
   if (!rawText) throw new Error("No extension prompt generated");
@@ -4819,6 +4957,7 @@ Output ONLY the prompt — no preamble, headers, or explanation.`;
  */
 export async function generateRoomStagingPrompt({
   apiKey,
+  textGenModel = "gemini",
   category,
   productType,
   subType,
@@ -4837,6 +4976,8 @@ export async function generateRoomStagingPrompt({
   previousMismatchFeedback,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   category: RoomStagingCategory;
   productType: string;
   subType: string;
@@ -4854,7 +4995,7 @@ export async function generateRoomStagingPrompt({
   additionalInfo: string;
   previousMismatchFeedback?: string;
 }): Promise<{ text: string; cost: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
 
   const isProductOnly = !shot.requiresRoom;
   const categoryLabel = category === "home-decor" ? "Home Decor" : "Furniture";
@@ -4998,7 +5139,7 @@ Now write the ${isProductOnly ? "product photography" : "interior/room staging"}
   if (!text) throw new Error("No prompt generated");
 
   const tokens = extractTokenUsage(response);
-  const cost = computeStepCost("gemini-3.1-pro-preview", "Prompt Generation (Gemini 3.1 Pro)", tokens);
+  const cost = computeStepCost(textCostModel(textGenModel), "Prompt Generation (Gemini 3.1 Pro)", tokens);
 
   return { text, cost };
 }
@@ -5101,6 +5242,7 @@ interface InfographicBrandInput {
  */
 export async function generateInfographicPrompt({
   apiKey,
+  textGenModel = "gemini",
   productImages,
   productInfo,
   productCategory = "footwear",
@@ -5114,6 +5256,8 @@ export async function generateInfographicPrompt({
   abortSignal,
 }: {
   apiKey: string;
+  /** Provider for prompt-generation / analysis steps. Default: gemini. */
+  textGenModel?: TextGenModel;
   productImages: { file: File }[];
   productInfo?: string;
   productCategory?: ProductCategory;
@@ -5128,7 +5272,7 @@ export async function generateInfographicPrompt({
   variationCount?: number;
   abortSignal?: AbortSignal;
 }): Promise<{ enrichedPrompt: string; cost: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+  const ai = getTextClient(textGenModel);
 
   const backgroundSnippet = INFOGRAPHIC_BACKGROUND_SNIPPETS[backgroundStyle];
   const templateSnippet = INFOGRAPHIC_TEMPLATE_SNIPPETS[template];
@@ -5201,7 +5345,7 @@ Do not include any preamble, commentary, or closing remarks — output the compo
 
   const tokens = extractTokenUsage(response);
   const cost = computeStepCost(
-    "gemini-3.1-pro-preview",
+    textCostModel(textGenModel),
     "Infographic Prompt (Gemini 3.1 Pro)",
     tokens
   );

@@ -1,11 +1,12 @@
 /**
  * Azure OpenAI gpt-image-2 integration.
  *
- * Used as an alternative image-generation backend for the Footwear VTON flow.
- * The call is made client-side (like every other AI call in this app) via the
- * multipart `/images/edits` endpoint because Footwear VTON always carries at
- * least one reference image (the product), and the `/images/generations`
- * endpoint is text-to-image only.
+ * Used as an alternative image-generation backend for ALL VTON flows (clothing
+ * + footwear, single + bulk). The browser builds a multipart form and POSTs it
+ * to our own `/api/azure-image/generate` route, which forwards it to one of the
+ * configured Azure `/images/edits` deployments using server-held credentials.
+ * The `/images/edits` endpoint is used (never `/images/generations`) because
+ * VTON always carries at least one reference image (the product).
  *
  * Size resolution: gpt-image-2 accepts arbitrary resolutions subject to:
  *   - both edges divisible by 16
@@ -24,28 +25,6 @@ import type {
   StepCost,
   TokenUsage,
 } from "./types";
-
-// --- Configuration -------------------------------------------------------
-
-export interface AzureImageConfig {
-  /** Full URL including deployment + api-version query string. */
-  endpoint: string;
-  apiKey: string;
-}
-
-/**
- * Reads the Azure endpoint + key from public env vars and normalises the
- * endpoint path to `/images/edits` (VTON always carries reference images,
- * so we never want `/images/generations`).
- */
-export function getAzureConfig(): AzureImageConfig | null {
-  const rawEndpoint = process.env.NEXT_PUBLIC_AZURE_OPENAI_ENDPOINT;
-  const apiKey = process.env.NEXT_PUBLIC_AZURE_OPENAI_KEY;
-  if (!rawEndpoint || !apiKey) return null;
-
-  const endpoint = rawEndpoint.replace("/images/generations", "/images/edits");
-  return { endpoint, apiKey };
-}
 
 // --- Size resolver -------------------------------------------------------
 
@@ -179,13 +158,6 @@ export async function generateVTONImageAzure({
   imageSize,
   isProductOnlyShot = false,
 }: AzureVTONImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
-  const config = getAzureConfig();
-  if (!config) {
-    throw new Error(
-      "Azure gpt-image-2 is not configured. Set NEXT_PUBLIC_AZURE_OPENAI_ENDPOINT and NEXT_PUBLIC_AZURE_OPENAI_KEY in .env.local.",
-    );
-  }
-
   const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
 
   const form = new FormData();
@@ -207,11 +179,10 @@ export async function generateVTONImageAzure({
     form.append("image[]", file, file.name);
   }
 
-  const response = await fetch(config.endpoint, {
+  // The call is proxied through our own route so Azure credentials stay
+  // server-side and the two deployments can be rotated round-robin.
+  const response = await fetch("/api/azure-image/generate", {
     method: "POST",
-    headers: {
-      "api-key": config.apiKey,
-    },
     body: form,
   });
 

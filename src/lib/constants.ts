@@ -1,4 +1,4 @@
-import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelSwapBackgroundMode, Pose, PoseFraming, ProductCategory, SetLayoutStyle, SleeveLength, SwatchShape, TopwearLength } from "./types";
+import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SwatchShape, TextGenModel, TopwearLength } from "./types";
 
 export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; description: string }[] = [
   { value: "clothing", label: "Clothing", description: "Apparel, garments, and fashion items" },
@@ -13,6 +13,16 @@ export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; 
 export const IMAGE_GEN_MODELS: { value: ImageGenModel; label: string; description: string }[] = [
   { value: "gemini", label: "Nano Banana 2", description: "Gemini 3.1 Flash Image — default, best overall fidelity" },
   { value: "gpt-image-2", label: "GPT-Image-2", description: "Azure OpenAI gpt-image-2 — alternative rendering style" },
+];
+
+/**
+ * Prompt-generation / analysis backends the user can pick from. Applies to every
+ * text (meta-prompter) stage in the pipeline; image generation is selected
+ * separately via {@link IMAGE_GEN_MODELS}.
+ */
+export const TEXT_GEN_MODELS: { value: TextGenModel; label: string; description: string }[] = [
+  { value: "gemini", label: "Gemini 3.1 Pro", description: "Vertex AI — default meta-prompter" },
+  { value: "gpt-5.4-pro", label: "GPT-5.4 Pro", description: "Azure OpenAI — alternative prompt generator" },
 ];
 
 export const GENDER_OPTIONS: { value: Gender; label: string; description: string }[] = [
@@ -1723,6 +1733,220 @@ export const FOOTWEAR_POSES: Pose[] = [
     garmentRelevance: ALL_FOOTWEAR_TYPES,
   },
 ];
+
+// ╔═══════════════════════════════════════════════════════════════╗
+// ║                     DYNAMIC POSES                             ║
+// ║   One auto-generated "Dynamic" pose per (viewAngle × framing) ║
+// ║   group — orientation + framing stay LOCKED, but the posture  ║
+// ║   is freshly re-randomised on every generation (see           ║
+// ║   buildDynamicPoseSeed + the DYNAMIC_POSE_DIRECTIVE).          ║
+// ╚═══════════════════════════════════════════════════════════════╝
+
+/**
+ * Framings that must NEVER receive a Dynamic pose. These are tight close-ups,
+ * product-only, or ghost-mannequin crops where there is no full posture to vary
+ * (a "fresh candid stance" is meaningless when only feet, a bust, or a floating
+ * garment are in frame). Everything else present in {@link POSES} /
+ * {@link FOOTWEAR_POSES} is eligible (full-body, three-quarter, mid-thigh,
+ * waist-up, hip-down, knee-down, …).
+ */
+const DYNAMIC_POSE_EXCLUDED_FRAMINGS: ReadonlySet<PoseFraming> = new Set<PoseFraming>([
+  "bust-up",
+  "feet-closeup",
+  "waist-to-thigh",
+  "cropped-shot",
+  "product-only",
+  "ghost-mannequin",
+]);
+
+/**
+ * Human-readable slug for a {@link PoseFraming}, used to build stable Dynamic
+ * pose IDs (e.g. `front-dynamic-full-body`, `side-dynamic-mid-thigh`). The
+ * framing value already is a kebab-case string, so we reuse it verbatim — this
+ * indirection exists only to keep the ID format documented in one place.
+ */
+function dynamicFramingShort(framing: PoseFraming): string {
+  return framing;
+}
+
+/**
+ * Scans a pose list and emits exactly ONE Dynamic pose per unique
+ * `(viewAngle, framing)` combination whose framing is not in
+ * {@link DYNAMIC_POSE_EXCLUDED_FRAMINGS}.
+ *
+ * Each generated pose:
+ *  - has a stable, unique `id` of the form `${viewAngle}-dynamic-${framing}`,
+ *  - is named simply "Dynamic" (the angle/framing is already shown by its group),
+ *  - carries a generic base `description` that names the LOCKED orientation +
+ *    framing (the strong per-generation variation logic lives in gemini.ts),
+ *  - inherits its `garmentRelevance` as the UNION of every sibling standard
+ *    pose sharing that same combo (so it surfaces for the same product types),
+ *  - is always on-model (`requiresModel: true`, `poseType: "dynamic"`).
+ *
+ * Order is preserved by first-seen combo so the Dynamic poses slot neatly into
+ * their viewAngle→framing groups in the picker.
+ */
+function buildDynamicPoses(source: Pose[]): Pose[] {
+  // Map keyed by `${viewAngle}|${framing}` → accumulating combo state.
+  const combos = new Map<
+    string,
+    { viewAngle: PoseViewAngle; framing: PoseFraming; relevance: Set<GarmentType | FootwearType> }
+  >();
+
+  for (const pose of source) {
+    if (DYNAMIC_POSE_EXCLUDED_FRAMINGS.has(pose.framing)) continue;
+    // Skip product-only / no-model standard poses — a Dynamic pose is on-model.
+    if (pose.requiresModel === false) continue;
+
+    const key = `${pose.viewAngle}|${pose.framing}`;
+    let entry = combos.get(key);
+    if (!entry) {
+      entry = { viewAngle: pose.viewAngle, framing: pose.framing, relevance: new Set() };
+      combos.set(key, entry);
+    }
+    for (const rel of pose.garmentRelevance) entry.relevance.add(rel);
+  }
+
+  const framingPhrase: Record<PoseFraming, string> = {
+    "full-body": "full-body",
+    "three-quarter": "three-quarter (head-to-below-knee)",
+    "mid-thigh": "mid-thigh (cowboy-shot)",
+    "waist-up": "waist-up",
+    "bust-up": "bust-up",
+    "hip-down": "hip-down",
+    "knee-down": "knee-down",
+    "waist-to-thigh": "waist-to-thigh",
+    "cropped-shot": "cropped-shot",
+    "product-only": "product-only",
+    "feet-closeup": "feet-closeup",
+    "ghost-mannequin": "ghost-mannequin",
+  };
+
+  const orientationPhrase: Record<PoseViewAngle, string> = {
+    front: "FRONT",
+    side: "SIDE-PROFILE",
+    back: "BACK",
+    "three-quarter-front": "THREE-QUARTER-FRONT",
+    "three-quarter-back": "THREE-QUARTER-BACK",
+    "top-down": "TOP-DOWN",
+    bottom: "BOTTOM-UP",
+    ghost: "GHOST",
+  };
+
+  const poses: Pose[] = [];
+  for (const { viewAngle, framing, relevance } of combos.values()) {
+    poses.push({
+      id: `${viewAngle}-dynamic-${dynamicFramingShort(framing)}`,
+      name: "Dynamic",
+      description: `A dynamic, candid ${framingPhrase[framing]} ${orientationPhrase[viewAngle]} shot — the model's exact posture, gaze, head angle, and hand/leg placement vary naturally on every generation, while the ${orientationPhrase[viewAngle].toLowerCase()} orientation and ${framingPhrase[framing]} framing stay strictly fixed.`,
+      icon: "🎲",
+      viewAngle,
+      framing,
+      garmentRelevance: [...relevance],
+      requiresModel: true,
+      poseType: "dynamic",
+    });
+  }
+  return poses;
+}
+
+/**
+ * Curated, world-knowledge-rich phrase pools the runtime seed sampler
+ * ({@link import("./utils").buildDynamicPoseSeed}) draws from to compose a fresh
+ * VARIATION SEED for every Dynamic-pose generation. Phrases are intentionally
+ * framing-agnostic so they reuse cleanly across every group; the
+ * `DYNAMIC_POSE_DIRECTIVE` in gemini.ts re-asserts the orientation/framing lock
+ * around whatever posture these cues describe.
+ */
+export const DYNAMIC_POSE_SEED_POOLS = {
+  /** Where the body weight rests + resulting stance asymmetry. */
+  weightShift: [
+    "weight dropped onto the back leg, front knee softly bent",
+    "weight shifted hard onto one hip for a relaxed contrapposto S-curve",
+    "weight evenly grounded through both feet, stance shoulder-width and steady",
+    "caught mid-stride with weight rolling onto the leading foot",
+    "weight on the camera-side leg, opposite heel lifted just off the ground",
+    "leaning subtly back on the heels with a loose, easy carriage",
+    "weight pitched slightly forward onto the balls of the feet, alert and ready",
+    "one foot crossed loosely in front of the other, hips canted to one side",
+  ],
+  /** Direction + quality of the gaze. */
+  gaze: [
+    "eyes locked confidently on the lens",
+    "glancing off-frame to the left as if mid-thought",
+    "looking down softly toward the shoulder",
+    "gaze drifting to the upper right, catching the light",
+    "eyes half-lowered in a calm, unbothered cool",
+    "looking just past the camera into the middle distance",
+    "a quick over-the-shoulder glance back toward the lens",
+    "chin up, gaze level and direct with a faint trace of a smile in the eyes",
+  ],
+  /** Head + chin micro-angle. */
+  headTilt: [
+    "head tilted a few degrees to one side, playful and light",
+    "chin dipped slightly, brow relaxed",
+    "head squared to the camera, neck long and upright",
+    "chin lifted a touch, projecting quiet confidence",
+    "head turned a few degrees off the body line for a candid asymmetry",
+    "a gentle backward tilt of the head as if mid-laugh",
+    "head dropped softly forward, gaze following downward",
+  ],
+  /** Arm + hand action. */
+  armAction: [
+    "one hand slipped into a pocket, the other relaxed at the side",
+    "fingers lightly adjusting a cuff",
+    "both hands loosely clasped in front",
+    "one arm bent with the hand resting at the waistband, the other hanging free",
+    "a hand running casually through the hair",
+    "arms loosely crossed, shoulders dropped and easy",
+    "one thumb hooked into a belt loop, the other arm swinging slightly",
+    "a hand resting lightly against the collarbone, fingers relaxed",
+    "both arms swinging naturally as if caught between steps",
+    "one hand lifted to lightly touch the jaw, elbow soft",
+  ],
+  /** Leg + foot placement. */
+  legAction: [
+    "legs in an easy, slightly staggered stance",
+    "one leg crossed loosely over the other at the ankle",
+    "feet hip-width apart, toes angled subtly outward",
+    "one knee softly bent, the other leg straight and grounded",
+    "mid-step, the trailing foot pushing off the ground",
+    "legs together with a gentle bend, weight stacked vertically",
+    "one foot turned out at a casual angle, the other planted square",
+    "a relaxed wide stance, knees loose and unlocked",
+  ],
+  /** Overall energy / micro-mood. */
+  energy: [
+    "calm and composed, an unhurried editorial stillness",
+    "bright and approachable, a candid warmth",
+    "cool and aloof, a fashion-week detachment",
+    "playful and light, caught in an easy unguarded moment",
+    "confident and grounded, quietly powerful",
+    "soft and contemplative, lost in a private thought",
+    "energetic and alive, a sense of motion just settling",
+  ],
+  /** How the model handles a prop/accessory or complementary garment, when present. */
+  propInteraction: [
+    "holding the bag's strap over one shoulder, hand resting on it",
+    "lifting the sunglasses slightly as if about to put them on",
+    "mid-stride glancing at the prop in hand",
+    "lightly adjusting the accessory at the neckline or wrist",
+    "fingers curled loosely around the held item, weight settled",
+    "drawing the complementary layer closed across the body with one hand",
+    "the prop carried casually in the crook of one arm",
+    "one hand smoothing or styling the secondary garment",
+    "tilting the held accessory toward the camera as a subtle focal point",
+  ],
+} as const;
+
+/** Union of the curated seed-pool category names. */
+export type DynamicPoseSeedCategory = keyof typeof DYNAMIC_POSE_SEED_POOLS;
+
+// Append the generated Dynamic poses so they appear inside their existing
+// viewAngle→framing groups in the pose picker (no excluded framing ever
+// produces a Dynamic pose — see DYNAMIC_POSE_EXCLUDED_FRAMINGS).
+POSES.push(...buildDynamicPoses(POSES));
+FOOTWEAR_POSES.push(...buildDynamicPoses(FOOTWEAR_POSES));
 
 // --- Accessory Categories ---
 
