@@ -43,6 +43,7 @@ import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS, TEXT_GEN_MODELS, IMAGE_
 import { ProviderPicker } from "./provider-picker";
 import Image from "next/image";
 import type { VTONStore } from "@/store/vton-store";
+import { GLOBAL_ACCESSORY_POSE_ID } from "@/store/vton-store";
 import type {
   AccessoryItem,
   BackgroundConfig,
@@ -114,20 +115,14 @@ function getSequencedFileName(
   ext: string,
   oneIndexed = false,
   skipIndices: number[] = [],
-  folderScoped = false,
 ): string {
   const safeName = baseName.replace(/[<>:"/\\|?*]+/g, "_");
   const counter = computeSkipAwareCounter(sequenceIndex, oneIndexed, skipIndices);
-  if (oneIndexed) {
-    return `${safeName}_${counter}.${ext}`;
-  }
-  // When the file lives INSIDE a folder named `safeName`, a bare `safeName.ext`
-  // for index 0 is identical to its parent folder's name; such an entry gets
-  // dropped from the generated ZIP (the first image goes missing). Suffix it
-  // `_0` in that folder-scoped case so the first image is always included.
-  return counter === 0
-    ? (folderScoped ? `${safeName}_0.${ext}` : `${safeName}.${ext}`)
-    : `${safeName}_${counter}.${ext}`;
+  // Both modes always carry a numeric suffix. In 0-indexed mode the first image
+  // is `${safeName}_0` (never a bare `${safeName}`): this keeps the sequence
+  // consistent and avoids the collision where a bare folder name inside a
+  // folder-scoped ZIP duplicates its parent folder entry and gets dropped.
+  return `${safeName}_${counter}.${ext}`;
 }
 
 function sortResultsByPoseSequence<T extends { pose: Pose }>(
@@ -308,8 +303,10 @@ function formatTokens(count: number): string {
   return count.toString();
 }
 
-function CostBreakdownPopover({ costBreakdown }: { costBreakdown?: GenerationCostBreakdown }) {
-  if (!costBreakdown) return null;
+function CostBreakdownPopover({ costBreakdown, skip = false }: { costBreakdown?: GenerationCostBreakdown; skip?: boolean }) {
+  // When validation & cost tracking are disabled, suppress the cost UI entirely
+  // (covers retry/edit paths that may still have populated a breakdown).
+  if (skip || !costBreakdown) return null;
 
   return (
     <Popover>
@@ -476,7 +473,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
     singleDownloadPrefix,
     namingLogic,
     skipNamingIndicesText,
+    // Validation / cost
+    skipValidation,
   } = store;
+  // Mirrored in a ref so the many async generation closures read the live value
+  // without each having to thread `skipValidation` through its dependency array.
+  const skipValidationRef = useRef(skipValidation);
+  skipValidationRef.current = skipValidation;
   const { imageQuality, setImageQuality } = store;
   const { imageGenModel, setImageGenModel, textGenModel, setTextGenModel } = store;
   const isModelSwap = featureMode === "model-swap";
@@ -634,14 +637,36 @@ export function StepGenerate({ store }: StepGenerateProps) {
    */
   const materializeAccessories = useCallback(
     (rawAccessories: AccessoryItem[], productKey: string): AccessoryItem[] => {
+      // Fold in the non-destructive "apply to all poses" global layer when the
+      // flag is ON. Global items are ADDITIVE on top of this pose's own
+      // selections, but de-duplicated so a prop the pose already chose isn't
+      // applied twice (match on bucketId, or on non-custom category).
+      let merged = rawAccessories;
+      if (applyAccessoriesToAllPoses) {
+        const globalAccs = poseAccessories[GLOBAL_ACCESSORY_POSE_ID] || [];
+        const ownBucketIds = new Set(rawAccessories.map((a) => a.bucketId).filter(Boolean));
+        const ownCategories = new Set(
+          rawAccessories.filter((a) => !a.bucketId && a.category !== "custom").map((a) => a.category)
+        );
+        const extras = globalAccs.filter((a) => {
+          if (a.bucketId) return !ownBucketIds.has(a.bucketId);
+          if (a.category === "custom") return true;
+          return !ownCategories.has(a.category);
+        });
+        merged = extras.length > 0 ? [...rawAccessories, ...extras] : rawAccessories;
+      }
+
       const out: AccessoryItem[] = [];
-      for (const acc of rawAccessories) {
+      for (const acc of merged) {
         if (!acc.bucketId) {
           out.push(acc);
           continue;
         }
         const bucket = propBuckets.find((b) => b.id === acc.bucketId);
         if (!bucket || bucket.images.length === 0) continue; // missing/empty → drop
+        // A global bucket draws ONE image per product (cacheKey is keyed only by
+        // productKey + bucketId, not pose), so every pose of the product shares
+        // the same sampled prop — consistent across poses.
         const cacheKey = `${productKey}::${acc.bucketId}`;
         let pick = bucketPickCacheRef.current.get(cacheKey);
         if (!pick) {
@@ -654,7 +679,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
       return out;
     },
-    [propBuckets]
+    [propBuckets, applyAccessoriesToAllPoses, poseAccessories]
   );
 
   const resolveOverride = useCallback(
@@ -875,28 +900,30 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: "validating",
+          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
         });
 
-        validateGeneratedImage({
-          apiKey,
-          textGenModel,
-          originalImages: garmentImages.map((g) => g.file),
-          generatedImageData: imageResult.imageData,
-          productCategory,
-          abortSignal: signal,
-        }).then((v) => {
-          if (v.cost) collectedCosts.push(v.cost);
-          const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
-          const retryCost = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
-          updateResult(result.id, {
-            validationStatus: v.status,
-            validationMessage: v.message,
-            costBreakdown: { steps: [...collectedCosts], totalCost: mainCost + retryCost, retrySteps },
+        if (!skipValidationRef.current) {
+          validateGeneratedImage({
+            apiKey,
+            textGenModel,
+            originalImages: garmentImages.map((g) => g.file),
+            generatedImageData: imageResult.imageData,
+            productCategory,
+            abortSignal: signal,
+          }).then((v) => {
+            if (v.cost) collectedCosts.push(v.cost);
+            const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
+            const retryCost = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
+            updateResult(result.id, {
+              validationStatus: v.status,
+              validationMessage: v.message,
+              costBreakdown: { steps: [...collectedCosts], totalCost: mainCost + retryCost, retrySteps },
+            });
           });
-        });
+        }
       };
 
       try {
@@ -1342,11 +1369,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateBulkResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: "validating",
+          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
         });
 
+        if (skipValidationRef.current) return;
         validateGeneratedImage({
           apiKey,
           textGenModel,
@@ -1673,12 +1701,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: "validating",
+          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           validationMessage: undefined,
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
         });
 
+        if (skipValidationRef.current) return;
         validateGeneratedImage({
           apiKey,
           textGenModel,
@@ -1857,12 +1886,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateBulkResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: "validating",
+          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           validationMessage: undefined,
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
         });
 
+        if (skipValidationRef.current) return;
         validateGeneratedImage({
           apiKey,
           textGenModel,
@@ -2481,7 +2511,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           const resp = await fetch(r.imageData);
           const blob = await resp.blob();
           const ext = (blob.type && blob.type.split("/")[1]) || "png";
-          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed, skipIndices, true), blob);
+          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed, skipIndices), blob);
         } catch (e) {
           // eslint-disable-next-line no-console
           console.error("Failed to add image to zip:", e);
@@ -2635,7 +2665,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           const resp = await fetch(r.imageData);
           const blob = await resp.blob();
           const ext = (blob.type && blob.type.split("/")[1]) || "png";
-          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed, skipIndices, true), blob);
+          folder.file(getSequencedFileName(safeName, i, ext, oneIndexed, skipIndices), blob);
         } catch (e) {
           // eslint-disable-next-line no-console
           console.error("Failed to add image to zip:", e);
@@ -3151,11 +3181,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateModelSwapResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: "validating",
+          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
         });
 
+        if (skipValidationRef.current) return;
         validateGeneratedImage({
           apiKey,
           textGenModel,
@@ -3311,11 +3342,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateModelSwapBulkResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: "validating",
+          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
         });
 
+        if (skipValidationRef.current) return;
         validateGeneratedImage({
           apiKey,
           textGenModel,
@@ -3442,12 +3474,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateModelSwapResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: "validating",
+          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           validationMessage: undefined,
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
         });
 
+        if (skipValidationRef.current) return;
         validateGeneratedImage({
           apiKey,
           textGenModel,
@@ -3606,12 +3639,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateModelSwapBulkResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: "validating",
+          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           validationMessage: undefined,
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
         });
 
+        if (skipValidationRef.current) return;
         validateGeneratedImage({
           apiKey,
           textGenModel,
@@ -3898,7 +3932,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                                       No Model
                                     </div>
                                   )}
-                                  {result.status === "completed" && <CostBreakdownPopover costBreakdown={result.costBreakdown} />}
+                                  {result.status === "completed" && <CostBreakdownPopover costBreakdown={result.costBreakdown} skip={skipValidation} />}
                                   {result.status === "completed" && <ValidationBadge status={result.validationStatus} message={result.validationMessage} />}
                                 </>
                               ) : result.status === "error" ? (
@@ -4167,7 +4201,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                           Original — No Model Detected
                         </div>
                       )}
-                      {result.status === "completed" && <CostBreakdownPopover costBreakdown={result.costBreakdown} />}
+                      {result.status === "completed" && <CostBreakdownPopover costBreakdown={result.costBreakdown} skip={skipValidation} />}
                       {result.status === "completed" && <ValidationBadge status={result.validationStatus} message={result.validationMessage} />}
                     </>
                   ) : result.status === "error" ? (
@@ -4501,7 +4535,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                         alt={`Set Product - ${result.setFolderName}`}
                         className="w-full h-full object-contain"
                       />
-                      <CostBreakdownPopover costBreakdown={result.costBreakdown} />
+                      <CostBreakdownPopover costBreakdown={result.costBreakdown} skip={skipValidation} />
                     </>
                   ) : result.status === "error" ? (
                     <div className="flex flex-col items-center gap-3 p-6 text-center">
@@ -5236,7 +5270,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                                     alt={`VTON - ${result.combinationLabel} - ${result.pose.name}`}
                                     className="w-full h-full object-cover"
                                   />
-                                  <CostBreakdownPopover costBreakdown={result.costBreakdown} />
+                                  <CostBreakdownPopover costBreakdown={result.costBreakdown} skip={skipValidation} />
                                   <ValidationBadge status={result.validationStatus} message={result.validationMessage} />
                                 </>
                               ) : result.status === "error" ? (
@@ -5787,7 +5821,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                       alt={`VTON - ${result.pose.name}`}
                       className="w-full h-full object-cover"
                     />
-                    <CostBreakdownPopover costBreakdown={result.costBreakdown} />
+                    <CostBreakdownPopover costBreakdown={result.costBreakdown} skip={skipValidation} />
                     <ValidationBadge status={result.validationStatus} message={result.validationMessage} />
                   </>
                 ) : result.status === "error" ? (
@@ -6066,7 +6100,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                         alt={`UGC - ${result.sceneName}`}
                         className="w-full h-full object-cover"
                       />
-                      <CostBreakdownPopover costBreakdown={result.costBreakdown} />
+                      <CostBreakdownPopover costBreakdown={result.costBreakdown} skip={skipValidation} />
                     </>
                   ) : result.status === "error" ? (
                     <div className="flex flex-col items-center gap-3 p-6 text-center">

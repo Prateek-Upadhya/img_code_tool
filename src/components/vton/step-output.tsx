@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { AlertCircle, Camera, Check, CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, Filter, GripVertical, ImageIcon, Package, Plus, Sparkles, Trash2, Upload, User, X } from "lucide-react";
+import { AlertCircle, Camera, Check, CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, Filter, GripVertical, ImageIcon, Package, Plus, ShieldCheck, ShieldOff, Sparkles, Trash2, Upload, User, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ACCESSORY_CATEGORIES, ASPECT_RATIOS, FRAMING_OPTIONS, IMAGE_GEN_MODELS, POSES, FOOTWEAR_POSES, UGC_SHOT_TYPE_OPTIONS, UGC_SCENE_PRESETS } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import type { AccessoryCategory, AccessoryItem, CustomPose, FootwearType, GarmentType, NamingLogic, Pose, PoseFraming, PoseViewAngle, PropBucket, UGCScene, UGCShotType } from "@/lib/types";
 import type { VTONStore } from "@/store/vton-store";
+import { GLOBAL_ACCESSORY_POSE_ID } from "@/store/vton-store";
 import { ImageUploadZone } from "./image-upload-zone";
 import { Layers } from "lucide-react";
 
@@ -370,6 +371,20 @@ function CustomAccessoryCard({
       />
     </div>
   );
+}
+
+/**
+ * Builds the per-pose header label for the accessories/props panel, e.g.
+ * "Dynamic: Front full-body" — combining the pose type, view-angle label, and
+ * framing so each pose is distinguishable when assigning props (Dynamic poses
+ * would otherwise all read "Dynamic").
+ */
+function formatPoseDescriptor(pose: Pose, isFootwear: boolean): string {
+  const groups = isFootwear ? FOOTWEAR_VIEW_ANGLE_GROUPS : CLOTHING_VIEW_ANGLE_GROUPS;
+  const angle = groups.find((g) => g.viewAngle === pose.viewAngle)?.label ?? pose.viewAngle;
+  const type = pose.poseType ?? "standard";
+  const typeLabel = type.charAt(0).toUpperCase() + type.slice(1);
+  return `${typeLabel}: ${angle} ${pose.framing}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1669,11 +1684,9 @@ function buildNamingExample(
   const parts: string[] = [];
   for (let i = 0; i < 3; i++) {
     const counter = nthSkipAwareCounter(i, oneIndexed, skipIndices);
-    parts.push(
-      !oneIndexed && counter === 0
-        ? `${safe}.png`
-        : `${safe}_${counter}.png`
-    );
+    // First image is always suffixed (`_0` in 0-indexed mode) — matches
+    // getSequencedFileName in step-generate.tsx.
+    parts.push(`${safe}_${counter}.png`);
   }
   return `e.g. ${parts.join(", ")}`;
 }
@@ -1725,8 +1738,8 @@ function NamingLogicSection({
           label="Folder name sequential (starts at 0)"
           description={
             mode === "bulk"
-              ? "Images are named using the product folder name: folder_name, folder_name_1, folder_name_2, ..."
-              : "Images are named using the download prefix: prefix, prefix_1, prefix_2, ..."
+              ? "Images are named using the product folder name: folder_name_0, folder_name_1, folder_name_2, ..."
+              : "Images are named using the download prefix: prefix_0, prefix_1, prefix_2, ..."
           }
           example={zeroIndexedExample}
         />
@@ -1962,6 +1975,8 @@ export function StepOutput({ store }: StepOutputProps) {
     setSingleDownloadPrefix,
     skipNamingIndicesText,
     setSkipNamingIndicesText,
+    skipValidation,
+    setSkipValidation,
     mode,
     customPoses,
     addCustomPose,
@@ -1983,7 +1998,6 @@ export function StepOutput({ store }: StepOutputProps) {
     removeCustomAccessoryImage,
     applyAccessoriesToAllPoses,
     setApplyAccessoriesToAllPoses,
-    syncAccessoriesToAllPoses,
     propBuckets,
     createPropBucket,
     renamePropBucket,
@@ -2331,13 +2345,7 @@ export function StepOutput({ store }: StepOutputProps) {
           {/* Apply to all poses toggle */}
           {(selectedPoses.filter((p) => p.requiresModel !== false).length + customPoses.filter((cp) => cp.isModelShot).length) > 1 && (
             <button
-              onClick={() => {
-                const onModelPoseIds = [
-                  ...selectedPoses.filter((p) => p.requiresModel !== false).map((p) => p.id),
-                  ...customPoses.filter((cp) => cp.isModelShot).map((cp) => cp.id),
-                ];
-                setApplyAccessoriesToAllPoses(!applyAccessoriesToAllPoses, onModelPoseIds);
-              }}
+              onClick={() => setApplyAccessoriesToAllPoses(!applyAccessoriesToAllPoses)}
               className={cn(
                 "w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors text-sm font-medium",
                 applyAccessoriesToAllPoses
@@ -2347,12 +2355,17 @@ export function StepOutput({ store }: StepOutputProps) {
             >
               <span className="flex items-center gap-2">
                 {applyAccessoriesToAllPoses ? <Check className="w-4 h-4" /> : <Sparkles className="w-4 h-4" />}
-                Apply same accessories to all poses
+                Apply accessories &amp; props to all poses
               </span>
               <span className="text-xs opacity-70">
                 {applyAccessoriesToAllPoses ? "ON" : "OFF"}
               </span>
             </button>
+          )}
+          {applyAccessoriesToAllPoses && (
+            <p className="text-[11px] text-muted-foreground px-1 -mt-1">
+              Accessories &amp; prop buckets added under <span className="font-medium">All Poses</span> apply to every pose, on top of each pose&apos;s own selections. A prop bucket here samples one image per product and uses it consistently across all poses.
+            </p>
           )}
 
           {/* Prop bucket manager — create reusable multi-image buckets */}
@@ -2367,109 +2380,73 @@ export function StepOutput({ store }: StepOutputProps) {
           />
 
           <div className="space-y-2">
-            {applyAccessoriesToAllPoses ? (
+            {/* Global "apply to all poses" layer — additive, never overwrites the
+                per-pose selections below. */}
+            {applyAccessoriesToAllPoses && (
               <PoseAccessoriesPanel
-                poseId={
-                  selectedPoses.filter((p) => p.requiresModel !== false)[0]?.id
-                  || customPoses.filter((cp) => cp.isModelShot)[0]?.id
-                  || ""
-                }
+                poseId={GLOBAL_ACCESSORY_POSE_ID}
                 poseName="All Poses"
                 poseIcon="🔗"
-                accessories={
-                  poseAccessories[
-                    selectedPoses.filter((p) => p.requiresModel !== false)[0]?.id
-                    || customPoses.filter((cp) => cp.isModelShot)[0]?.id
-                    || ""
-                  ] || []
-                }
-                toggleAccessory={(poseId, category) => {
-                  toggleAccessory(poseId, category);
-                  setTimeout(() => syncAccessoriesToAllPoses(poseId), 0);
-                }}
-                setAccessoryImage={(poseId, category, file) => {
-                  setAccessoryImage(poseId, category, file);
-                  setTimeout(() => syncAccessoriesToAllPoses(poseId), 0);
-                }}
-                removeAccessoryImage={(poseId, category) => {
-                  removeAccessoryImage(poseId, category);
-                  setTimeout(() => syncAccessoriesToAllPoses(poseId), 0);
-                }}
-                addCustomAccessory={(poseId, desc, img) => {
-                  addCustomAccessory(poseId, desc, img);
-                  setTimeout(() => syncAccessoriesToAllPoses(poseId), 0);
-                }}
-                updateCustomAccessoryDescription={(poseId, accId, desc) => {
-                  updateCustomAccessoryDescription(poseId, accId, desc);
-                  setTimeout(() => syncAccessoriesToAllPoses(poseId), 0);
-                }}
-                removeCustomAccessory={(poseId, accId) => {
-                  removeCustomAccessory(poseId, accId);
-                  setTimeout(() => syncAccessoriesToAllPoses(poseId), 0);
-                }}
-                setCustomAccessoryImage={(poseId, accId, file) => {
-                  setCustomAccessoryImage(poseId, accId, file);
-                  setTimeout(() => syncAccessoriesToAllPoses(poseId), 0);
-                }}
-                removeCustomAccessoryImage={(poseId, accId) => {
-                  removeCustomAccessoryImage(poseId, accId);
-                  setTimeout(() => syncAccessoriesToAllPoses(poseId), 0);
-                }}
+                accessories={poseAccessories[GLOBAL_ACCESSORY_POSE_ID] || []}
+                toggleAccessory={toggleAccessory}
+                setAccessoryImage={setAccessoryImage}
+                removeAccessoryImage={removeAccessoryImage}
+                addCustomAccessory={addCustomAccessory}
+                updateCustomAccessoryDescription={updateCustomAccessoryDescription}
+                removeCustomAccessory={removeCustomAccessory}
+                setCustomAccessoryImage={setCustomAccessoryImage}
+                removeCustomAccessoryImage={removeCustomAccessoryImage}
                 propBuckets={propBuckets}
-                togglePoseBucket={(poseId, bucketId) => {
-                  togglePoseBucket(poseId, bucketId);
-                  setTimeout(() => syncAccessoriesToAllPoses(poseId), 0);
-                }}
+                togglePoseBucket={togglePoseBucket}
                 isFootwear={isFootwear}
               />
-            ) : (
-              <>
-                {selectedPoses
-                  .filter((p) => p.requiresModel !== false)
-                  .map((pose) => (
-                  <PoseAccessoriesPanel
-                    key={pose.id}
-                    poseId={pose.id}
-                    poseName={pose.name}
-                    poseIcon={pose.icon}
-                    accessories={poseAccessories[pose.id] || []}
-                    toggleAccessory={toggleAccessory}
-                    setAccessoryImage={setAccessoryImage}
-                    removeAccessoryImage={removeAccessoryImage}
-                    addCustomAccessory={addCustomAccessory}
-                    updateCustomAccessoryDescription={updateCustomAccessoryDescription}
-                    removeCustomAccessory={removeCustomAccessory}
-                    setCustomAccessoryImage={setCustomAccessoryImage}
-                    removeCustomAccessoryImage={removeCustomAccessoryImage}
-                    propBuckets={propBuckets}
-                    togglePoseBucket={togglePoseBucket}
-                    isFootwear={isFootwear}
-                  />
-                ))}
-                {customPoses
-                  .filter((cp) => cp.isModelShot)
-                  .map((cp) => (
-                  <PoseAccessoriesPanel
-                    key={cp.id}
-                    poseId={cp.id}
-                    poseName={cp.name || "Custom Pose"}
-                    poseIcon="✨"
-                    accessories={poseAccessories[cp.id] || []}
-                    toggleAccessory={toggleAccessory}
-                    setAccessoryImage={setAccessoryImage}
-                    removeAccessoryImage={removeAccessoryImage}
-                    addCustomAccessory={addCustomAccessory}
-                    updateCustomAccessoryDescription={updateCustomAccessoryDescription}
-                    removeCustomAccessory={removeCustomAccessory}
-                    setCustomAccessoryImage={setCustomAccessoryImage}
-                    removeCustomAccessoryImage={removeCustomAccessoryImage}
-                    propBuckets={propBuckets}
-                    togglePoseBucket={togglePoseBucket}
-                    isFootwear={isFootwear}
-                  />
-                ))}
-              </>
             )}
+            {/* Per-pose selections — always visible & editable, even when the
+                global layer above is ON (the two merge additively at generation). */}
+            {selectedPoses
+              .filter((p) => p.requiresModel !== false)
+              .map((pose) => (
+              <PoseAccessoriesPanel
+                key={pose.id}
+                poseId={pose.id}
+                poseName={formatPoseDescriptor(pose, isFootwear)}
+                poseIcon={pose.icon}
+                accessories={poseAccessories[pose.id] || []}
+                toggleAccessory={toggleAccessory}
+                setAccessoryImage={setAccessoryImage}
+                removeAccessoryImage={removeAccessoryImage}
+                addCustomAccessory={addCustomAccessory}
+                updateCustomAccessoryDescription={updateCustomAccessoryDescription}
+                removeCustomAccessory={removeCustomAccessory}
+                setCustomAccessoryImage={setCustomAccessoryImage}
+                removeCustomAccessoryImage={removeCustomAccessoryImage}
+                propBuckets={propBuckets}
+                togglePoseBucket={togglePoseBucket}
+                isFootwear={isFootwear}
+              />
+            ))}
+            {customPoses
+              .filter((cp) => cp.isModelShot)
+              .map((cp) => (
+              <PoseAccessoriesPanel
+                key={cp.id}
+                poseId={cp.id}
+                poseName={cp.name || "Custom Pose"}
+                poseIcon="✨"
+                accessories={poseAccessories[cp.id] || []}
+                toggleAccessory={toggleAccessory}
+                setAccessoryImage={setAccessoryImage}
+                removeAccessoryImage={removeAccessoryImage}
+                addCustomAccessory={addCustomAccessory}
+                updateCustomAccessoryDescription={updateCustomAccessoryDescription}
+                removeCustomAccessory={removeCustomAccessory}
+                setCustomAccessoryImage={setCustomAccessoryImage}
+                removeCustomAccessoryImage={removeCustomAccessoryImage}
+                propBuckets={propBuckets}
+                togglePoseBucket={togglePoseBucket}
+                isFootwear={isFootwear}
+              />
+            ))}
           </div>
         </div>
       )}
@@ -2495,6 +2472,28 @@ export function StepOutput({ store }: StepOutputProps) {
           mode={mode}
         />
       )}
+
+      {/* Validation & cost toggle */}
+      <div className="space-y-2">
+        <button
+          onClick={() => setSkipValidation(!skipValidation)}
+          className={cn(
+            "w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors text-sm font-medium",
+            skipValidation
+              ? "bg-orange-500/10 text-orange-700 dark:text-orange-400 border-orange-500/30"
+              : "bg-card text-muted-foreground border-border hover:border-primary/30 hover:text-foreground"
+          )}
+        >
+          <span className="flex items-center gap-2">
+            {skipValidation ? <ShieldOff className="w-4 h-4" /> : <ShieldCheck className="w-4 h-4" />}
+            Skip validation &amp; cost tracking
+          </span>
+          <span className="text-xs opacity-70">{skipValidation ? "ON" : "OFF"}</span>
+        </button>
+        <p className="text-[11px] text-muted-foreground px-1">
+          When ON, generated images skip the post-generation verification step and no cost breakdown is shown — faster and cheaper, with no automatic product-match check.
+        </p>
+      </div>
     </div>
   );
 }

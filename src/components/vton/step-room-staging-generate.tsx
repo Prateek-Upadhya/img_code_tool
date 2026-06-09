@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Download, Loader2, Check, AlertCircle, RotateCcw, Sparkles, ShieldCheck, ShieldAlert, ChevronDown, ChevronRight, Filter } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -93,7 +93,11 @@ export function StepRoomStagingGenerate({ store }: { store: VTONStore }) {
     roomPrimaryFolders, roomBulkRoomSettings, roomBulkBackgrounds,
     roomBulkCombinations,
     roomBulkResults, setRoomBulkResults, updateRoomBulkResult,
+    skipValidation,
   } = store;
+
+  const skipValidationRef = useRef(skipValidation);
+  skipValidationRef.current = skipValidation;
 
   const isBulk = mode === "bulk";
   const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
@@ -170,8 +174,9 @@ export function StepRoomStagingGenerate({ store }: { store: VTONStore }) {
           });
           collectedCosts.push(imageResult.cost);
 
-          updateRoomResult(result.id, { imageData: imageResult.imageData, status: "completed", validationStatus: "validating" });
+          updateRoomResult(result.id, { imageData: imageResult.imageData, status: "completed", validationStatus: skipValidationRef.current ? "skipped" : "validating" });
 
+          if (skipValidationRef.current) return;
           validateGeneratedImage({
             apiKey,
             originalImages: roomProductImages.map((i) => i.file),
@@ -300,13 +305,15 @@ export function StepRoomStagingGenerate({ store }: { store: VTONStore }) {
         background: roomBackground, aspectRatio: roomAspectRatio, imageSize: roomImageQuality, isProductOnly: !shot.requiresRoom,
       });
       collectedCosts.push(imageResult.cost);
-      updateRoomResult(result.id, { imageData: imageResult.imageData, status: "completed", validationStatus: "validating" });
+      updateRoomResult(result.id, { imageData: imageResult.imageData, status: "completed", validationStatus: skipValidationRef.current ? "skipped" : "validating" });
 
-      validateGeneratedImage({ apiKey, originalImages: roomProductImages.map((i) => i.file), generatedImageData: imageResult.imageData, validationMode: "room-staging" }).then((v) => {
-        if (v.cost) collectedCosts.push(v.cost);
-        const totalCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
-        updateRoomResult(result.id, { validationStatus: v.status, validationMessage: v.message, costBreakdown: { steps: [...collectedCosts], totalCost } });
-      });
+      if (!skipValidationRef.current) {
+        validateGeneratedImage({ apiKey, originalImages: roomProductImages.map((i) => i.file), generatedImageData: imageResult.imageData, validationMode: "room-staging" }).then((v) => {
+          if (v.cost) collectedCosts.push(v.cost);
+          const totalCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
+          updateRoomResult(result.id, { validationStatus: v.status, validationMessage: v.message, costBreakdown: { steps: [...collectedCosts], totalCost } });
+        });
+      }
     } catch (err: any) {
       updateRoomResult(result.id, { status: "error", error: err?.message || "Retry failed" });
     }

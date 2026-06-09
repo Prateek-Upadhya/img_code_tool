@@ -284,7 +284,7 @@ export interface VTONConfig {
   apiKey: string;
 }
 
-export type ValidationStatus = "idle" | "validating" | "passed" | "warning" | "error";
+export type ValidationStatus = "idle" | "validating" | "passed" | "warning" | "error" | "skipped";
 
 export interface ValidationResult {
   status: ValidationStatus;

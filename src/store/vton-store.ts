@@ -94,6 +94,13 @@ const defaultBackground: BackgroundConfig = {
   textDescription: "",
 };
 
+/**
+ * Reserved `poseId` for the "apply to all poses" accessory/prop layer. Stored as
+ * its own entry in `poseAccessories` so it never collides with a real pose id and
+ * is merged on top of each pose at generation time (see step-generate.tsx).
+ */
+export const GLOBAL_ACCESSORY_POSE_ID = "__global__";
+
 export function useVTONStore() {
   // --- Mode ---
   const [mode, setMode] = useState<AppMode>("single");
@@ -132,6 +139,9 @@ export function useVTONStore() {
   // Example: "3, 7" with prefix "product" produces product_1, product_2, product_4,
   // product_5, product_6, product_8 (skipping _3 and _7).
   const [skipNamingIndicesText, setSkipNamingIndicesText] = useState("");
+  // When true, the post-generation validation step (and its cost tracking) is
+  // skipped entirely — no verification LLM call, no cost breakdown displayed.
+  const [skipValidation, setSkipValidation] = useState(false);
   const [additionalInfo, setAdditionalInfo] = useState("");
   const [productInfo, setProductInfo] = useState("");
   // Vertex AI credentials live server-side (see src/lib/vertex-server.ts); the
@@ -479,41 +489,13 @@ export function useVTONStore() {
     });
   }, []);
 
-  const syncAccessoriesToAllPoses = useCallback((sourcePoseId: string) => {
-    setPoseAccessories((prev) => {
-      const sourceAccs = prev[sourcePoseId] || [];
-      const allPoseIds = Object.keys(prev);
-      const updated: Record<string, AccessoryItem[]> = {};
-      for (const pid of allPoseIds) {
-        updated[pid] = sourceAccs.map((a) => ({
-          ...a,
-          id: pid === sourcePoseId ? a.id : `acc-${a.category}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        }));
-      }
-      return updated;
-    });
+  // Non-destructive: flips the flag only. The "apply to all poses" accessories/
+  // props live in their own bucket under GLOBAL_ACCESSORY_POSE_ID and are merged
+  // on top of each pose's own selections at generation time — individual per-pose
+  // selections are never copied over or overwritten.
+  const setApplyAccessoriesToAllPoses = useCallback((value: boolean) => {
+    setApplyAccessoriesToAllPosesRaw(value);
   }, []);
-
-  const setApplyAccessoriesToAllPoses = useCallback(
-    (value: boolean, allPoseIds: string[]) => {
-      setApplyAccessoriesToAllPosesRaw(value);
-      if (value && allPoseIds.length > 0) {
-        setPoseAccessories((prev) => {
-          const sourcePoseId = allPoseIds.find((pid) => (prev[pid] || []).length > 0) || allPoseIds[0];
-          const sourceAccs = prev[sourcePoseId] || [];
-          const updated: Record<string, AccessoryItem[]> = {};
-          for (const pid of allPoseIds) {
-            updated[pid] = sourceAccs.map((a) => ({
-              ...a,
-              id: pid === sourcePoseId ? a.id : `acc-${a.category}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            }));
-          }
-          return updated;
-        });
-      }
-    },
-    []
-  );
 
   // --- Prop Bucket Actions ---
 
@@ -1967,7 +1949,6 @@ export function useVTONStore() {
     removeCustomAccessoryImage,
     applyAccessoriesToAllPoses,
     setApplyAccessoriesToAllPoses,
-    syncAccessoriesToAllPoses,
     // Prop Buckets
     propBuckets,
     createPropBucket,
@@ -2000,6 +1981,8 @@ export function useVTONStore() {
     setSingleDownloadPrefix,
     skipNamingIndicesText,
     setSkipNamingIndicesText,
+    skipValidation,
+    setSkipValidation,
     customPoses,
     addCustomPose,
     removeCustomPose,
