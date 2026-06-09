@@ -571,6 +571,36 @@ export function StepStyling({ store }: StepStylingProps) {
           className="resize-none rounded-lg border-border bg-muted/30 focus:bg-background transition-colors"
         />
       )}
+
+      {/* Custom lighting: even high-key, shadowless. Works on top of any background mode. */}
+      <button
+        type="button"
+        onClick={() => setBackground({ ...background, evenLighting: !background.evenLighting })}
+        className={cn(
+          "w-full flex items-start gap-3 px-4 py-3 rounded-lg text-left transition-colors duration-200 border",
+          background.evenLighting
+            ? "bg-card border-primary shadow-sm"
+            : "bg-card text-muted-foreground border-border hover:border-primary/50 hover:text-foreground"
+        )}
+      >
+        <div
+          className={cn(
+            "mt-0.5 w-5 h-5 rounded-md flex items-center justify-center border flex-shrink-0 transition-colors",
+            background.evenLighting ? "btn-gradient border-transparent text-white" : "border-border bg-background"
+          )}
+        >
+          {background.evenLighting && <Check className="w-3.5 h-3.5" />}
+        </div>
+        <div className="space-y-0.5">
+          <p className={cn("text-sm font-medium", background.evenLighting ? "text-foreground" : "")}>
+            Even high-key lighting (no shadows)
+          </p>
+          <p className="text-[11px] text-muted-foreground leading-snug">
+            Lights the model and background evenly at one uniform intensity with no cast shadows
+            anywhere — flat, bright, shadowless high-key studio light.
+          </p>
+        </div>
+      </button>
     </div>
   );
 

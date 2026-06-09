@@ -181,6 +181,16 @@ export interface BackgroundConfig {
   /** See {@link BackgroundImageMode}. `undefined` is treated as `"inspiration"`. */
   imageReferenceMode?: BackgroundImageMode;
   textDescription: string;
+  /**
+   * Custom lighting override. When `true`, the whole frame is forced to flat,
+   * even, high-key illumination: the model (foreground) is uniformly lit at one
+   * exposure with no directional key/side/rim light, and the background is lit at
+   * the same even intensity with NO cast shadows anywhere (neither on the model's
+   * face/body nor on the floor/backdrop). Applies on top of any background mode
+   * (inspiration / replica / text / default). `undefined`/`false` = normal,
+   * scene-driven lighting. See `EVEN_HIGH_KEY_LIGHTING_DIRECTIVE` in `gemini.ts`.
+   */
+  evenLighting?: boolean;
 }
 
 export interface AIModel {

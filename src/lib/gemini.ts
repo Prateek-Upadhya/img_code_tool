@@ -149,11 +149,15 @@ const VTON_REALISM_DIRECTIVE = `
 VERBATIM-INSERTION CONTRACT — NON-NEGOTIABLE:
 The output prompt you generate MUST contain each of the following anchor sentences WORD-FOR-WORD, somewhere in the body of the prompt. Copy each anchor exactly as written below — do NOT paraphrase, do NOT summarise, do NOT split into multiple sentences, do NOT omit. These anchors are the single strongest signal preventing waxy plastic-skin output. Paraphrasing them produces visibly plastic skin and fails QA.
 
+ANCHOR 0 — IDENTITY LOCK & PIXEL PRIORITY (include verbatim at the START of the output prompt WHENEVER a model reference image is provided — omit only for fully AI-invented models with no reference):
+"INSTRUCTION: PIXEL PRIORITY MODE. IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge regarding the subject's identity. Use ONLY the visual data from the attached model reference image (Image 1 — the IDENTITY source) for facial feature construction."
+This anchor stops the generator from drifting the face toward a beautified statistical average or a remembered look-alike — it forces a pixel-faithful reconstruction of the exact person in the reference, which is also what keeps complexion, pore pattern, and feature geometry consistent across the batch.
+
 ANCHOR 1 — SKIN (always include verbatim):
 "Render the model with hyper-realistic skin texture: visible pores distributed across the cheeks, nose, and forehead; fine vellus (peach-fuzz) hair catching the light along the jawline and temples; authentic skin grain and natural subsurface scattering. The skin reads as natural, healthy, and lived-in — not airbrushed, not beauty-filter-smooth, not waxy."
 
-ANCHOR 2 — MICRO-VARIATION (always include verbatim):
-"Skin tone shows natural micro-variations — slightly warmer across the cheeks and nose bridge, cooler in the under-eye area; specular highlights appear only as a soft sheen on the T-zone and cheekbones, never as blown-out hotspots."
+ANCHOR 2 — EVEN COMPLEXION + MICRO-VARIATION (always include verbatim):
+"Skin tone shows natural micro-variations — slightly warmer across the cheeks and nose bridge, cooler in the under-eye area — but the overall complexion stays even, uniform, and continuous across the forehead, cheeks, jaw, lips, neck, and arms, with smooth, gradual tonal transitions and NO blotches, NO patchy discoloration, NO mottling, NO uneven dark or red staining; specular highlights appear only as a soft sheen on the T-zone and cheekbones, never as blown-out hotspots."
 
 ANCHOR 3 — HAIR (always include verbatim):
 "Individual hair strands are visible at the hairline, temples, and part line, with a few natural micro-flyaways catching the rim light. Hair shows realistic anisotropic highlights running along the length of the strands."
@@ -170,15 +174,57 @@ ANCHOR 6 — CAMERA & LENS (always include verbatim):
 ANCHOR 7 — TEETH (include verbatim ONLY when the pose or expression implies a smile or parted lips — otherwise omit so we don't force a smile):
 "Teeth show slightly off-white enamel with subtle edge translucence and soft shading between individual teeth — not uniformly bright white."
 
+ANCHOR 8 — LIPS (include verbatim WHENEVER the lips are visible — i.e. any framing that includes the mouth):
+"The lips show real-skin texture with fine vertical lip lines and an even, continuous natural color carrying a soft satin finish — the lip surface reads as living skin, with no glossy plastic sheen, no patchy two-tone discoloration, and no mottled or chapped staining."
+
+ANCHOR 9 — ARMS & FOREARMS (include verbatim WHENEVER any part of the shoulders, upper arms, forearms, or wrists is exposed in the framing):
+"The exposed arms and forearms carry the SAME realistic skin as the face — fine grain, faint vellus hair catching the light, soft and EVEN tone with gentle underlying vein structure — rendered with continuous, smooth tonal transitions and free of blotches, patches, color banding, or mottled discoloration."
+
 HEALTHY-SKIN GUARD (include in your own words alongside the anchors):
 The skin is healthy. Do NOT introduce active blemishes, acne, scars, dark pigmentation patches, eczema, rashes, or any unhealthy skin conditions. The goal is realistic-but-healthy — real skin texture without distracting imperfections.
 
 FORBIDDEN VOCABULARY (do NOT use any of these words anywhere in the output prompt — they either trigger beauty-filter defaults or bias toward the very aesthetics we are eliminating):
 flawless, perfect, porcelain, doll-like, CGI, 3D render, render, plastic, waxy, smooth skin, beauty filter, airbrushed
-EXCEPTION: the verbatim phrase "not airbrushed, not beauty-filter-smooth, not waxy" inside ANCHOR 1 is the only place these words may appear — the negation framing is community-validated as a high-leverage de-biaser and must NOT be removed.
+EXCEPTION: these words may appear ONLY inside the verbatim negation phrasings that are baked into the anchor sentences above (e.g. "not airbrushed, not beauty-filter-smooth, not waxy" in ANCHOR 1, "not glossy, not plastic" in ANCHOR 5, "no glossy plastic sheen" in ANCHOR 8). These anchored negations are community-validated high-leverage de-biasers and must NOT be removed; outside of them, none of the forbidden words may be used.
 
 PREFERRED VOCABULARY (use these when describing the model's appearance in your own prose):
 natural, healthy, authentic, photographic, lived-in, hydrated, fine grain, low-level texture, editorial, real-skin.
+`;
+
+/**
+ * Custom lighting override — injected into the meta-prompt (via `bgInstruction`,
+ * so it reaches BOTH the clothing and footwear meta-prompts) ONLY when the user
+ * enables `background.evenLighting`. Forces flat, even, high-key, SHADOWLESS
+ * lighting across the entire frame: the model (foreground) is uniformly exposed
+ * and the background is lit at the same intensity with no cast shadows anywhere.
+ *
+ * Design notes (informed by the OpenAI GPT-Image prompting cookbook and Google's
+ * Nano Banana prompting guide, both of which warn that bare negatives like
+ * "no shadows" backfire — gpt-image is unreliable with them and Nano Banana /
+ * Gemini tends to render the negated noun):
+ *   - The directive is written almost entirely in POSITIVE, photographer-style
+ *     terms ("evenly lit from all directions", "uniform high-key illumination",
+ *     "soft shadowless wrap") which both models obey far better than negations.
+ *   - The one whitelisted negative ("no cast shadows … anywhere") is ANCHORED
+ *     after the positive description and enumerates all three surfaces (face,
+ *     body, background) so it reads as intent, not a stray token.
+ *   - The BACKGROUND is named explicitly and given the SAME even intensity —
+ *     both guides note that unless you name the background it keeps its own
+ *     shadows / falloff.
+ *   - Light is kept colour-neutral (~5500K) so the garment's true colours are
+ *     preserved, consistent with the rest of the pipeline's colour-fidelity rules.
+ */
+const EVEN_HIGH_KEY_LIGHTING_DIRECTIVE = `
+═══ CUSTOM LIGHTING: EVEN HIGH-KEY · SHADOWLESS (USER-SELECTED — OVERRIDES THE LIGHTING DIRECTIVE) ═══
+The user has explicitly selected a flat, even, high-key lighting configuration for this batch. This OVERRIDES any scene-driven, directional, or shadow language elsewhere in these instructions. Both the MODEL (foreground) and the BACKGROUND must be bathed in bright, soft, high-key light that wraps the whole frame uniformly from all directions at one even intensity.
+
+Write the LIGHTING section of your output prompt using POSITIVE, photographer-style phrasing (describe the even light that IS present). Copy the following anchor sentence into your output prompt VERBATIM:
+"The entire frame is lit with bright, soft, even high-key illumination that wraps the subject uniformly from all directions — face, neck, collarbones, shoulders, arms, forearms, hands, torso, hips, legs, and feet all read at one single even exposure, with flat frontal fill, low contrast, and no directional key light, no harsh side-light, no chiaroscuro, and no rim light; the background is lit at the exact same even intensity as the model with a smooth, gradient-free surface so the model casts no shadow onto the floor or backdrop and the scene contains no cast shadows anywhere."
+
+ADDITIONAL RULES for this lighting mode:
+  • Even though the scene/background environment is still whatever the user specified (or the default), its LIGHTING is overridden to this flat, shadowless, uniformly-bright treatment — keep the scene's colors and materials, but light it evenly with no cast shadows, no pooling shade, no dark corners, and no falloff.
+  • The light is colour-neutral (~5500K daylight). It must NOT warm, cool, or desaturate the garment — the garment renders at its TRUE colors from the product photos.
+  • Do NOT lead with negations such as "no shadows" / "without shadows" as the primary description — always describe the even, wrapping high-key light first, then state the shadow-free result as the anchor sentence does.
 `;
 
 /**
@@ -1944,6 +1990,13 @@ BACKGROUND LOCK: The FROZEN SCENE DESCRIPTION above replaces all other backgroun
       "\nFOOTWEAR SOURCE-PHOTO RULE: The product images may show cluttered floors, shelves, or outdoor surfaces. That environment is INVALID for the output — build the scene solely from this background specification (and the inspiration image above if provided).";
   }
 
+  // Custom EVEN HIGH-KEY · SHADOWLESS lighting override (user-selected). Appended
+  // to bgInstruction so it reaches BOTH the clothing and footwear meta-prompts via
+  // SCENE PARAMETERS, and explicitly overrides the LIGHTING DIRECTIVE above.
+  if (background.evenLighting) {
+    bgInstruction += `\n${EVEN_HIGH_KEY_LIGHTING_DIRECTIVE}`;
+  }
+
   // Build accessories summary for parameters
   let accessoriesSummary = "";
   if (accessories.length > 0) {
@@ -2113,6 +2166,14 @@ export async function buildVTONImageContentParts({
     background.mode === "inspiration" &&
     background.imageReferenceMode === "replica" &&
     !!background.inspirationImage;
+  // Reinforcement of the user-selected EVEN HIGH-KEY · SHADOWLESS lighting mode at
+  // the image-gen layer (Nano Banana sees this directly, in addition to the
+  // anchor sentence already woven into `prompt` by the meta-prompter). Positive
+  // phrasing first, shadow-free result stated after — see EVEN_HIGH_KEY_LIGHTING_DIRECTIVE.
+  const evenLightingClause = background?.evenLighting
+    ? `\n\n═══ LIGHTING (EVEN HIGH-KEY · SHADOWLESS — USER-SELECTED) ═══\n` +
+      `Light the entire frame with bright, soft, even high-key illumination that wraps the subject uniformly from all directions: the model and the background are lit at the same single even intensity, the backdrop is smooth and gradient-free, and the model casts no shadow onto the floor or backdrop — the scene contains no cast shadows anywhere, no harsh side-light, no chiaroscuro, and no rim light. The light is colour-neutral (~5500K) and must not shift the garment's true colours.`
+    : "";
   const parts: ContentPart[] = [];
 
   // ═══ REPLICA-MODE PROMPT FRAGMENTS ═══
@@ -2265,7 +2326,8 @@ export async function buildVTONImageContentParts({
         `Any deviation from the product reference images — even a subtle logo repositioning, color shift, added engraving, or side swap — is a CRITICAL FAILURE that invalidates the entire output.` +
         `${!isProductOnlyShot ? "\n\n═══ FOOTWEAR SCALE, FIT & PROPORTION LOCK (ON-MODEL — MANDATORY) ═══\nThis is the single most critical on-model failure mode for footwear. Read and enforce every clause.\n\nSCALE ANCHOR (size the shoe by the model's anatomy): Render the footwear at the exact real-world scale of a shoe worn by THIS specific model. The outsole length equals ONE foot length — from the back of the model's heel to the tip of their longest toe, and no further. The shoe width matches the width of the model's own foot. Render the shoe as it would truly appear in a candid commercial photograph of this model wearing this product, NOT as a detached hero product scaled up for drama.\n\nFIT ANCHOR (positive-framing): The collar/topline hugs the ankle with the heel seated flush against the heel counter; the upper wraps the forefoot smoothly and closely; the tongue sits naturally over the instep; the laces (if any) close the throat cleanly. The fit reads as clean, contoured, and true-to-size — with no gapping, no bulging, no tenting, no cavernous opening around the ankle, and no slippage. The sole makes flat, stable ground contact and the ankle line is anatomically correct.\n\nPROPORTION LOCK (copy these attributes PIXEL-FOR-PIXEL from the PRODUCT REFERENCE IMAGES above — never invent, exaggerate, or stylize them): SOLE THICKNESS, midsole stack height, toe-spring, heel height, toe-box volume and depth, collar height, upper-to-sole height ratio, and outsole length-to-width ratio are all identical to the reference product. Keep the sole slim when the reference sole is slim; keep the midsole flat when the reference midsole is flat; keep the toe box shallow when the reference toe box is shallow. Do NOT thicken the sole, inflate the midsole into a chunkier stack, enlarge the toe box, heighten the heel, or push the shoe toward a sportier/chunkier silhouette than the reference shows. The rendered shoe on the model's foot must look like the EXACT SAME product in the reference photos — just worn on a real foot." : ""}` +
         `${!isProductOnlyShot && modelImage ? "\n\nMODEL IDENTITY: Generate the EXACT same person from the model reference image — same face, skin tone, hair color/style, and body type." : ""}` +
-        `${isProductOnlyShot ? "\n\nPRODUCT-ONLY SHOT: No human model, feet, legs, or any body parts should appear in the generated image. Show ONLY the footwear product." : ""}`,
+        `${isProductOnlyShot ? "\n\nPRODUCT-ONLY SHOT: No human model, feet, legs, or any body parts should appear in the generated image. Show ONLY the footwear product." : ""}` +
+        evenLightingClause,
     });
   } else {
     const hasBackViewImg = garmentImages.some((img) => img.isBackView);
@@ -2274,7 +2336,7 @@ export async function buildVTONImageContentParts({
       backViewSuffix = ` ★★★ BACK-VIEW PRIORITY ★★★ The FIRST garment image provided below is the user-tagged BACK VIEW of the garment, and the current pose shows the back of the garment to the camera. For this output you MUST: (1) treat that first back-view image as the SOLE source of truth for the back panel — the back's color, print, graphic, text, embroidery, panel construction, yoke, vent, closure, hemline, and drape ALL come from that image only; (2) NEVER mirror, transfer, or extrapolate any front-side pattern, print, graphic, or design element onto the back — the back may be plain even if the front is patterned, may have a different print, or may have a different color; (3) reproduce every back-side detail visible in that first image with PIXEL-LEVEL fidelity — the back of this garment is the focal point of this shot.`;
     }
     parts.push({
-      text: `${prompt}\n\nIMPORTANT: The garment in the output must match the provided garment reference images EXACTLY - preserve the same sleeve length, neckline, hem length, color, pattern, fabric texture, and every construction detail. Do not modify any garment attributes.${isGhostMannequin ? " This is a ghost mannequin shot — the garment must appear three-dimensional and shaped as if worn by an invisible person. ZERO visible human body, skin, hands, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? " This is a product-only shot — no human model, mannequin body, or person should be visible. Show ONLY the garment product." : modelImage ? " Use the provided model reference photo to generate the EXACT same person - same face, skin tone, hair color, and body type." : ""}${backViewSuffix}${isReplicaBg ? "\n\nREPLICA MODE NOTE: A BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image is attached below (after the product and accessory images). The background of this output is replicated EXACTLY from that reference — see the BACKGROUND REPLICATION DIRECTIVE at the end of this message." : ""}`,
+      text: `${prompt}\n\nIMPORTANT: The garment in the output must match the provided garment reference images EXACTLY - preserve the same sleeve length, neckline, hem length, color, pattern, fabric texture, and every construction detail. Do not modify any garment attributes.${isGhostMannequin ? " This is a ghost mannequin shot — the garment must appear three-dimensional and shaped as if worn by an invisible person. ZERO visible human body, skin, hands, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? " This is a product-only shot — no human model, mannequin body, or person should be visible. Show ONLY the garment product." : modelImage ? " Use the provided model reference photo to generate the EXACT same person - same face, skin tone, hair color, and body type." : ""}${backViewSuffix}${isReplicaBg ? "\n\nREPLICA MODE NOTE: A BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image is attached below (after the product and accessory images). The background of this output is replicated EXACTLY from that reference — see the BACKGROUND REPLICATION DIRECTIVE at the end of this message." : ""}${evenLightingClause}`,
     });
     if (modelImage && !isProductOnlyShot) {
       const modelBase64 = await fileToBase64(modelImage.file);
