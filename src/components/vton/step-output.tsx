@@ -532,7 +532,7 @@ function PoseAccessoriesPanel({
             <div className="space-y-1.5">
               <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
                 <Layers className="w-3 h-3" />
-                Prop buckets — one image is picked at random per product at generation
+                Prop buckets — select one or more; a reference image is sampled per product and the prop is replicated exactly in the shot
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {propBuckets.map((bucket) => {

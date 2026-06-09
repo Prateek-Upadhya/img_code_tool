@@ -581,29 +581,31 @@ export function useVTONStore() {
    * undefined — it is materialized at generation time.
    */
   const togglePoseBucket = useCallback((poseId: string, bucketId: string) => {
-    setPropBuckets((bucketsPrev) => {
-      const bucket = bucketsPrev.find((b) => b.id === bucketId);
-      setPoseAccessories((prev) => {
-        const poseAccs = prev[poseId] || [];
-        const exists = poseAccs.find((a) => a.bucketId === bucketId);
-        if (exists) {
-          return { ...prev, [poseId]: poseAccs.filter((a) => a.bucketId !== bucketId) };
-        }
-        return {
-          ...prev,
-          [poseId]: [
-            ...poseAccs,
-            {
-              id: `acc-bucket-${bucketId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              category: (bucket?.category ?? "custom") as AccessoryCategory,
-              bucketId,
-            },
-          ],
-        };
-      });
-      return bucketsPrev;
+    // IMPORTANT: do a SINGLE setPoseAccessories call and read the bucket from the
+    // component-scope `propBuckets`. Calling setPoseAccessories nested inside a
+    // setPropBuckets updater makes the update impure, so React's dev-StrictMode
+    // double-invocation runs the toggle twice (add then remove) and the bucket
+    // never stays selected.
+    const bucket = propBuckets.find((b) => b.id === bucketId);
+    setPoseAccessories((prev) => {
+      const poseAccs = prev[poseId] || [];
+      const exists = poseAccs.some((a) => a.bucketId === bucketId);
+      if (exists) {
+        return { ...prev, [poseId]: poseAccs.filter((a) => a.bucketId !== bucketId) };
+      }
+      return {
+        ...prev,
+        [poseId]: [
+          ...poseAccs,
+          {
+            id: `acc-bucket-${bucketId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            category: (bucket?.category ?? "custom") as AccessoryCategory,
+            bucketId,
+          },
+        ],
+      };
     });
-  }, []);
+  }, [propBuckets]);
 
   const togglePose = useCallback((pose: Pose) => {
     setSelectedPoses((prev) => {

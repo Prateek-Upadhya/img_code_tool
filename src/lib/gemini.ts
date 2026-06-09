@@ -228,6 +228,23 @@ ADDITIONAL RULES for this lighting mode:
 `;
 
 /**
+ * Shared directive for PROP-BUCKET props (accessories carrying a `bucketId`). A
+ * prop is a sampled reference object the model must hold / wear / interact with,
+ * and its appearance MUST be replicated pixel-for-pixel from the attached
+ * reference image. This is deliberately stronger than the generic accessory
+ * language — mirror the footwear "MANDATORY PRODUCT FIDELITY" / background
+ * "replica" tone. Used in both the meta-prompter content (generateVTONPrompt)
+ * and the image-gen content (buildVTONImageContentParts).
+ */
+const PROP_REPLICATION_DIRECTIVE =
+  `\n═══ PROP REFERENCES — PIXEL-PERFECT REPLICATION (MANDATORY) ═══\n` +
+  `Each image tagged as a PROP below is a real object the model must hold, wear, or interact with in the scene. ` +
+  `Replicate every prop with PIXEL-PERFECT fidelity to its reference image: identical shape, silhouette, color and colorway, material and texture, any print / logo / wordmark / text, hardware, and proportions. ` +
+  `Do NOT restyle, recolor, resize, substitute, "improve", or use world knowledge to "correct" the prop, and do NOT invent props that are not shown. ` +
+  `Integrate each prop naturally into the photograph so the model plausibly interacts with it (holds it in hand, wears it, leans on it, gazes at it, carries it) with realistic contact, scale, perspective, and lighting that matches the scene — while the prop's APPEARANCE stays an exact copy of the reference. ` +
+  `A side-by-side of the reference prop and the rendered prop must read as the SAME object. Any deviation in the prop's design, color, logo, or text is a CRITICAL FAILURE.`;
+
+/**
  * Shared directive: instructs the meta-prompter to (a) pose the model naturally,
  * (b) introduce subtle per-generation variations in gaze/head-tilt/arm-position/expression
  * so that a batch of 50 outputs of the "same" pose reads as 50 distinct catalog images,
@@ -1799,11 +1816,17 @@ This complementary bottomwear must remain EXACTLY the same across all generated 
     }
   }
 
+  // Prop-bucket props are handled in their own pixel-perfect block (below);
+  // keep them out of the generic accessory description so they aren't
+  // double-described or weakened to "PRECISE fidelity" language.
+  const propAccessories = accessories.filter((a) => a.bucketId && a.image);
+  const nonPropAccessories = accessories.filter((a) => !a.bucketId);
+
   // Add accessories
-  if (accessories.length > 0) {
-    const presetWithImages = accessories.filter((a) => a.category !== "custom" && a.image);
-    const presetAIChosen = accessories.filter((a) => a.category !== "custom" && !a.image);
-    const customAccessories = accessories.filter((a) => a.category === "custom");
+  if (nonPropAccessories.length > 0) {
+    const presetWithImages = nonPropAccessories.filter((a) => a.category !== "custom" && a.image);
+    const presetAIChosen = nonPropAccessories.filter((a) => a.category !== "custom" && !a.image);
+    const customAccessories = nonPropAccessories.filter((a) => a.category === "custom");
 
     let accessoryInstruction = `\n\nACCESSORIES TO INCLUDE IN THE OUTFIT:\n`;
 
@@ -1873,6 +1896,25 @@ For reference-image accessories: reproduce the exact same accessory across all p
       }
     } else {
       parts.push({ text: accessoryInstruction });
+    }
+  }
+
+  // Prop-bucket props — pixel-perfect replication + natural interaction. These
+  // are attached with a stronger directive than ordinary accessories and the
+  // meta-prompter is told to carry the directive into the final image prompt.
+  if (propAccessories.length > 0) {
+    let propInstruction = PROP_REPLICATION_DIRECTIVE +
+      `\nCarry this PROP directive into your output image prompt VERBATIM in spirit: name each prop concretely (from its reference image), state that it is replicated pixel-for-pixel, and describe the model's natural interaction with it.`;
+    if (applyAccessoriesToAllPoses) {
+      propInstruction += `\nMULTI-POSE BATCH: the SAME prop must appear PIXEL-IDENTICAL across every pose — same object, same colors, same logos/text, same proportions — only the interaction adapts to the pose.`;
+    }
+    parts.push({ text: propInstruction });
+    for (const prop of propAccessories) {
+      if (prop.image) {
+        const base64 = await fileToBase64(prop.image.file);
+        parts.push({ text: `\n[PROP — replicate this object EXACTLY; model interacts naturally]:` });
+        parts.push({ inlineData: { mimeType: prop.image.file.type, data: base64 } });
+      }
     }
   }
 
@@ -2060,6 +2102,7 @@ The product reference photos may be taken on cluttered floors, shelves, or outdo
 7. In LIGHTING and BACKGROUND, explicitly forbid importing any pixel of the original product-photo setting (old surfaces, props, color spill).
 8. BACKGROUND PRECEDENCE (non-negotiable): If the Background line above is a user-provided text description, inspiration image, per-pose custom background, OR a derivation from a holistic image reference, that is the ONLY valid environment — do NOT override it, soften it, or blend it with a white/neutral default. A pure white (#FFFFFF) studio cyclorama is permitted ONLY when the Background line above is explicitly tagged as the "DEFAULT FALLBACK — USER PROVIDED NO BACKGROUND INFORMATION".
 ${accessories.length > 0 ? `\nACCESSORY NOTE: For accessories with reference images, instruct exact reproduction. For AI-chosen accessories, analyze the footwear style and select accessories that are STYLISTICALLY COHERENT (e.g., formal shoes pair with refined accessories, athletic shoes with sporty gear, ethnic footwear with traditional items). Describe each AI-chosen accessory with specific material, color, and style details.${applyAccessoriesToAllPoses ? " CONSISTENCY: Use IDENTICAL accessory descriptions word-for-word — no creative variation between poses." : ""}${accessories.some((a) => a.category === "custom") ? " For custom-described accessories, follow the user's description precisely while ensuring garment-style coherence." : ""}` : ""}
+${accessories.some((a) => a.bucketId && a.image) ? `\nPROP NOTE: One or more PROP reference images are attached (tagged [PROP]). Your output prompt MUST instruct the image generator to replicate each prop PIXEL-FOR-PIXEL from its reference (exact shape, color, material, logos/text, proportions — no restyle/recolor/substitution) AND to have the model interact with it naturally (hold/wear/lean on/gaze at) with realistic contact, scale, and lighting.${applyAccessoriesToAllPoses ? " The same prop must stay pixel-identical across every pose — only the interaction adapts." : ""}` : ""}
 
 Now write the footwear image generation prompt following the mandatory structure.`,
     });
@@ -2098,6 +2141,7 @@ ${accessories.length > 0 ? `\nACCESSORY INSTRUCTION: For accessories with refere
   - Streetwear → urban accessories (chunky sneakers, chain, bucket hat)
   - Sportswear → athletic accessories (sport shoes, sport watch, headband)
 Describe each AI-chosen accessory with SPECIFIC detail (exact material, color, style variant).${applyAccessoriesToAllPoses ? "\nCONSISTENCY: This is a multi-pose batch with identical accessories. Use EXACTLY the same accessory descriptions word-for-word across every pose — no synonym swapping, no creative variation." : ""}${accessories.some((a) => a.category === "custom") ? "\nFor custom-described accessories, follow the user's text description precisely while ensuring visual coherence with the garment style." : ""}` : ""}
+${accessories.some((a) => a.bucketId && a.image) ? `\nPROP INSTRUCTION: One or more PROP reference images are attached (tagged [PROP]). Your output prompt MUST instruct the image generator to replicate each prop PIXEL-FOR-PIXEL from its reference image (exact shape, color, material, logos/text, proportions — no restyling, recoloring, substitution, or "improving") AND to integrate it naturally so the model plausibly interacts with it (holds/wears/leans on/gazes at) with realistic contact, scale, perspective, and scene lighting.${applyAccessoriesToAllPoses ? " The same prop must stay pixel-identical across every pose — only the interaction adapts to the pose." : ""}` : ""}
 
 Now write the ${isGhostMannequin ? "ghost mannequin" : isProductOnlyShot ? "product-only" : "VTON"} image generation prompt.`,
     });
@@ -2265,8 +2309,8 @@ export async function buildVTONImageContentParts({
       }
     }
 
-    // ═══ ACCESSORY REFERENCE IMAGES ═══
-    const accessoriesWithImages = accessories.filter((a) => a.image);
+    // ═══ ACCESSORY REFERENCE IMAGES ═══ (props handled separately below)
+    const accessoriesWithImages = accessories.filter((a) => a.image && !a.bucketId);
     if (accessoriesWithImages.length > 0) {
       parts.push({
         text: `\n═══ ACCESSORY REFERENCES ═══\nReproduce these accessories exactly as shown:`,
@@ -2275,6 +2319,19 @@ export async function buildVTONImageContentParts({
         if (acc.image) {
           const base64 = await fileToBase64(acc.image.file);
           parts.push({ inlineData: { mimeType: acc.image.file.type, data: base64 } });
+        }
+      }
+    }
+
+    // ═══ PROP BUCKET REFERENCE IMAGES (pixel-perfect, natural interaction) ═══
+    const propsWithImages = accessories.filter((a) => a.image && a.bucketId);
+    if (propsWithImages.length > 0) {
+      parts.push({ text: PROP_REPLICATION_DIRECTIVE });
+      for (const prop of propsWithImages) {
+        if (prop.image) {
+          const base64 = await fileToBase64(prop.image.file);
+          parts.push({ text: `\n[PROP — replicate EXACTLY, model interacts naturally]:` });
+          parts.push({ inlineData: { mimeType: prop.image.file.type, data: base64 } });
         }
       }
     }
@@ -2355,11 +2412,24 @@ export async function buildVTONImageContentParts({
         parts.push({ inlineData: { mimeType: img.file.type, data: base64 } });
       }
     }
-    const accessoriesWithImages = accessories.filter((a) => a.image);
+    const accessoriesWithImages = accessories.filter((a) => a.image && !a.bucketId);
     for (const acc of accessoriesWithImages) {
       if (acc.image) {
         const base64 = await fileToBase64(acc.image.file);
         parts.push({ inlineData: { mimeType: acc.image.file.type, data: base64 } });
+      }
+    }
+
+    // ═══ PROP BUCKET REFERENCE IMAGES (pixel-perfect, natural interaction) ═══
+    const propsWithImages = accessories.filter((a) => a.image && a.bucketId);
+    if (propsWithImages.length > 0) {
+      parts.push({ text: PROP_REPLICATION_DIRECTIVE });
+      for (const prop of propsWithImages) {
+        if (prop.image) {
+          const base64 = await fileToBase64(prop.image.file);
+          parts.push({ text: `\n[PROP — replicate EXACTLY, model interacts naturally]:` });
+          parts.push({ inlineData: { mimeType: prop.image.file.type, data: base64 } });
+        }
       }
     }
 
