@@ -3,9 +3,7 @@
 import { AlertCircle, KeyRound } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { IMAGE_GEN_MODELS, TEXT_GEN_MODELS } from "@/lib/constants";
 import type { VTONStore } from "@/store/vton-store";
-import { ProviderPicker } from "./provider-picker";
 
 interface StepDetailsProps {
   store: VTONStore;
@@ -17,15 +15,9 @@ export function StepDetails({ store }: StepDetailsProps) {
     setAdditionalInfo,
     featureMode,
     apiKey,
-    textGenModel,
-    setTextGenModel,
-    imageGenModel,
-    setImageGenModel,
   } = store;
   const isModelSwap = featureMode === "model-swap";
   const hasEnvKey = apiKey.length > 0;
-  // gpt-image-2 image backend is offered for VTON only; other flows are Gemini-only.
-  const showImagePicker = featureMode === "vton";
 
   return (
     <div className="space-y-6">
@@ -81,26 +73,6 @@ export function StepDetails({ store }: StepDetailsProps) {
           rows={4}
           className="resize-none rounded-lg border-border bg-muted/30 focus:bg-background transition-colors"
         />
-      </div>
-
-      {/* Provider selection — applies to every generation in this batch. */}
-      <div className="rounded-xl border border-border bg-card p-6 space-y-6 transition-colors hover:shadow-sm">
-        <ProviderPicker
-          title="Prompt Generation Model"
-          subtitle="Backend used for prompt enrichment and analysis stages."
-          options={TEXT_GEN_MODELS}
-          value={textGenModel}
-          onChange={setTextGenModel}
-        />
-        {showImagePicker && (
-          <ProviderPicker
-            title="Image Generation Model"
-            subtitle="Engine that renders the final image. Available for both clothing and footwear."
-            options={IMAGE_GEN_MODELS}
-            value={imageGenModel}
-            onChange={setImageGenModel}
-          />
-        )}
       </div>
     </div>
   );

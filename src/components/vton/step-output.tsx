@@ -4,7 +4,7 @@ import Image from "next/image";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { AlertCircle, Camera, Check, CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, Filter, GripVertical, ImageIcon, Package, Plus, ShieldCheck, ShieldOff, Sparkles, Trash2, Upload, User, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ACCESSORY_CATEGORIES, ASPECT_RATIOS, FRAMING_OPTIONS, IMAGE_GEN_MODELS, POSES, FOOTWEAR_POSES, UGC_SHOT_TYPE_OPTIONS, UGC_SCENE_PRESETS } from "@/lib/constants";
+import { ACCESSORY_CATEGORIES, ASPECT_RATIOS, FRAMING_OPTIONS, POSES, FOOTWEAR_POSES, UGC_SHOT_TYPE_OPTIONS, UGC_SCENE_PRESETS } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -2008,8 +2008,6 @@ export function StepOutput({ store }: StepOutputProps) {
     togglePoseBucket,
     hasModel,
     featureMode,
-    imageGenModel,
-    setImageGenModel,
     ugcScenes,
     addUgcScene,
     removeUgcScene,
@@ -2115,57 +2113,6 @@ export function StepOutput({ store }: StepOutputProps) {
 
   return (
     <div className="space-y-8">
-      {/* Image Generation Model (all VTON flows) */}
-      {featureMode === "vton" && (
-        <div className="space-y-4">
-          <div>
-            <h3 className="text-base font-semibold text-foreground">
-              Image Generation Model
-            </h3>
-            <p className="text-sm text-muted-foreground mt-0.5">
-              Choose which AI engine renders the final photo. Available for both clothing and footwear.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {IMAGE_GEN_MODELS.map((opt) => {
-              const isSelected = imageGenModel === opt.value;
-              return (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => setImageGenModel(opt.value)}
-                  className={cn(
-                    "text-left p-4 rounded-xl border transition-colors duration-200",
-                    isSelected
-                      ? "bg-gradient-to-br from-orange-500/10 to-amber-500/10 border-orange-500/50 shadow-sm shadow-orange-500/20"
-                      : "bg-card border-border hover:border-primary/30 hover:shadow-sm"
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    <div className={cn(
-                      "w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0",
-                      isSelected ? "border-orange-500" : "border-muted-foreground/40"
-                    )}>
-                      {isSelected && <div className="w-2 h-2 rounded-full bg-orange-500" />}
-                    </div>
-                    <p className={cn(
-                      "text-sm font-semibold",
-                      isSelected ? "text-foreground" : "text-foreground"
-                    )}>
-                      {opt.label}
-                    </p>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1.5 pl-6">
-                    {opt.description}
-                  </p>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Aspect Ratio */}
       <div className="space-y-4">
         <div>

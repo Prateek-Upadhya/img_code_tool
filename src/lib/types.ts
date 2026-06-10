@@ -11,8 +11,10 @@ export type ImageGenModel = "gemini" | "gpt-image-2";
  * Provider used to generate prompts / run analysis stages (text in, text out).
  * - `gemini`: Vertex AI gemini-3.1-pro-preview. Default meta-prompter.
  * - `gpt-5.4-pro`: Azure OpenAI gpt-5.4-pro (Responses API). Redundant provider.
+ * - `gpt-5.2`: Azure AI Foundry gpt-5.2 (Models inference chat completions). Redundant provider.
+ * - `gpt-5.4-mini`: Azure OpenAI gpt-5.4-mini (chat completions). Redundant provider.
  */
-export type TextGenModel = "gemini" | "gpt-5.4-pro";
+export type TextGenModel = "gemini" | "gpt-5.4-pro" | "gpt-5.2" | "gpt-5.4-mini";
 
 export type Gender = "male" | "female" | "unisex";
 

@@ -14,9 +14,10 @@ import type { TextGenModel } from "./types";
  * which provider is selected.
  *
  * - `gemini`: delegates straight to the existing Vertex AI proxy client.
- * - `gpt-5.4-pro`: POSTs the request to `/api/azure-text/generate`, which runs
- *   it against Azure OpenAI (Responses API) with server-held credentials, and
- *   adapts the `{ text, usageMetadata }` route payload back into the
+ * - `gpt-5.4-pro` / `gpt-5.2` / `gpt-5.4-mini`: POSTs the request to
+ *   `/api/azure-text/generate` (tagged with the chosen `azureProvider`), which
+ *   runs it against the matching Azure deployment with server-held credentials
+ *   and adapts the `{ text, usageMetadata }` route payload back into the
  *   `GenerateContentResponse` shape the callers expect.
  */
 
@@ -29,7 +30,11 @@ interface AzureTextRouteResponse {
   error?: string;
 }
 
+/** Azure-backed text providers, routed through `/api/azure-text/generate`. */
+type AzureTextProvider = Exclude<TextGenModel, "gemini">;
+
 async function generateContentAzure(
+  provider: AzureTextProvider,
   params: GenerateContentParameters,
 ): Promise<GenerateContentResponse> {
   // `abortSignal` lives inside `config` but can't be serialized — pull it out and
@@ -49,7 +54,7 @@ async function generateContentAzure(
   const response = await fetch("/api/azure-text/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...rest, config: wireConfig }),
+    body: JSON.stringify({ ...rest, config: wireConfig, azureProvider: provider }),
     signal: abortSignal,
   });
 
@@ -79,15 +84,18 @@ async function generateContentAzure(
   return adapted as unknown as GenerateContentResponse;
 }
 
-const azureClient: GeminiClient = {
-  models: { generateContent: generateContentAzure },
-};
+/** Builds a Gemini-shaped client bound to a specific Azure text provider. */
+function makeAzureClient(provider: AzureTextProvider): GeminiClient {
+  return {
+    models: { generateContent: (params) => generateContentAzure(provider, params) },
+  };
+}
 
 /**
  * Returns a text-generation client for the selected provider. The shape matches
  * `getGeminiClient()` exactly so it is a drop-in replacement at call sites.
  */
 export function getTextClient(provider: TextGenModel = "gemini"): GeminiClient {
-  if (provider === "gpt-5.4-pro") return azureClient;
-  return getGeminiClient();
+  if (provider === "gemini") return getGeminiClient();
+  return makeAzureClient(provider);
 }

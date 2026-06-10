@@ -39,8 +39,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn, buildDynamicPoseSeed, pickBucketImage } from "@/lib/utils";
 import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene } from "@/lib/gemini";
 import { generateVTONImageAzure } from "@/lib/azure-image";
-import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS, TEXT_GEN_MODELS, IMAGE_GEN_MODELS } from "@/lib/constants";
-import { ProviderPicker } from "./provider-picker";
+import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS } from "@/lib/constants";
+import { ModelComboPicker } from "./model-combo-picker";
 import Image from "next/image";
 import type { VTONStore } from "@/store/vton-store";
 import { GLOBAL_ACCESSORY_POSE_ID } from "@/store/vton-store";
@@ -481,7 +481,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
   const skipValidationRef = useRef(skipValidation);
   skipValidationRef.current = skipValidation;
   const { imageQuality, setImageQuality } = store;
-  const { imageGenModel, setImageGenModel, textGenModel, setTextGenModel } = store;
+  const { imageGenModel, textGenModel } = store;
   const isModelSwap = featureMode === "model-swap";
   // gpt-image-2 is selectable for ALL VTON flows (clothing + footwear), so we
   // route to Azure purely on the selected image model, not the category.
@@ -963,7 +963,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     // gpt-5.4-pro is far slower per call and its Azure deployment throttles
     // under load (503s / 5-min timeouts) — cap parallelism when it's selected.
-    const CONCURRENCY_LIMIT = textGenModel === "gpt-5.4-pro" ? 2 : 7;
+    const CONCURRENCY_LIMIT = textGenModel !== "gemini" ? 2 : 7;
     for (let i = 0; i < initialResults.length; i += CONCURRENCY_LIMIT) {
       if (signal.aborted) break;
       const batch = initialResults.slice(i, i + CONCURRENCY_LIMIT);
@@ -1072,7 +1072,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    const UGC_CONCURRENCY = textGenModel === "gpt-5.4-pro" ? 2 : 5;
+    const UGC_CONCURRENCY = textGenModel !== "gemini" ? 2 : 5;
     for (let i = 0; i < initialUgcResults.length; i += UGC_CONCURRENCY) {
       if (signal.aborted) break;
       const batch = initialUgcResults.slice(i, i + UGC_CONCURRENCY);
@@ -1430,7 +1430,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     // Process in batches with concurrency limit (reduced for the slower,
     // throttle-prone gpt-5.4-pro Azure deployment).
-    const CONCURRENCY_LIMIT = textGenModel === "gpt-5.4-pro" ? 2 : 7;
+    const CONCURRENCY_LIMIT = textGenModel !== "gemini" ? 2 : 7;
     for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
       if (signal.aborted) break;
       const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
@@ -1574,7 +1574,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         }
       };
 
-      const UGC_CONCURRENCY = textGenModel === "gpt-5.4-pro" ? 2 : 5;
+      const UGC_CONCURRENCY = textGenModel !== "gemini" ? 2 : 5;
       for (let i = 0; i < initialUgcResults.length; i += UGC_CONCURRENCY) {
         if (signal.aborted) break;
         const batch = initialUgcResults.slice(i, i + UGC_CONCURRENCY);
@@ -3229,7 +3229,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    const CONCURRENCY_LIMIT = textGenModel === "gpt-5.4-pro" ? 2 : 7;
+    const CONCURRENCY_LIMIT = textGenModel !== "gemini" ? 2 : 7;
     for (let i = 0; i < initialResults.length; i += CONCURRENCY_LIMIT) {
       const batch = initialResults.slice(i, i + CONCURRENCY_LIMIT);
       await Promise.all(batch.map(processImage));
@@ -3390,7 +3390,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    const CONCURRENCY_LIMIT = textGenModel === "gpt-5.4-pro" ? 2 : 7;
+    const CONCURRENCY_LIMIT = textGenModel !== "gemini" ? 2 : 7;
     for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
       const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
       await Promise.all(batch.map(processResult));
@@ -3705,27 +3705,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
     }
   }, [modelSwapBulkResults, isGenerating, handleRetryModelSwapBulk, setIsGenerating]);
 
-  // Compact provider pickers shown at the top of every results/regenerate view,
-  // so the user can switch text/image backends before clicking Retry/Regenerate.
-  // Switching writes straight to the store, which the retry handlers read live.
+  // Provider-bucketed model picker shown at the top of every results/regenerate
+  // view — and before generation is initiated — so the user can lock in (or
+  // switch, before a Retry/Regenerate) the text/image model combination.
+  // Switching writes straight to the store, which the handlers read live.
   const providerPickerRow = (
-    <div className="rounded-xl border border-border bg-card p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-      <ProviderPicker
-        compact
-        title="Prompt Model"
-        options={TEXT_GEN_MODELS}
-        value={textGenModel}
-        onChange={setTextGenModel}
-      />
-      {featureMode === "vton" && (
-        <ProviderPicker
-          compact
-          title="Image Model"
-          options={IMAGE_GEN_MODELS}
-          value={imageGenModel}
-          onChange={setImageGenModel}
-        />
-      )}
+    <div className="rounded-xl border border-border bg-card p-4">
+      <ModelComboPicker store={store} />
     </div>
   );
 

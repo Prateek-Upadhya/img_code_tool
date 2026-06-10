@@ -6,13 +6,19 @@ export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; 
 ];
 
 /**
+ * Provider the model is grouped under in the picker UI. Drives the soft-edged
+ * provider rectangles (Gemini vs OpenAI) on the final review/generate page.
+ */
+export type ModelProvider = "gemini" | "openai";
+
+/**
  * Image-generation backends the user can pick from.
  * Currently surfaced only for Footwear VTON (single + bulk); everything else
  * is fixed to the Gemini backend.
  */
-export const IMAGE_GEN_MODELS: { value: ImageGenModel; label: string; description: string }[] = [
-  { value: "gemini", label: "Nano Banana 2", description: "Gemini 3.1 Flash Image — default, best overall fidelity" },
-  { value: "gpt-image-2", label: "GPT-Image-2", description: "Azure OpenAI gpt-image-2 — alternative rendering style" },
+export const IMAGE_GEN_MODELS: { value: ImageGenModel; label: string; description: string; provider: ModelProvider }[] = [
+  { value: "gemini", label: "Nano Banana 2", description: "Gemini 3.1 Flash Image — default, best overall fidelity", provider: "gemini" },
+  { value: "gpt-image-2", label: "GPT-Image-2", description: "Azure OpenAI gpt-image-2 — alternative rendering style", provider: "openai" },
 ];
 
 /**
@@ -20,9 +26,11 @@ export const IMAGE_GEN_MODELS: { value: ImageGenModel; label: string; descriptio
  * text (meta-prompter) stage in the pipeline; image generation is selected
  * separately via {@link IMAGE_GEN_MODELS}.
  */
-export const TEXT_GEN_MODELS: { value: TextGenModel; label: string; description: string }[] = [
-  { value: "gemini", label: "Gemini 3.1 Pro", description: "Vertex AI — default meta-prompter" },
-  { value: "gpt-5.4-pro", label: "GPT-5.4 Pro", description: "Azure OpenAI — alternative prompt generator" },
+export const TEXT_GEN_MODELS: { value: TextGenModel; label: string; description: string; provider: ModelProvider }[] = [
+  { value: "gemini", label: "Gemini 3.1 Pro", description: "Vertex AI — default meta-prompter", provider: "gemini" },
+  { value: "gpt-5.4-pro", label: "GPT-5.4 Pro", description: "Azure OpenAI — alternative prompt generator", provider: "openai" },
+  { value: "gpt-5.2", label: "GPT-5.2", description: "Azure AI Foundry — alternative prompt generator", provider: "openai" },
+  { value: "gpt-5.4-mini", label: "GPT-5.4 Mini", description: "Azure OpenAI — faster, lighter prompt generator", provider: "openai" },
 ];
 
 export const GENDER_OPTIONS: { value: Gender; label: string; description: string }[] = [

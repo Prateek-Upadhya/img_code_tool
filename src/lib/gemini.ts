@@ -57,17 +57,19 @@ const MODEL_PRICING: Record<string, { input: number; outputText: number }> = {
   "gemini-3.1-pro-preview":          { input: 2.00, outputText: 12.00 },
   "gemini-3.1-flash-image-preview":  { input: 0.15, outputText: 0.60 },
   "gemini-3-flash-preview":          { input: 0.50, outputText: 3.00 },
-  // Azure OpenAI gpt-5.4-pro — placeholder pricing; update with contract rates.
+  // Azure OpenAI text models — placeholder pricing; update with contract rates.
   "gpt-5.4-pro":                     { input: 5.00, outputText: 15.00 },
+  "gpt-5.2":                         { input: 5.00, outputText: 15.00 },
+  "gpt-5.4-mini":                    { input: 1.00, outputText: 4.00 },
 };
 
 /**
  * Maps the active text provider to the model string used for cost accounting +
  * the model label shown to the user. Gemini stays on `gemini-3.1-pro-preview`;
- * the Azure provider is billed/labelled as `gpt-5.4-pro`.
+ * each Azure provider is billed/labelled under its own model key.
  */
 function textCostModel(textGenModel: TextGenModel = "gemini"): string {
-  return textGenModel === "gpt-5.4-pro" ? "gpt-5.4-pro" : "gemini-3.1-pro-preview";
+  return textGenModel === "gemini" ? "gemini-3.1-pro-preview" : textGenModel;
 }
 
 // Flat per-image output cost for Nano Banana 2 (gemini-3.1-flash-image-preview)
