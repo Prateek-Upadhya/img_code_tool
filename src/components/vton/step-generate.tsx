@@ -961,7 +961,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    const CONCURRENCY_LIMIT = 7;
+    // gpt-5.4-pro is far slower per call and its Azure deployment throttles
+    // under load (503s / 5-min timeouts) — cap parallelism when it's selected.
+    const CONCURRENCY_LIMIT = textGenModel === "gpt-5.4-pro" ? 2 : 7;
     for (let i = 0; i < initialResults.length; i += CONCURRENCY_LIMIT) {
       if (signal.aborted) break;
       const batch = initialResults.slice(i, i + CONCURRENCY_LIMIT);
@@ -1070,7 +1072,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    const UGC_CONCURRENCY = 5;
+    const UGC_CONCURRENCY = textGenModel === "gpt-5.4-pro" ? 2 : 5;
     for (let i = 0; i < initialUgcResults.length; i += UGC_CONCURRENCY) {
       if (signal.aborted) break;
       const batch = initialUgcResults.slice(i, i + UGC_CONCURRENCY);
@@ -1426,8 +1428,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    // Process in batches with concurrency limit
-    const CONCURRENCY_LIMIT = 7;
+    // Process in batches with concurrency limit (reduced for the slower,
+    // throttle-prone gpt-5.4-pro Azure deployment).
+    const CONCURRENCY_LIMIT = textGenModel === "gpt-5.4-pro" ? 2 : 7;
     for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
       if (signal.aborted) break;
       const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
@@ -1571,7 +1574,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         }
       };
 
-      const UGC_CONCURRENCY = 5;
+      const UGC_CONCURRENCY = textGenModel === "gpt-5.4-pro" ? 2 : 5;
       for (let i = 0; i < initialUgcResults.length; i += UGC_CONCURRENCY) {
         if (signal.aborted) break;
         const batch = initialUgcResults.slice(i, i + UGC_CONCURRENCY);
@@ -3226,7 +3229,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    const CONCURRENCY_LIMIT = 7;
+    const CONCURRENCY_LIMIT = textGenModel === "gpt-5.4-pro" ? 2 : 7;
     for (let i = 0; i < initialResults.length; i += CONCURRENCY_LIMIT) {
       const batch = initialResults.slice(i, i + CONCURRENCY_LIMIT);
       await Promise.all(batch.map(processImage));
@@ -3387,7 +3390,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    const CONCURRENCY_LIMIT = 7;
+    const CONCURRENCY_LIMIT = textGenModel === "gpt-5.4-pro" ? 2 : 7;
     for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
       const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
       await Promise.all(batch.map(processResult));

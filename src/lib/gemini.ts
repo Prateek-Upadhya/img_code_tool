@@ -390,6 +390,7 @@ function buildCustomPoseImageReferenceExtractionBlock({
   referenceImageCount,
   productLabel,
   productNoun,
+  imageModelName = "Nano Banana / gemini-3.1-flash-image-preview",
 }: {
   isProductOnlyShot: boolean;
   referenceImageCount: number;
@@ -397,6 +398,8 @@ function buildCustomPoseImageReferenceExtractionBlock({
   productLabel: string;
   /** Generic product noun, e.g. "footwear", "garment" */
   productNoun: string;
+  /** Name of the downstream image model this prompt is written for. */
+  imageModelName?: string;
 }): string {
   const plural = referenceImageCount > 1;
   return `═══ HOLISTIC IMAGE REFERENCE — EXTRACTION RULES ═══
@@ -416,7 +419,7 @@ ${isProductOnlyShot
    - Any contact with props, walls, floor, or anchors (which body part touches what, with what pressure)`}
 
 1B. FRAMING & CROP CONTRACT — DENSE, DETERMINISTIC, NON-NEGOTIABLE (this section is the single most important determinant of run-to-run framing consistency — translate every camera and crop attribute into concrete, measurable, photographer-grade English so two consecutive generations cannot drift):
-   - SHOT TYPE NAME (pick the SINGLE best match from this canonical vocabulary and name it explicitly): extreme close-up, close-up, medium close-up (chest-up), medium shot (waist-up), medium-long shot (mid-thigh / cowboy shot), long shot (full-length / full-body), wide shot, extreme wide shot${isProductOnlyShot ? ", product macro, product flat-lay, product hero shot" : ""}. State the named shot type in plain words — Nano Banana / gemini-3.1-flash-image-preview treats this name as a top-tier composition signal.
+   - SHOT TYPE NAME (pick the SINGLE best match from this canonical vocabulary and name it explicitly): extreme close-up, close-up, medium close-up (chest-up), medium shot (waist-up), medium-long shot (mid-thigh / cowboy shot), long shot (full-length / full-body), wide shot, extreme wide shot${isProductOnlyShot ? ", product macro, product flat-lay, product hero shot" : ""}. State the named shot type in plain words — ${imageModelName} treats this name as a top-tier composition signal.
    - FOCAL-LENGTH EQUIVALENT (35 mm full-frame): pick a concrete number from {24 mm, 28 mm, 35 mm, 50 mm, 85 mm, 105 mm, 135 mm, 200 mm} that best matches the perspective compression and depth feel of the reference. Lower = wider / more environmental context; higher = tighter / more compressed background.
    - CAMERA DISTANCE: distance from the lens to the subject's ${isProductOnlyShot ? "centroid" : "chest (or to the product centroid for product-only shots)"}, in meters (e.g., "0.6 m", "1.5 m", "3.2 m").
    - CAMERA HEIGHT relative to the subject: name the reference plane (overhead / above-head / eye-level / chin-level / chest-level / hip-level / knee-level / ankle-level / ground-level) AND the lens tilt in degrees (e.g., "lens at chest-level, tilted up by 8°", "lens at knee-level, level / 0° tilt", "lens directly overhead, tilted straight down at 90°").
@@ -1374,6 +1377,7 @@ ${isCustomPoseImageMode
       referenceImageCount: customPose.referenceImages.length,
       productLabel: `${fwLabel} (footwear)`,
       productNoun: "footwear",
+      imageModelName: modelAudienceShort,
     })
   : `═══ CRITICAL: POSE EXTRACTION RULES ═══
 ${customPose.referenceImages.length > 0 ? `You must analyze the custom pose reference image${customPose.referenceImages.length > 1 ? "s" : ""} and extract a FOOTWEAR-AGNOSTIC and BACKGROUND-AGNOSTIC description. Because the image generator will not see the reference, your extracted description MUST be exhaustive and self-contained — reading your prompt alone, the generator should be able to reconstruct the exact pose/orientation without seeing the reference at all.
@@ -1516,7 +1520,7 @@ Output ONLY the generation prompt text following the mandatory structure — no 
     // Clothing system prompt
     if (isCustomPose) {
       parts.push({
-        text: `You are an expert fashion photographer and prompt engineer specializing in Virtual Try-On (VTON) image generation. Your job is to analyze garment images and create a HIGHLY detailed, photorealistic prompt for an AI image generation model (Gemini Nano Banana 2 / gemini-3.1-flash-image-preview).
+        text: `You are an expert fashion photographer and prompt engineer specializing in Virtual Try-On (VTON) image generation. Your job is to analyze garment images and create a HIGHLY detailed, photorealistic prompt for an AI image generation model (${modelAudience}).
 
 GARMENT GENDER CONTEXT: This is a ${genderLabel} garment. Use this context to inform your analysis of the garment's design language, fit conventions, styling cues, silhouette proportions, and detail descriptions. For example, ${gender === "male" ? "men's garments typically have broader shoulder seams, straighter cuts, functional pockets, and more structured silhouettes" : gender === "female" ? "women's garments may feature more varied necklines, darting for bust shape, tapered waists, and more diverse silhouette options" : "unisex garments tend to have relaxed proportions, minimal darting, and neutral styling cues that work across body types"}.${isProductOnlyShot ? "" : ` Ensure the model used in the output aligns with this gender context${model ? "" : modelImage ? "" : ` - select a ${gender === "unisex" ? "model of any gender" : gender} model`}.`}
 
@@ -1535,6 +1539,7 @@ ${isCustomPoseImageMode
       referenceImageCount: customPose.referenceImages.length,
       productLabel: `${garmentType || "topwear"} garment`,
       productNoun: "garment",
+      imageModelName: modelAudienceShort,
     })
   : `${customPose.referenceImages.length > 0 ? `Reference images for this custom ${isProductOnlyShot ? "arrangement" : "pose"} are provided below. Analyze them carefully to understand the exact ${isProductOnlyShot ? "product placement, styling, camera angle, and composition" : "body position, camera angle, framing, and composition"} the user wants. Replicate the ${isProductOnlyShot ? "arrangement" : "pose"} from the reference images as closely as possible.
 
@@ -1554,7 +1559,7 @@ Based on the custom ${isProductOnlyShot ? "arrangement" : "pose"} description${c
 Then describe those visible garment details with maximum precision. Describe the pose/arrangement geometry itself with equal precision so the image generator can reconstruct it from the text alone.`}
 
 ${isCustomPoseImageMode ? `═══ OUTPUT-PROMPT STRUCTURE MANDATE (IMAGE REFERENCE MODE) ═══
-Your final output prompt MUST open with the FRAMING & CROP CONTRACT section (the entire 1B block from the EXTRACTION RULES above, with every field filled in with concrete values — Shot Type Name, Focal-Length Equivalent, Camera Distance, Camera Height, Dutch Angle, Aspect-Ratio Orientation, Subject Fill, Subject Placement, Top Crop Anatomical Anchor, Bottom Crop Anatomical Anchor, Left/Right Crop, Depth of Field, Horizon Line). Emit this block BEFORE any pose paragraph, scene paragraph, lighting paragraph, or garment-detail paragraph. The downstream image generator (gemini-3.1-flash-image-preview) treats composition as a first-class signal and reads the earliest tokens with the highest weight — putting the contract first is what locks the framing across consecutive generations. After the contract, append the pose paragraph, the scene paragraph, the lighting paragraph, and the garment-detail paragraph, all of which MUST remain consistent with the values declared in the contract. NEVER paraphrase, soften, or omit the contract. Reproduce its field labels verbatim and its values exactly as you extracted them.
+Your final output prompt MUST open with the FRAMING & CROP CONTRACT section (the entire 1B block from the EXTRACTION RULES above, with every field filled in with concrete values — Shot Type Name, Focal-Length Equivalent, Camera Distance, Camera Height, Dutch Angle, Aspect-Ratio Orientation, Subject Fill, Subject Placement, Top Crop Anatomical Anchor, Bottom Crop Anatomical Anchor, Left/Right Crop, Depth of Field, Horizon Line). Emit this block BEFORE any pose paragraph, scene paragraph, lighting paragraph, or garment-detail paragraph. The downstream image generator (${modelAudienceShort}) treats composition as a first-class signal and reads the earliest tokens with the highest weight — putting the contract first is what locks the framing across consecutive generations. After the contract, append the pose paragraph, the scene paragraph, the lighting paragraph, and the garment-detail paragraph, all of which MUST remain consistent with the values declared in the contract. NEVER paraphrase, soften, or omit the contract. Reproduce its field labels verbatim and its values exactly as you extracted them.
 ` : ""}
 ${isCustomPoseImageMode && accessories.length > 0 ? `═══ ACCESSORY INTEGRATION CONTRACT (IMAGE REFERENCE MODE + ACCESSORIES) ═══
 The user has attached one or more accessories to this custom pose AND is in IMAGE REFERENCE MODE. The desired output is the reference photograph WITH the accessory naturally added — not a new photoshoot inspired by it. Write the output prompt so the generator reads the reference scene as the immutable stage and treats the accessory as a single, plausible, minimally-invasive overlay on top of it.
@@ -1634,7 +1639,7 @@ Output ONLY the generation prompt text, nothing else. The prompt should be 3-5 p
       });
     } else {
     parts.push({
-      text: `You are an expert fashion photographer and prompt engineer specializing in Virtual Try-On (VTON) image generation. Your job is to analyze garment images and create a HIGHLY detailed, photorealistic prompt for an AI image generation model (Gemini Nano Banana 2 / gemini-3.1-flash-image-preview).
+      text: `You are an expert fashion photographer and prompt engineer specializing in Virtual Try-On (VTON) image generation. Your job is to analyze garment images and create a HIGHLY detailed, photorealistic prompt for an AI image generation model (${modelAudience}).
 
 GARMENT GENDER CONTEXT: This is a ${genderLabel} garment. Use this context to inform your analysis of the garment's design language, fit conventions, styling cues, silhouette proportions, and detail descriptions. For example, ${gender === "male" ? "men's garments typically have broader shoulder seams, straighter cuts, functional pockets, and more structured silhouettes" : gender === "female" ? "women's garments may feature more varied necklines, darting for bust shape, tapered waists, and more diverse silhouette options" : "unisex garments tend to have relaxed proportions, minimal darting, and neutral styling cues that work across body types"}.${isProductOnlyShot ? "" : ` Ensure the model used in the output aligns with this gender context${model ? "" : modelImage ? "" : ` - select a ${gender === "unisex" ? "model of any gender" : gender} model`}.`}
 
@@ -1956,7 +1961,7 @@ For reference-image accessories: reproduce the exact same accessory across all p
     // is exact reproduction — verbose textual re-description tends to compete with the
     // image input and degrade fidelity.
     parts.push({
-      text: `\n\n═══ BACKGROUND REPLICATION REFERENCE (REPLICA MODE) ═══\nThe image below is the EXACT background environment the user wants reproduced in every output of this batch. It will ALSO be attached directly to the downstream image-generation model (Nano Banana 2 / gemini-3.1-flash-image-preview). Treat it as the SOLE source of truth for scene, composition, palette, lighting, materials, and atmosphere — do NOT describe a different scene, do NOT default to a studio backdrop, and do NOT invent elements absent from this image.`,
+      text: `\n\n═══ BACKGROUND REPLICATION REFERENCE (REPLICA MODE) ═══\nThe image below is the EXACT background environment the user wants reproduced in every output of this batch. It will ALSO be attached directly to the downstream image-generation model (${modelAudience}). Treat it as the SOLE source of truth for scene, composition, palette, lighting, materials, and atmosphere — do NOT describe a different scene, do NOT default to a studio backdrop, and do NOT invent elements absent from this image.`,
     });
     const bgBase64 = await fileToBase64(background.inspirationImage.file);
     parts.push({

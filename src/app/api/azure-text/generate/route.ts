@@ -1,8 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Agent } from "undici";
 
 // Mirror the Gemini route's budget — prompt generation against gpt-5.4-pro can
 // be slow, especially when reference images are attached.
 export const maxDuration = 300;
+
+// Node's built-in fetch (undici) gives up waiting for response headers after
+// 300s by default — gpt-5.4-pro regularly takes longer than that on large
+// VTON meta-prompts, which surfaced as "fetch failed" 500s at exactly ~5.1min.
+// A dedicated dispatcher raises both timeouts to 10 minutes.
+const azureDispatcher = new Agent({
+  headersTimeout: 600_000,
+  bodyTimeout: 600_000,
+  connectTimeout: 30_000,
+});
+
+// Transient Azure statuses worth retrying (capacity / throttling / gateway).
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 3;
+const BACKOFF_MS = [2_000, 8_000];
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
 
 /**
  * Server-side bridge from the Gemini `generateContent` request shape to the
@@ -145,28 +165,73 @@ export async function POST(request: NextRequest) {
       input.push({ role: mapRole(content.role), content: mapped });
     }
 
-    const azureBody: Record<string, unknown> = {
-      model: deployment,
-      input,
+    // gpt-5.4-pro supports reasoning.effort values "medium" | "high" | "xhigh"
+    // ONLY — "low"/"none" are rejected with a 400 (they exist only on base
+    // gpt-5.4). "medium" is the documented minimum and the cheapest/fastest
+    // valid setting for the pro model. Source:
+    // https://developers.openai.com/api/docs/models/gpt-5.4-pro
+    // Override with AZURE_TEXT_REASONING_EFFORT; set to "omit" to drop the param
+    // (the deployment then uses its default effort).
+    const VALID_EFFORTS = new Set(["medium", "high", "xhigh"]);
+    const effortEnv = process.env.AZURE_TEXT_REASONING_EFFORT;
+    const reasoningEffort =
+      effortEnv && VALID_EFFORTS.has(effortEnv) ? effortEnv : effortEnv === "omit" ? "omit" : "medium";
+
+    const buildAzureBody = (includeReasoning: boolean): string => {
+      const azureBody: Record<string, unknown> = {
+        model: deployment,
+        input,
+      };
+      if (includeReasoning && reasoningEffort !== "omit") {
+        azureBody.reasoning = { effort: reasoningEffort };
+      }
+      // Note: `temperature` is intentionally NOT forwarded. Reasoning models
+      // (the entire GPT-5 series on the Responses API) reject it:
+      // https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning
+      if (typeof body.config?.maxOutputTokens === "number") {
+        azureBody.max_output_tokens = body.config.maxOutputTokens;
+      }
+      return JSON.stringify(azureBody);
     };
-    if (typeof body.config?.temperature === "number") {
-      azureBody.temperature = body.config.temperature;
-    }
-    if (typeof body.config?.maxOutputTokens === "number") {
-      azureBody.max_output_tokens = body.config.maxOutputTokens;
-    }
 
-    const azureResponse = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "api-key": apiKey,
-      },
-      body: JSON.stringify(azureBody),
-      signal: request.signal,
-    });
+    const callAzure = (includeReasoning: boolean) =>
+      fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "api-key": apiKey,
+        },
+        body: buildAzureBody(includeReasoning),
+        signal: request.signal,
+        dispatcher: azureDispatcher,
+        // `dispatcher` is an undici extension Node's fetch supports but the DOM
+        // RequestInit type doesn't know about.
+      } as RequestInit);
 
-    if (!azureResponse.ok) {
+    let includeReasoning = true;
+    let azureResponse: Response | undefined;
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt - 1] ?? 8_000));
+        if (request.signal.aborted) throw new Error("aborted");
+      }
+
+      try {
+        azureResponse = await callAzure(includeReasoning);
+      } catch (fetchError) {
+        // Client disconnected — don't retry on the user's behalf.
+        if (isAbortError(fetchError) || request.signal.aborted) throw fetchError;
+        // Network-level failure (incl. undici timeouts) — retry.
+        lastError = fetchError instanceof Error ? fetchError : new Error(String(fetchError));
+        console.warn(`Azure Responses attempt ${attempt + 1}/${MAX_ATTEMPTS} failed: ${lastError.message}`);
+        continue;
+      }
+
+      if (azureResponse.ok) break;
+
+      const status = azureResponse.status;
       let detail = `${azureResponse.status} ${azureResponse.statusText}`;
       try {
         const errJson = (await azureResponse.json()) as AzureResponsesResult;
@@ -178,7 +243,25 @@ export async function POST(request: NextRequest) {
           /* noop */
         }
       }
-      throw new Error(`Azure Responses request failed — ${detail}`);
+
+      lastError = new Error(`Azure Responses request failed — ${detail}`);
+      azureResponse = undefined;
+
+      // Deployment doesn't accept the reasoning param / effort value (Azure
+      // phrases this as e.g. "Unsupported value: 'low' is not supported with
+      // the '<model>' model") — drop the param and retry rather than failing
+      // the whole request.
+      if (status === 400 && includeReasoning && /reasoning|effort|unsupported value/i.test(detail)) {
+        includeReasoning = false;
+        continue;
+      }
+
+      if (!RETRYABLE_STATUSES.has(status)) break;
+      console.warn(`Azure Responses attempt ${attempt + 1}/${MAX_ATTEMPTS} failed: ${detail}`);
+    }
+
+    if (!azureResponse) {
+      throw lastError ?? new Error("Azure Responses request failed");
     }
 
     const json = (await azureResponse.json()) as AzureResponsesResult;
