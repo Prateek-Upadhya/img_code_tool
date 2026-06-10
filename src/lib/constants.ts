@@ -1752,19 +1752,38 @@ export const FOOTWEAR_POSES: Pose[] = [
 
 /**
  * Framings that must NEVER receive a Dynamic pose. These are tight close-ups,
- * product-only, or ghost-mannequin crops where there is no full posture to vary
+ * product-only, or ghost-mannequin crops where there is no posture to vary
  * (a "fresh candid stance" is meaningless when only feet, a bust, or a floating
  * garment are in frame). Everything else present in {@link POSES} /
- * {@link FOOTWEAR_POSES} is eligible (full-body, three-quarter, mid-thigh,
- * waist-up, hip-down, knee-down, …).
+ * {@link FOOTWEAR_POSES} is eligible — including the lower-body crops
+ * (`hip-down`, `knee-down`, `cropped-shot`, `waist-to-thigh`), where the
+ * leg/foot placement, stance width, and weight distribution still vary
+ * meaningfully even though the head is out of frame (the framing-aware
+ * sampler in `buildDynamicPoseSeed` drops the out-of-frame gaze/head cues).
+ *
+ * NOTE: `bust-up` stays excluded — it is a head/upper-chest detail crop with no
+ * stance, legs, or meaningful lower-body posture to vary.
  */
 const DYNAMIC_POSE_EXCLUDED_FRAMINGS: ReadonlySet<PoseFraming> = new Set<PoseFraming>([
   "bust-up",
   "feet-closeup",
-  "waist-to-thigh",
-  "cropped-shot",
   "product-only",
   "ghost-mannequin",
+]);
+
+/**
+ * Lower-body crops (head out of frame, legs/lower body the hero). A Dynamic pose
+ * for one of these is inherently a bottomwear/one-piece shot — it shows the
+ * legs, so a dress or jumpsuit (one-piece) is just as valid a subject as a pair
+ * of trousers. Topwear is intentionally NOT added here: the topwear garment sits
+ * above the crop and would not be visible. Topwear still gets full leg/stance
+ * variation through the full-body, three-quarter, and mid-thigh Dynamic poses.
+ */
+const LOWER_BODY_CROP_FRAMINGS: ReadonlySet<PoseFraming> = new Set<PoseFraming>([
+  "hip-down",
+  "knee-down",
+  "cropped-shot",
+  "waist-to-thigh",
 ]);
 
 /**
@@ -1843,10 +1862,16 @@ function buildDynamicPoses(source: Pose[]): Pose[] {
 
   const poses: Pose[] = [];
   for (const { viewAngle, framing, relevance } of combos.values()) {
+    // A lower-body crop shows the legs, so it applies equally to a one-piece
+    // (dress/jumpsuit) even when the only sibling standard poses were authored
+    // for bottomwear. Surface the Dynamic leg/stance variation for one-piece too.
+    if (LOWER_BODY_CROP_FRAMINGS.has(framing) && relevance.has("bottomwear")) {
+      relevance.add("onepiece");
+    }
     poses.push({
       id: `${viewAngle}-dynamic-${dynamicFramingShort(framing)}`,
       name: "Dynamic",
-      description: `A dynamic, candid ${framingPhrase[framing]} ${orientationPhrase[viewAngle]} shot — the model's exact posture, gaze, head angle, and hand/leg placement vary naturally on every generation, while the ${orientationPhrase[viewAngle].toLowerCase()} orientation and ${framingPhrase[framing]} framing stay strictly fixed.`,
+      description: `A dynamic, candid ${framingPhrase[framing]} ${orientationPhrase[viewAngle]} shot — the model's exact posture, weight shift, stance, and hand/leg placement vary naturally on every generation, while the ${orientationPhrase[viewAngle].toLowerCase()} orientation and ${framingPhrase[framing]} framing stay strictly fixed.`,
       icon: "🎲",
       viewAngle,
       framing,
@@ -1861,10 +1886,18 @@ function buildDynamicPoses(source: Pose[]): Pose[] {
 /**
  * Curated, world-knowledge-rich phrase pools the runtime seed sampler
  * ({@link import("./utils").buildDynamicPoseSeed}) draws from to compose a fresh
- * VARIATION SEED for every Dynamic-pose generation. Phrases are intentionally
- * framing-agnostic so they reuse cleanly across every group; the
- * `DYNAMIC_POSE_DIRECTIVE` in gemini.ts re-asserts the orientation/framing lock
- * around whatever posture these cues describe.
+ * VARIATION SEED for every Dynamic-pose generation. The `DYNAMIC_POSE_DIRECTIVE`
+ * in gemini.ts re-asserts the orientation/framing lock around whatever posture
+ * these cues describe.
+ *
+ * IMPORTANT — POSTURE-ONLY, NO PROPS: the `weightShift` / `gaze` / `headTilt` /
+ * `armAction` / `legAction` / `energy` pools describe ONLY the model's own body
+ * and the primary garment. They MUST NOT name or imply any prop or accessory
+ * (bag, sunglasses, belt, jewellery, secondary garment, …) — a Dynamic pose with
+ * no user-supplied prop must never hallucinate one. Anything that makes the
+ * posture vary by interacting with a prop lives in the separate `propInteraction`
+ * pool, which is sampled ONLY by the PROP directive in gemini.ts and ONLY when
+ * the user has actually supplied a prop/accessory or complementary garment.
  */
 export const DYNAMIC_POSE_SEED_POOLS = {
   /** Where the body weight rests + resulting stance asymmetry. */
@@ -1907,7 +1940,7 @@ export const DYNAMIC_POSE_SEED_POOLS = {
     "one arm bent with the hand resting at the waistband, the other hanging free",
     "a hand running casually through the hair",
     "arms loosely crossed, shoulders dropped and easy",
-    "one thumb hooked into a belt loop, the other arm swinging slightly",
+    "one thumb hooked into the waistband, the other arm swinging slightly",
     "a hand resting lightly against the collarbone, fingers relaxed",
     "both arms swinging naturally as if caught between steps",
     "one hand lifted to lightly touch the jaw, elbow soft",
@@ -1933,17 +1966,25 @@ export const DYNAMIC_POSE_SEED_POOLS = {
     "soft and contemplative, lost in a private thought",
     "energetic and alive, a sense of motion just settling",
   ],
-  /** How the model handles a prop/accessory or complementary garment, when present. */
+  /**
+   * How the posture VARIES because the model is interacting with a prop. Used
+   * ONLY by the PROP directive in gemini.ts, and ONLY when a real prop/accessory
+   * or complementary garment is present. Phrases are deliberately OBJECT-AGNOSTIC
+   * — they say "the prop" / "the held item", never naming a bag, sunglasses,
+   * belt, etc. — because the actual object is whatever the attached reference
+   * image shows; the image model uses its own world knowledge to decide the
+   * realistic handling for that specific object. NEVER inject these into the
+   * generic (no-prop) posture seed.
+   */
   propInteraction: [
-    "holding the bag's strap over one shoulder, hand resting on it",
-    "lifting the sunglasses slightly as if about to put them on",
-    "mid-stride glancing at the prop in hand",
-    "lightly adjusting the accessory at the neckline or wrist",
-    "fingers curled loosely around the held item, weight settled",
-    "drawing the complementary layer closed across the body with one hand",
-    "the prop carried casually in the crook of one arm",
-    "one hand smoothing or styling the secondary garment",
-    "tilting the held accessory toward the camera as a subtle focal point",
+    "one hand settled naturally on the prop — holding, steadying, or carrying it the way its real-world form invites, weight shifting into one hip",
+    "fingers curled loosely around the held prop, the rest of the body relaxed and candid",
+    "mid-gesture, attention drifting toward the prop in hand",
+    "lightly adjusting or repositioning the prop where it naturally sits on the body",
+    "the prop lifted a little toward the camera as a subtle focal point, elbow soft",
+    "the prop carried casually at the side in a relaxed, unforced grip",
+    "leaning subtly into or against the prop in a believable, weight-bearing way",
+    "caught mid-step still holding the prop, arm swinging gently with the motion",
   ],
 } as const;
 

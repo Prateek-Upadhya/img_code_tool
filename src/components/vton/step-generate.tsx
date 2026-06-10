@@ -827,7 +827,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
       // Materialize bucket-backed accessories into concrete picks (fixed per
       // product — single mode has one product, so key on "single"). Done BEFORE
-      // the dynamic-pose seed so the `hasProp` check below sees the drawn props.
+      // generateVTONPrompt so its prop/complementary-garment interaction clause
+      // sees the drawn props.
       const accessories = materializeAccessories(poseAccessories[result.pose.id] || [], "single");
       const poseIsProductOnly = result.customPose
         ? !result.customPose.isModelShot
@@ -869,9 +870,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           // on every call; undefined (ignored) for standard poses.
           dynamicSeed:
             result.pose.poseType === "dynamic"
-              ? buildDynamicPoseSeed({
-                  hasProp: accessories.length > 0 || complementaryImages.length > 0,
-                })
+              ? buildDynamicPoseSeed({ framing: result.pose.framing })
               : undefined,
           abortSignal: signal,
         });
@@ -1340,9 +1339,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           // Fresh per-generation seed for Dynamic poses; undefined for standard poses.
           dynamicSeed:
             result.pose.poseType === "dynamic"
-              ? buildDynamicPoseSeed({
-                  hasProp: accessories.length > 0 || cgImages.length > 0,
-                })
+              ? buildDynamicPoseSeed({ framing: result.pose.framing })
               : undefined,
           abortSignal: signal,
         });
@@ -1677,9 +1674,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           // posture; undefined for standard poses.
           dynamicSeed:
             result.pose.poseType === "dynamic"
-              ? buildDynamicPoseSeed({
-                  hasProp: accessories.length > 0 || complementaryImages.length > 0,
-                })
+              ? buildDynamicPoseSeed({ framing: result.pose.framing })
               : undefined,
         });
         collectedCosts.push(promptResult.cost);
@@ -1862,9 +1857,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           // Fresh per-retry seed for Dynamic poses; undefined for standard poses.
           dynamicSeed:
             result.pose.poseType === "dynamic"
-              ? buildDynamicPoseSeed({
-                  hasProp: accessories.length > 0 || cgImages.length > 0,
-                })
+              ? buildDynamicPoseSeed({ framing: result.pose.framing })
               : undefined,
         });
         collectedCosts.push(promptResult.cost);

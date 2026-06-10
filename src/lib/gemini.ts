@@ -1,6 +1,7 @@
 import { ThinkingLevel } from "@google/genai";
 import { getGeminiClient } from "./gemini-client";
 import { getTextClient } from "./text-client";
+import { buildPropInteractionCue } from "./utils";
 import {
   AccessoryItem,
   AIModel,
@@ -239,11 +240,12 @@ ADDITIONAL RULES for this lighting mode:
  * and the image-gen content (buildVTONImageContentParts).
  */
 const PROP_REPLICATION_DIRECTIVE =
-  `\n═══ PROP REFERENCES — PIXEL-PERFECT REPLICATION (MANDATORY) ═══\n` +
-  `Each image tagged as a PROP below is a real object the model must hold, wear, or interact with in the scene. ` +
+  `\n═══ PROP REFERENCES — PIXEL-PERFECT REPLICATION + WORLD-KNOWLEDGE INTERACTION (MANDATORY) ═══\n` +
+  `Each image tagged as a PROP below is a real object the model must hold, wear, or interact with in the scene. The prop can be ANY kind of object — a bag, a beverage, a phone, a hat, a sports item, a piece of furniture, an instrument, etc. — and different PROP images in this set may be completely different kinds of object. Do NOT assume a category. ` +
+  `FIRST, look at each PROP reference image and identify what the object actually is. THEN use your own world knowledge to decide how a real person would naturally and correctly handle or wear THAT specific object — the realistic grip points, which hand(s), where it rests on or against the body, its real-world weight and scale, and the body language that interaction implies. (For example: a mug is held by its handle or cradled; a tote is carried by its straps or on the shoulder; sunglasses are worn or lifted; a skateboard is held under the arm or stood on.) ` +
   `Replicate every prop with PIXEL-PERFECT fidelity to its reference image: identical shape, silhouette, color and colorway, material and texture, any print / logo / wordmark / text, hardware, and proportions. ` +
-  `Do NOT restyle, recolor, resize, substitute, "improve", or use world knowledge to "correct" the prop, and do NOT invent props that are not shown. ` +
-  `Integrate each prop naturally into the photograph so the model plausibly interacts with it (holds it in hand, wears it, leans on it, gazes at it, carries it) with realistic contact, scale, perspective, and lighting that matches the scene — while the prop's APPEARANCE stays an exact copy of the reference. ` +
+  `Do NOT restyle, recolor, resize, substitute, "improve", or use world knowledge to "correct" the prop's APPEARANCE, and do NOT invent props that are not shown — world knowledge governs the INTERACTION only, never the look of the object. ` +
+  `Integrate each prop naturally into the photograph with realistic contact, scale, perspective, and lighting that matches the scene — while the prop's appearance stays an exact copy of the reference. ` +
   `A side-by-side of the reference prop and the rendered prop must read as the SAME object. Any deviation in the prop's design, color, logo, or text is a CRITICAL FAILURE.`;
 
 /**
@@ -308,7 +310,7 @@ function buildDynamicPoseDirective(pose: Pose, dynamicSeed: string | undefined, 
   return `
 ═══ DYNAMIC POSE DIRECTIVE (MANDATORY — this is a "Dynamic" pose) ═══
 
-This pose is INTENTIONALLY VARIABLE. Your job is to INVENT a fresh, natural, candid full posture for THIS single generation — a different believable moment every time — WITHOUT ever changing the locked camera relationship. Two things are absolutely fixed and override everything below:
+This pose is INTENTIONALLY VARIABLE. Your job is to INVENT a fresh, natural, candid posture for THIS single generation — a different believable moment every time — WITHOUT ever changing the locked camera relationship. Describe ONLY the body parts that the locked framing actually keeps in frame (e.g. for a lower-body crop, vary the stance, weight shift, and leg/foot placement and do NOT invent a gaze or head angle for a head that is cropped out). Two things are absolutely fixed and override everything below:
 
 1. ORIENTATION LOCK — the viewing angle is ${orientationLabel[pose.viewAngle]}. This is NON-NEGOTIABLE. Never rotate beyond it, never turn a front into a three-quarter or a side, never reveal the back of a frontal shot, never mirror or flip the established facing.${sideLock}
 2. FRAMING & CROP LOCK — reproduce the FRAMING & CROP CONTRACT for the "${pose.framing}" framing EXACTLY as specified above (same shot type, focal length, camera distance/height, subject fill, and top/bottom/left/right crop anatomical anchors). Never zoom in or out, never tighten or loosen the crop, never change which body parts are in frame.
@@ -319,7 +321,7 @@ ${dynamicSeed ? `Use the following VARIATION SEED as concrete, authoritative cue
 The result must read as a real-person editorial / street-style frame — relaxed, asymmetric, alive — never a stiff mannequin and never a repeat of a previous frame.
 ${hasProp ? `
 PROP / COMPLEMENTARY-GARMENT INTERACTION (MANDATORY — at least one prop or complementary garment is present):
-The invented posture MUST show the model NATURALLY handling or interacting with one of the provided accessories or complementary garments — holding, adjusting, wearing, reaching for, or carrying it — in a way that suits that item's real-world nature (e.g. a bag carried by its strap, sunglasses lifted toward the face, a jacket drawn across the body). The interaction must NOT break the ORIENTATION or FRAMING lock above, must NOT hide or obscure the primary garment, and must keep the primary garment the clear hero of the shot.` : ""}
+The invented posture MUST show the model NATURALLY handling or interacting with one of the provided props / accessories / complementary garments. Do NOT assume what the object is — READ the attached PROP / accessory reference image(s) and use your own world knowledge to decide how a real person would realistically hold, wear, carry, lean on, or otherwise engage with THAT specific object (its size, weight, grip points, and typical use). This generation's interaction beat is: "${buildPropInteractionCue()}" — render the model in exactly that relationship to the object. The interaction must NOT break the ORIENTATION or FRAMING lock above, must NOT hide or obscure the primary garment, and must keep the primary garment the clear hero of the shot.` : ""}
 
 ABSOLUTE NEGATIVE CONSTRAINTS (the shot is INVALID if any is true):
 - The orientation drifted from ${orientationLabel[pose.viewAngle].split(" (")[0]} (e.g. a front became a three-quarter or side, or the facing was mirrored/flipped) → INVALID.

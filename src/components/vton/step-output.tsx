@@ -433,14 +433,20 @@ function PoseAccessoriesPanel({
     ? ACCESSORY_CATEGORIES.filter((c) => c.value !== "shoes")
     : ACCESSORY_CATEGORIES;
 
-  const presetAccessories = accessories.filter((a) => a.category !== "custom");
-  const customAccessories = accessories.filter((a) => a.category === "custom");
+  // Bucket-backed accessories (those carrying a `bucketId`) are surfaced ONLY as
+  // the dedicated prop-bucket toggle chips below — never as a category image slot
+  // or a Custom Accessory card. A bucket inherits its parent bucket's `category`
+  // (which is `"custom"` for a Generic Prop bucket), so WITHOUT this guard a
+  // selected Generic-Prop bucket would wrongly render as a custom-accessory
+  // dialogue, and a typed-category bucket would wrongly light up its category chip.
+  const presetAccessories = accessories.filter((a) => !a.bucketId && a.category !== "custom");
+  const customAccessories = accessories.filter((a) => !a.bucketId && a.category === "custom");
 
   const isAccessorySelected = (category: AccessoryCategory) =>
-    accessories.some((a) => a.category === category);
+    accessories.some((a) => !a.bucketId && a.category === category);
 
   const getAccessoryItem = (category: AccessoryCategory) =>
-    accessories.find((a) => a.category === category);
+    accessories.find((a) => !a.bucketId && a.category === category);
 
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden transition-colors duration-200 hover:shadow-sm">
