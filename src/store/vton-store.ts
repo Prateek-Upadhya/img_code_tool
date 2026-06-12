@@ -30,6 +30,7 @@ import {
   GeneratedResult,
   ImageGenModel,
   TextGenModel,
+  GoogleBackend,
   ModelImage,
   ModelSwapBackgroundMode,
   SleeveLength,
@@ -130,6 +131,9 @@ export function useVTONStore() {
   const [imageQuality, setImageQuality] = useState<"1K" | "2K" | "4K">("2K");
   const [imageGenModel, setImageGenModel] = useState<ImageGenModel>("gemini");
   const [textGenModel, setTextGenModel] = useState<TextGenModel>("gemini");
+  // Which Google backend serves the Gemini text + image models (first-page toggle).
+  // Defaults to Vertex AI; affects image + prompt generation (not Veo video).
+  const [googleBackend, setGoogleBackend] = useState<GoogleBackend>("vertex");
   const [selectedPoses, setSelectedPoses] = useState<Pose[]>([]);
   const [customPoses, setCustomPoses] = useState<CustomPose[]>([]);
   const [namingLogic, setNamingLogic] = useState<NamingLogic>("folder-name-sequential");
@@ -1974,6 +1978,8 @@ export function useVTONStore() {
     setImageGenModel,
     textGenModel,
     setTextGenModel,
+    googleBackend,
+    setGoogleBackend,
     selectedPoses,
     togglePose,
     movePoseInSequence,

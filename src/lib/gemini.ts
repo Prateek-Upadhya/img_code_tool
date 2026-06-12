@@ -146,6 +146,30 @@ function fileToBase64(file: File): Promise<string> {
  *     model onto a learned depth-of-field, micro-contrast and skin-tone
  *     profile.
  */
+
+/**
+ * Garment identity-lock anchors. These mirror the FACE identity lock (ANCHOR 0
+ * in VTON_REALISM_DIRECTIVE) for the PRODUCT: a pixel-priority instruction that
+ * suppresses the generator's world-knowledge garment-design prior and binds the
+ * garment's appearance strictly to the reference-image pixels. They are the
+ * single strongest signal against logo / print / colorway / neckline /
+ * construction drift across retries and across pose / framing changes.
+ *
+ * Defined here (BEFORE VTON_REALISM_DIRECTIVE, which interpolates the on-model
+ * string as ANCHOR 0B at module-eval time) so the same string feeds BOTH the
+ * meta-prompter (force-emitted verbatim) AND the image-gen layer
+ * (buildVTONImageContentParts, adjacent to the garment images). The product-only
+ * / ghost-mannequin variant (no model to re-pose) drops the re-pose clause.
+ *
+ * IMPORTANT: keep these free of the FORBIDDEN VOCABULARY (see VTON_REALISM_
+ * DIRECTIVE) — no "perfect / flawless / render / plastic / waxy" etc.
+ */
+const GARMENT_IDENTITY_LOCK_ANCHOR =
+  `INSTRUCTION: PIXEL PRIORITY MODE. GARMENT IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge regarding clothing design, branding, and typical product styling. Use ONLY the visual data from the attached garment reference images (the GARMENT SOURCE) to construct the garment. Reproduce the EXACT same garment from those images with zero deviation: every logo, wordmark, and printed text reproduced character-for-character at the same position, scale, and orientation; every print, graphic, and pattern reproduced motif-for-motif with the same placement, repeat, and scale; the same colors and colorway with no recoloring or tonal shift; the same neckline and collar shape, the same sleeve and hem construction, the same seams, closures, hardware, stitching, and embellishments. Do NOT redesign, recolor, restyle, simplify, complete, or "improve" any garment detail, and do NOT invent any element that is not visible in the GARMENT SOURCE. The garment's design and appearance are held CONSTANT and identical across every pose, body orientation, framing, and camera angle — re-pose and re-frame the model freely, but the garment itself is the SAME product in every output, never re-designed.`;
+
+const GARMENT_IDENTITY_LOCK_PRODUCT_ONLY =
+  `INSTRUCTION: PIXEL PRIORITY MODE. GARMENT IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge regarding clothing design, branding, and typical product styling. Use ONLY the visual data from the attached garment reference images (the GARMENT SOURCE) to construct the garment. Reproduce the EXACT same garment from those images with zero deviation: every logo, wordmark, and printed text reproduced character-for-character at the same position, scale, and orientation; every print, graphic, and pattern reproduced motif-for-motif with the same placement, repeat, and scale; the same colors and colorway with no recoloring or tonal shift; the same neckline and collar shape, the same sleeve and hem construction, the same seams, closures, hardware, stitching, and embellishments. Do NOT redesign, recolor, restyle, simplify, complete, or "improve" any garment detail, and do NOT invent any element that is not visible in the GARMENT SOURCE. The garment's design and appearance are held CONSTANT and identical across every framing, camera angle, and arrangement — the garment itself is the SAME product in every output, never re-designed.`;
+
 const VTON_REALISM_DIRECTIVE = `
 ═══ PHOTOREALISM & HUMAN TEXTURE DIRECTIVE (MANDATORY — applies to ALL on-model VTON outputs) ═══
 
@@ -155,6 +179,13 @@ The output prompt you generate MUST contain each of the following anchor sentenc
 ANCHOR 0 — IDENTITY LOCK & PIXEL PRIORITY (include verbatim at the START of the output prompt WHENEVER a model reference image is provided — omit only for fully AI-invented models with no reference):
 "INSTRUCTION: PIXEL PRIORITY MODE. IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge regarding the subject's identity. Use ONLY the visual data from the attached model reference image (Image 1 — the IDENTITY source) for facial feature construction."
 This anchor stops the generator from drifting the face toward a beautified statistical average or a remembered look-alike — it forces a pixel-faithful reconstruction of the exact person in the reference, which is also what keeps complexion, pore pattern, and feature geometry consistent across the batch.
+
+ANCHOR 0B — GARMENT IDENTITY LOCK & PIXEL PRIORITY (include verbatim near the START of the output prompt, directly AFTER ANCHOR 0 when present, WHENEVER garment reference images are provided — i.e. for every CLOTHING VTON output. For FOOTWEAR outputs, substitute ANCHOR 0C below in its place. Omit only for outputs with no product reference image at all):
+"${GARMENT_IDENTITY_LOCK_ANCHOR}"
+This anchor stops the generator from drifting the garment toward a remembered brand template or a "cleaner" redesign — it forces a pixel-faithful copy of the exact product in the reference set, which is what keeps logos, prints, colorway, neckline, and construction stable across retries and across pose / framing changes. It locks the garment's APPEARANCE only; it never constrains pose, framing, scene, or fit.
+
+ANCHOR 0C — FOOTWEAR PRODUCT IDENTITY LOCK & PIXEL PRIORITY (include verbatim near the START of the output prompt for FOOTWEAR outputs, in place of ANCHOR 0B):
+"INSTRUCTION: PIXEL PRIORITY MODE. PRODUCT IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge regarding any footwear brand, model, or typical product styling. Use ONLY the visual data from the attached PRODUCT REFERENCE IMAGES to construct the footwear — copy its exact shape, colorway, logos, branding marks, text, and construction with zero deviation, and never use brand knowledge to substitute, reposition, resize, or 'correct' any mark. The footwear's design and appearance are held CONSTANT and identical across every pose, framing, and camera angle."
 
 ANCHOR 1 — SKIN (always include verbatim):
 "Render the model with hyper-realistic skin texture: visible pores distributed across the cheeks, nose, and forehead; fine vellus (peach-fuzz) hair catching the light along the jawline and temples; authentic skin grain and natural subsurface scattering. The skin reads as natural, healthy, and lived-in — not airbrushed, not beauty-filter-smooth, not waxy."
@@ -2411,6 +2442,19 @@ export async function buildVTONImageContentParts({
     const orderedImages = hasBackViewImg && isBackViewPose
       ? [...garmentImages].sort((a, b) => (a.isBackView ? -1 : 0) - (b.isBackView ? -1 : 0))
       : garmentImages;
+    // Pixel-priority garment identity lock, placed immediately before the garment
+    // reference images so the generator reads it adjacent to the GARMENT SOURCE
+    // (mirrors the footwear MANDATORY PRODUCT FIDELITY block and PROP_REPLICATION_
+    // DIRECTIVE). This is also the ONLY path that delivers the lock to product-only
+    // / ghost-mannequin shots, since VTON_REALISM_DIRECTIVE (ANCHOR 0B) is gated
+    // off for those.
+    parts.push({
+      text:
+        `\n\n═══ GARMENT REFERENCE — PIXEL-PERFECT IDENTITY LOCK (MANDATORY) ═══\n` +
+        (isProductOnlyShot || isGhostMannequin
+          ? GARMENT_IDENTITY_LOCK_PRODUCT_ONLY
+          : GARMENT_IDENTITY_LOCK_ANCHOR),
+    });
     for (const img of orderedImages) {
       const base64 = await fileToBase64(img.file);
       parts.push({ inlineData: { mimeType: img.file.type, data: base64 } });

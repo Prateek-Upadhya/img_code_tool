@@ -74,3 +74,42 @@ export function getVertexClient(): GoogleGenAI {
   });
   return cached;
 }
+
+export type GoogleBackend = "vertex" | "gemini";
+
+let cachedGemini: GoogleGenAI | null = null;
+
+/**
+ * Returns a singleton GoogleGenAI client configured for the Gemini Developer
+ * API (generativelanguage / Google AI), authenticated with a server-held API
+ * key.
+ *
+ * SECURITY: the key is read from `GEMINI_API_KEY` (NOT `NEXT_PUBLIC_*`) so it
+ * stays in the server runtime — the same rule that keeps the Vertex
+ * credentials off the browser. The browser selects this backend via the
+ * `x-google-backend` header on /api/gemini/generate; it never sees the key.
+ *
+ * Model IDs are backend-agnostic in the unified SDK: the same
+ * `gemini-3.1-pro-preview` / `gemini-3.1-flash-image-preview` names used for
+ * Vertex work here unchanged — no model-name remap is required.
+ *
+ * Throws (server-side only) if the key is not configured.
+ */
+export function getGeminiApiClient(): GoogleGenAI {
+  if (cachedGemini) return cachedGemini;
+
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error(
+      "Gemini API backend selected but GEMINI_API_KEY is not set in the server environment.",
+    );
+  }
+
+  cachedGemini = new GoogleGenAI({ apiKey });
+  return cachedGemini;
+}
+
+/** Selects the server client for the requested Google backend (default: Vertex). */
+export function getGoogleClient(backend: GoogleBackend = "vertex"): GoogleGenAI {
+  return backend === "gemini" ? getGeminiApiClient() : getVertexClient();
+}

@@ -2,6 +2,21 @@ import type {
   GenerateContentParameters,
   GenerateContentResponse,
 } from "@google/genai";
+import type { GoogleBackend } from "./vertex-server";
+
+/**
+ * Module-level Google backend selection (Vertex AI vs Gemini Developer API).
+ * Defaults to "vertex" (the prior behavior). Set from the first-page toggle via
+ * {@link setGoogleBackend} and read on every proxied request, so every call site
+ * in `gemini.ts` stays unchanged — the choice rides an HTTP header, not the
+ * serialized SDK `params`. The server route (/api/gemini/generate) reads the
+ * header and picks the matching server client; no credential is sent here.
+ */
+let googleBackend: GoogleBackend = "vertex";
+
+export function setGoogleBackend(backend: GoogleBackend): void {
+  googleBackend = backend;
+}
 
 /**
  * Browser-side drop-in for the small slice of the `@google/genai` client that
@@ -41,7 +56,10 @@ async function generateContent(
 
   const response = await fetch("/api/gemini/generate", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-google-backend": googleBackend,
+    },
     body: JSON.stringify({ ...rest, config: wireConfig }),
     signal: abortSignal,
   });
