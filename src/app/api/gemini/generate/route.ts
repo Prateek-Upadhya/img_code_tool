@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { GenerateContentParameters } from "@google/genai";
-import { getVertexClient } from "@/lib/vertex-server";
+import { getGoogleClient, type GoogleBackend } from "@/lib/vertex-server";
 
 // Image generation (Nano Banana) can take a while; allow a generous budget.
 export const maxDuration = 300;
@@ -9,8 +9,9 @@ export const maxDuration = 300;
  * Server-side proxy for `ai.models.generateContent`.
  *
  * The browser builds the request (model + contents + config) exactly as before
- * and POSTs it here; this handler runs it against Vertex AI using server-held
- * credentials and returns the response as plain JSON.
+ * and POSTs it here; this handler runs it against the Google backend selected by
+ * the `x-google-backend` header (Vertex AI by default, or the Gemini Developer
+ * API) using server-held credentials, and returns the response as plain JSON.
  *
  * Note: `GenerateContentResponse` exposes `.text`, `.data` and `.functionCalls`
  * as prototype getters, which are dropped by JSON serialization. We materialize
@@ -27,7 +28,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const ai = getVertexClient();
+    const backend: GoogleBackend =
+      request.headers.get("x-google-backend") === "gemini" ? "gemini" : "vertex";
+
+    const ai = getGoogleClient(backend);
     const response = await ai.models.generateContent(params);
 
     // Own enumerable props (candidates, usageMetadata, promptFeedback, ...).

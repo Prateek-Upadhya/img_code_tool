@@ -16,6 +16,15 @@ export type ImageGenModel = "gemini" | "gpt-image-2";
  */
 export type TextGenModel = "gemini" | "gpt-5.4-pro" | "gpt-5.2" | "gpt-5.4-mini";
 
+/**
+ * Which Google backend serves the Gemini text + image models.
+ * - `vertex`: Vertex AI (default) — service-account / ADC credentials, project + location.
+ * - `gemini`: Gemini Developer API (generativelanguage / Google AI) — server-held API key.
+ * Both are served by the unified `@google/genai` SDK with the same model IDs.
+ * Selected on the first page; affects image + prompt generation only (Veo video stays on Vertex).
+ */
+export type GoogleBackend = "vertex" | "gemini";
+
 export type Gender = "male" | "female" | "unisex";
 
 export type GarmentType = "topwear" | "bottomwear" | "onepiece";

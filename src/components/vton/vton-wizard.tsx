@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
 import { useVTONStore } from "@/store/vton-store";
+import { setGoogleBackend as setGoogleBackendModule } from "@/lib/gemini-client";
 import {
   WIZARD_STEPS,
   MODEL_SWAP_WIZARD_STEPS,
@@ -145,12 +147,22 @@ export function VTONWizard() {
     setMode,
     featureMode,
     setFeatureMode,
+    googleBackend,
+    setGoogleBackend,
     isSwatchGenerating,
     isReplicateGenerating,
     isVideoGenerating,
     isRoomStagingGenerating,
     isInfographicGenerating,
   } = store;
+
+  // Mirror the selected Google backend into the gemini-client module so every
+  // proxied generateContent call carries the matching `x-google-backend` header.
+  // Synced here (in the always-mounted wizard) rather than in a step component
+  // so the value survives step navigation.
+  useEffect(() => {
+    setGoogleBackendModule(googleBackend);
+  }, [googleBackend]);
   const isModelSwap = featureMode === "model-swap";
   const isSwatch = featureMode === "swatch";
   const isReplicate = featureMode === "replicate";
@@ -379,6 +391,46 @@ export function VTONWizard() {
                 </div>
               )}
             </div>
+
+            {/* Google AI backend toggle — first page only */}
+            {currentStep === 1 && (
+              <div className="mb-8 flex flex-col gap-3 rounded-xl border border-border/50 bg-muted/30 p-4 backdrop-blur-sm animate-fade-in-up sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">
+                    Google AI Backend
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Powers Gemini prompt &amp; image generation. Video always uses Vertex AI.
+                  </p>
+                </div>
+                <div className="flex items-center rounded-xl border border-border/50 bg-muted/50 p-1 self-start backdrop-blur-sm sm:self-auto">
+                  <button
+                    onClick={() => setGoogleBackend("vertex")}
+                    disabled={anyGenerating}
+                    className={cn(
+                      "px-3.5 py-2 rounded-lg text-xs font-medium transition-all duration-200 disabled:opacity-50",
+                      googleBackend === "vertex"
+                        ? "bg-card text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    Vertex AI
+                  </button>
+                  <button
+                    onClick={() => setGoogleBackend("gemini")}
+                    disabled={anyGenerating}
+                    className={cn(
+                      "px-3.5 py-2 rounded-lg text-xs font-medium transition-all duration-200 disabled:opacity-50",
+                      googleBackend === "gemini"
+                        ? "bg-card text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    Gemini API
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Step Content */}
             <div className="min-h-[400px]">
