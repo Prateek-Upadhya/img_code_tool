@@ -442,7 +442,12 @@ The user has chosen IMAGE REFERENCE MODE for this custom ${isProductOnlyShot ? "
 
 ★★★ CRITICAL CHANNEL NOTICE ★★★
 The reference image${plural ? "s are" : " is"} visible to YOU ONLY. The downstream image generator will NOT receive ${plural ? "them" : "it"}. Your generated text prompt is the ONLY channel that carries scene information. Translate every relevant detail into explicit, photographer-grade English. If a detail is not in your text, the image generator cannot know it.
-
+${isProductOnlyShot ? "" : `
+═══ PERSON IDENTITY — NOT EXTRACTED FROM THE REFERENCE (READ FIRST) ═══
+The person shown in the reference image${plural ? "s is" : " is"} a THROWAWAY POSING STAND-IN. They are NOT the person who appears in the output. The user has separately attached a MODEL REFERENCE IMAGE elsewhere in this conversation; that attached model image is the 100% SOLE source of truth for WHO appears in the output — their face, facial features, skin tone and complexion, hair color and style, age, body identity, and every other identity-bearing trait.
+Treat the reference subject as a FACELESS, ANONYMOUS MANNEQUIN whose ONLY job is to define the pose, posture, body geometry, and framing. You MUST NOT describe, transcribe, name, or even hint at the reference person's face, facial features, expression beyond a neutral geometric gaze direction, hair, skin tone, complexion, age, ethnicity, gender presentation, body-identity markers, tattoos, scars, or any other distinguishing personal feature. Capture the GEOMETRY of the body (angles, stance, weight distribution) and NOTHING about WHO the body belongs to.
+If you describe the reference person's appearance in your output prompt, the image generator will regurgitate the wrong person and IGNORE the user's chosen model — this is the single most important failure to avoid in this mode.
+`}
 EXTRACT and DESCRIBE the following aspects:
 
 1A. ${isProductOnlyShot ? "PRODUCT ARRANGEMENT & GEOMETRY" : "POSE & SUBJECT GEOMETRY"}:
@@ -450,8 +455,9 @@ ${isProductOnlyShot
     ? `   - Product orientation and tilt expressed in degrees, arrangement (single, paired, stacked, leaning, suspended), surface contact behavior, relative spacing
    - Where each product sits in the frame and how the products relate spatially to each other and to any anchors (props, surfaces, edges)`
     : `   - Body position, weight distribution, hip angle, torso tilt, shoulder line, head/gaze direction, arm/hand placement, foot placement (with feet directions in degrees relative to camera)
-   - Limb joint angles, finger curl, gaze vector (where the eyes look in degrees relative to the camera optical axis), facial expression cue
-   - Any contact with props, walls, floor, or anchors (which body part touches what, with what pressure)`}
+   - Limb joint angles, finger curl, gaze vector (where the eyes look in degrees relative to the camera optical axis) — describe the gaze as a geometric DIRECTION only, never the eyes' appearance or the face's identity
+   - Any contact with props, walls, floor, or anchors (which body part touches what, with what pressure)
+   - IDENTITY-FREE: describe the body purely as anonymous geometry. Do NOT record the stand-in's face, hair, skin tone, age, ethnicity, or any identifying trait — those come SOLELY from the user's attached model reference image (see PERSON IDENTITY block above)`}
 
 1B. FRAMING & CROP CONTRACT — DENSE, DETERMINISTIC, NON-NEGOTIABLE (this section is the single most important determinant of run-to-run framing consistency — translate every camera and crop attribute into concrete, measurable, photographer-grade English so two consecutive generations cannot drift):
    - SHOT TYPE NAME (pick the SINGLE best match from this canonical vocabulary and name it explicitly): extreme close-up, close-up, medium close-up (chest-up), medium shot (waist-up), medium-long shot (mid-thigh / cowboy shot), long shot (full-length / full-body), wide shot, extreme wide shot${isProductOnlyShot ? ", product macro, product flat-lay, product hero shot" : ""}. State the named shot type in plain words — ${imageModelName} treats this name as a top-tier composition signal.
@@ -502,7 +508,7 @@ DO NOT TRANSFER from the reference (these come from elsewhere or are intentional
 - The specific ${productLabel} or any other product visible in the reference — the user's actual product replaces it entirely
 - Any branding, logos, prints, cuts, or product-specific design details
 - The reference's literal color palette (use only as inspiration; the FINAL background palette is the ADAPTED palette from STEP 5C)
-- The specific person's identity (the user's model selection / model reference photo is the source of truth for the person)
+- The specific person's identity — face, hair, skin tone, age, ethnicity, build, and every identity-bearing trait (see the PERSON IDENTITY block at the top of these rules; the user's attached model reference image is the SOLE source of truth for the person — the reference subject is an anonymous posing mannequin only)
 
 Your extracted description must work identically for ANY ${productLabel} placed into this composition. The output prompt must read as a complete, self-contained scene description that a photographer could reproduce without ever seeing the reference image.`;
 }
@@ -1432,7 +1438,7 @@ DO NOT TRANSFER (ignore these in the reference):
 - The specific footwear/product visible (the user's ACTUAL product replaces it entirely)
 - The specific background/environment (use the user's background specification below instead)
 - Any branding, colors, patterns, or design elements of the reference product
-- The specific model's identity (use the user's model selection instead)
+- THE MODEL'S IDENTITY — face, facial features, hair color/style, skin tone, complexion, age, ethnicity, build, and every identity-bearing trait. The person in the reference is a THROWAWAY POSING STAND-IN, NOT the person in the output. The user's attached MODEL REFERENCE IMAGE is the 100% SOLE source of truth for who appears. Treat the reference subject as a FACELESS, ANONYMOUS MANNEQUIN: extract ONLY the pose/lower-body/foot geometry and NOTHING about who the body belongs to. You MUST NOT describe, transcribe, or hint at the reference person's appearance anywhere in your output prompt — doing so makes the generator regurgitate the wrong person and ignore the user's chosen model.
 
 Your extracted pose description must work identically for ANY footwear product placed into this composition, and must be detailed enough that a photographer could reproduce the shot from the text alone.` : "Use the text description above to determine the pose/arrangement. Specify all angles in degrees and describe the geometry exhaustively so the image generator can reproduce it from text alone."}`}
 
@@ -1451,7 +1457,7 @@ ${isCustomPoseImageMode ? `1.5. FRAMING & CROP CONTRACT (IMAGE REFERENCE MODE �
 
 5. BACKGROUND: Reproduce the user's background specification from SCENE PARAMETERS exactly and literally — same colors (repeat every hex/RGB code verbatim, whatever it is), same materials, same seamless/environmental intent. Do NOT substitute, default toward, or drift to white (or any other color) when the user has specified something different; the user's Background line is the SOLE source of truth for the scene environment. The pose reference background, the product photo backdrop, and any incidental environment in uploads must NOT appear. State clearly that the only valid environment is the user's specification.
 
-${!isProductOnlyShot ? `6. MODEL & BODY POSITION: A DENSE paragraph capturing the exact body position, stance, weight distribution, leg angles, foot placement, and how the footwear meets the ground — extracted from the pose reference and written as complete text so the image generator needs no visual reference.` : ""}
+${!isProductOnlyShot ? `6. MODEL & BODY POSITION: A DENSE paragraph capturing the exact body position, stance, weight distribution, leg angles, foot placement, and how the footwear meets the ground — extracted from the pose reference and written as complete text so the image generator needs no visual reference. Describe the body as ANONYMOUS GEOMETRY ONLY (angles, stance, weight distribution) — do NOT describe the reference person's face, hair, skin tone, age, ethnicity, build, or any identity-bearing trait. WHO appears in the output is defined SOLELY by the user's attached model reference image, never by the pose reference.` : ""}
 
 ${!isProductOnlyShot ? "7" : "6"}. STYLE & QUALITY (verbatim):
    "${closingStyleClause}"
@@ -1469,7 +1475,11 @@ ${!isProductOnlyShot ? `- FOOTWEAR SCALE, FIT & PROPORTION LOCK (MANDATORY — t
 
 ${!isProductOnlyShot ? VTON_REALISM_DIRECTIVE : ""}
 
-${isProductOnlyShot ? "IMPORTANT: This is a PRODUCT-ONLY shot. Do NOT include any human model, feet, or body parts." : modelImage ? "A reference photo of the model is provided. Include: 'Use the EXACT person shown in the model reference image — same face, skin tone, hair, and body proportions.'" : ""}
+${isProductOnlyShot ? "IMPORTANT: This is a PRODUCT-ONLY shot. Do NOT include any human model, feet, or body parts." : modelImage ? `═══ MODEL IDENTITY OVERRIDE MANDATE (CUSTOM POSE) ═══
+The person in the custom-pose reference is a posing stand-in ONLY — the OUTPUT person is the user's separately attached MODEL REFERENCE IMAGE, which is the SOLE source of truth for identity. The reference person ≠ the output person.
+Therefore your output prompt MUST open with this IDENTITY LOCK anchor sentence VERBATIM, as the very first line:
+"INSTRUCTION: PIXEL PRIORITY MODE. IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge regarding the subject's identity. Use ONLY the visual data from the attached model reference image (Image 1 — the IDENTITY source) for facial feature construction."
+Also include: 'Use the EXACT person shown in the model reference image — same face, skin tone, hair, and body proportions.' Your output prompt MUST NOT describe the reference person's face, hair, skin tone, age, ethnicity, or build anywhere.` : ""}
 
 Output ONLY the generation prompt text following the mandatory structure.`,
       });
@@ -1585,7 +1595,7 @@ DO NOT TRANSFER from the reference (these are the user's choices and live elsewh
 - The specific garment / topwear / clothing visible (the user's ACTUAL garment replaces it entirely)
 - The specific background / environment (use the user's background specification in SCENE PARAMETERS)
 - Any branding, colors, prints, or design elements of the reference's clothing
-- The specific person's identity (use the user's model selection / model reference photo)` : ""}
+- THE PERSON'S IDENTITY — face, facial features, hair color/style, skin tone, complexion, age, ethnicity, build, and every identity-bearing trait. The person in the reference is a THROWAWAY POSING STAND-IN, NOT the person in the output. The user's attached MODEL REFERENCE IMAGE is the 100% SOLE source of truth for who appears. Treat the reference subject as a FACELESS, ANONYMOUS MANNEQUIN: extract ONLY the pose/body geometry and NOTHING about who the body belongs to. You MUST NOT describe, transcribe, or hint at the reference person's appearance anywhere in your output prompt — doing so makes the generator regurgitate the wrong person and ignore the user's chosen model.` : ""}
 
 Based on the custom ${isProductOnlyShot ? "arrangement" : "pose"} description${customPose.referenceImages.length > 0 ? " and reference images" : ""}, determine:
 - The camera angle (front, side, back, three-quarter, top-down, etc. — specify in degrees)
@@ -1596,6 +1606,12 @@ Then describe those visible garment details with maximum precision. Describe the
 ${isCustomPoseImageMode ? `═══ OUTPUT-PROMPT STRUCTURE MANDATE (IMAGE REFERENCE MODE) ═══
 Your final output prompt MUST open with the FRAMING & CROP CONTRACT section (the entire 1B block from the EXTRACTION RULES above, with every field filled in with concrete values — Shot Type Name, Focal-Length Equivalent, Camera Distance, Camera Height, Dutch Angle, Aspect-Ratio Orientation, Subject Fill, Subject Placement, Top Crop Anatomical Anchor, Bottom Crop Anatomical Anchor, Left/Right Crop, Depth of Field, Horizon Line). Emit this block BEFORE any pose paragraph, scene paragraph, lighting paragraph, or garment-detail paragraph. The downstream image generator (${modelAudienceShort}) treats composition as a first-class signal and reads the earliest tokens with the highest weight — putting the contract first is what locks the framing across consecutive generations. After the contract, append the pose paragraph, the scene paragraph, the lighting paragraph, and the garment-detail paragraph, all of which MUST remain consistent with the values declared in the contract. NEVER paraphrase, soften, or omit the contract. Reproduce its field labels verbatim and its values exactly as you extracted them.
 ` : ""}
+${!isProductOnlyShot && modelImage ? `═══ MODEL IDENTITY OVERRIDE MANDATE (CUSTOM POSE) ═══
+The person in the custom-pose reference is a posing stand-in ONLY — the OUTPUT person is the user's separately attached MODEL REFERENCE IMAGE, which is the SOLE source of truth for identity. The reference person ≠ the output person.
+Therefore your output prompt MUST open with this IDENTITY LOCK anchor sentence VERBATIM, as the very first line (before the FRAMING & CROP CONTRACT and every other section):
+"INSTRUCTION: PIXEL PRIORITY MODE. IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge regarding the subject's identity. Use ONLY the visual data from the attached model reference image (Image 1 — the IDENTITY source) for facial feature construction."
+Your output prompt MUST NOT contain any description of the reference person's face, hair, skin tone, age, ethnicity, build, or any identity-bearing trait. The pose paragraph describes body GEOMETRY only (angles, stance, weight distribution) — never WHO the body belongs to. The person who appears in the output is defined exclusively by the attached model reference image.
+` : ""}
 ${isCustomPoseImageMode && accessories.length > 0 ? `═══ ACCESSORY INTEGRATION CONTRACT (IMAGE REFERENCE MODE + ACCESSORIES) ═══
 The user has attached one or more accessories to this custom pose AND is in IMAGE REFERENCE MODE. The desired output is the reference photograph WITH the accessory naturally added — not a new photoshoot inspired by it. Write the output prompt so the generator reads the reference scene as the immutable stage and treats the accessory as a single, plausible, minimally-invasive overlay on top of it.
 
@@ -1604,6 +1620,8 @@ ABSOLUTE ANCHORS — must remain pixel-identical to the extraction above (do NOT
 - The full FRAMING & CROP CONTRACT (1B): shot type name, focal-length equivalent, camera distance, camera height + lens tilt, dutch angle, aspect-ratio orientation, subject fill, x_center / y_center, top crop anatomical anchor, bottom crop anatomical anchor, left/right crop, depth of field, horizon line — verbatim.
 - The LIGHTING (key/fill/rim direction, quality, color temperature, shadow behavior) and overall MOOD — verbatim.
 - The subject's center of mass, weight distribution, hip angle, torso tilt, shoulder line, overall body axis, foot placement (which foot is planted where, ankle angle, foot direction in degrees), and general head/gaze direction — locked.
+
+NOT AN ANCHOR — PERSON IDENTITY IS NEVER TAKEN FROM THE REFERENCE: the locks above apply to body GEOMETRY, stage, framing, and lighting ONLY. WHO the person is — face, facial features, hair, skin tone, complexion, age, ethnicity, build — is NOT anchored to the reference and must come EXCLUSIVELY from the user's attached model reference image. Hold the reference person's POSE; never their IDENTITY.
 
 PERMITTED MICRO-ADJUSTMENTS — small, plausible, and ONLY where the accessory makes them necessary. These are the ONLY freedoms the meta-prompter and the image generator have when integrating the accessory:
 - Hand and/or wrist position may move up to ~1–3 cm from the reference position.
@@ -1632,7 +1650,7 @@ PER-ACCESSORY INTEGRATION DIRECTIVE — match the micro-adjustment to the access
 - hair-accessory — placed in the hair (clip / headband / scrunchie / barrette); no pose change.
 - CUSTOM accessory — read the user's text description in SCENE PARAMETERS; integrate it using the smallest plausible micro-adjustment from the budget above. If the description does not imply interaction, treat it as a placement-only accessory.
 
-RESULT TEST: A viewer placing the reference image and your final generated image side-by-side must read them as the SAME photograph taken seconds apart, with the SAME subject in the SAME stance in the SAME stage under the SAME light — the only visible difference being that the accessory is now present and the model is interacting with it through the smallest possible adjustment. If the test would fail (because the framing has drifted, the camera has moved, the stance has changed, the lighting has shifted, or the background has been re-staged), the output prompt is wrong — rewrite it to honor the contract.
+RESULT TEST: A viewer placing the reference image and your final generated image side-by-side must read them as the SAME photograph taken seconds apart — the SAME stance in the SAME stage under the SAME light, the only visible differences being (a) the accessory is now present and the model is interacting with it through the smallest possible adjustment, and (b) the PERSON is the user's chosen model rather than the reference's stand-in. "SAME subject" here means the same POSE and body geometry, NOT the same identity: the face, hair, skin tone, and identity always come from the user's attached model reference image, never from the reference photo. If the test would fail on pose/framing/stage/light (the framing has drifted, the camera has moved, the stance has changed, the lighting has shifted, or the background has been re-staged), the output prompt is wrong — rewrite it to honor the contract. The person's identity, however, must NEVER match the reference's stand-in.
 ` : ""}
 ${garmentTypeInstruction}
 ${lengthOverridesBlock}
@@ -2436,6 +2454,13 @@ export async function buildVTONImageContentParts({
       text: `${prompt}\n\nIMPORTANT: The garment in the output must match the provided garment reference images EXACTLY - preserve the same sleeve length, neckline, hem length, color, pattern, fabric texture, and every construction detail. Do not modify any garment attributes.${isGhostMannequin ? " This is a ghost mannequin shot — the garment must appear three-dimensional and shaped as if worn by an invisible person. ZERO visible human body, skin, hands, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? " This is a product-only shot — no human model, mannequin body, or person should be visible. Show ONLY the garment product." : modelImage ? " Use the provided model reference photo to generate the EXACT same person - same face, skin tone, hair color, and body type." : ""}${backViewSuffix}${isReplicaBg ? "\n\nREPLICA MODE NOTE: A BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image is attached below (after the product and accessory images). The background of this output is replicated EXACTLY from that reference — see the BACKGROUND REPLICATION DIRECTIVE at the end of this message." : ""}${evenLightingClause}`,
     });
     if (modelImage && !isProductOnlyShot) {
+      parts.push({
+        text: `\n═══ MODEL REFERENCE — PERSON IDENTITY (SOLE SOURCE OF TRUTH) ═══\n` +
+          `Generate this EXACT person — same face, skin tone, hair color/style, body type and proportions. ` +
+          `This image is the ONLY source for WHO appears in the output. ` +
+          `If the prompt's pose/scene description was inspired by a different reference photograph, that other person is NOT used here — the person comes ONLY from this image. ` +
+          `This image defines ONLY the person's appearance: do NOT copy garment, clothing, or background from it.`,
+      });
       const modelBase64 = await fileToBase64(modelImage.file);
       parts.push({ inlineData: { mimeType: modelImage.file.type, data: modelBase64 } });
     }
