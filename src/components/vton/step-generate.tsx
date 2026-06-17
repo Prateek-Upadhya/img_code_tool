@@ -962,7 +962,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     // gpt-5.4-pro is far slower per call and its Azure deployment throttles
     // under load (503s / 5-min timeouts) — cap parallelism when it's selected.
-    const CONCURRENCY_LIMIT = textGenModel !== "gemini" ? 2 : 7;
+    // gpt-image-2 calls funnel through the server-side endpoint pool, which
+    // rate-limits and rotates across regional deployments — so the client can
+    // safely keep ~10 image requests in flight. The textGenModel cap still
+    // governs the slower prompt-generation stage for non-Gemini text models.
+    const CONCURRENCY_LIMIT =
+      imageGenModel === "gpt-image-2" ? 10 : textGenModel !== "gemini" ? 2 : 7;
     for (let i = 0; i < initialResults.length; i += CONCURRENCY_LIMIT) {
       if (signal.aborted) break;
       const batch = initialResults.slice(i, i + CONCURRENCY_LIMIT);
@@ -1427,7 +1432,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     // Process in batches with concurrency limit (reduced for the slower,
     // throttle-prone gpt-5.4-pro Azure deployment).
-    const CONCURRENCY_LIMIT = textGenModel !== "gemini" ? 2 : 7;
+    // gpt-image-2 calls funnel through the server-side endpoint pool, which
+    // rate-limits and rotates across regional deployments — so the client can
+    // safely keep ~10 image requests in flight. The textGenModel cap still
+    // governs the slower prompt-generation stage for non-Gemini text models.
+    const CONCURRENCY_LIMIT =
+      imageGenModel === "gpt-image-2" ? 10 : textGenModel !== "gemini" ? 2 : 7;
     for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
       if (signal.aborted) break;
       const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
@@ -2988,7 +2998,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
           }
         };
 
-        const CONCURRENCY_LIMIT = 3;
+        // gpt-image-2 is rate-limited + rotated server-side, so allow ~10 in
+        // flight; otherwise keep the conservative cap for this product batch.
+        const CONCURRENCY_LIMIT = imageGenModel === "gpt-image-2" ? 10 : 3;
         for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
           const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
           await Promise.all(batch.map(processResult));
@@ -3222,7 +3234,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    const CONCURRENCY_LIMIT = textGenModel !== "gemini" ? 2 : 7;
+    // gpt-image-2 calls funnel through the server-side endpoint pool, which
+    // rate-limits and rotates across regional deployments — so the client can
+    // safely keep ~10 image requests in flight. The textGenModel cap still
+    // governs the slower prompt-generation stage for non-Gemini text models.
+    const CONCURRENCY_LIMIT =
+      imageGenModel === "gpt-image-2" ? 10 : textGenModel !== "gemini" ? 2 : 7;
     for (let i = 0; i < initialResults.length; i += CONCURRENCY_LIMIT) {
       const batch = initialResults.slice(i, i + CONCURRENCY_LIMIT);
       await Promise.all(batch.map(processImage));
@@ -3383,7 +3400,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    const CONCURRENCY_LIMIT = textGenModel !== "gemini" ? 2 : 7;
+    // gpt-image-2 calls funnel through the server-side endpoint pool, which
+    // rate-limits and rotates across regional deployments — so the client can
+    // safely keep ~10 image requests in flight. The textGenModel cap still
+    // governs the slower prompt-generation stage for non-Gemini text models.
+    const CONCURRENCY_LIMIT =
+      imageGenModel === "gpt-image-2" ? 10 : textGenModel !== "gemini" ? 2 : 7;
     for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
       const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
       await Promise.all(batch.map(processResult));

@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  acquireEndpoint,
+  isConfigured,
+  parseRetryAfterMs,
+  poolSize,
+  reportRateLimited,
+  type EndpointRecord,
+} from "@/lib/azure-image-pool";
 
 // gpt-image-2 edits can take a while at higher qualities; match the Gemini budget.
+// Queued requests may also wait briefly in `acquireEndpoint`, which is within this.
 export const maxDuration = 300;
 
 /**
@@ -8,17 +17,16 @@ export const maxDuration = 300;
  *
  * The browser (via `src/lib/azure-image.ts`) builds a multipart FormData with
  * `prompt`, `model`, `n`, `size`, `quality`, and repeated `image[]` files and
- * POSTs it here. This handler re-POSTs that form to one of two configured Azure
- * deployments (round-robin) using server-held credentials, then returns the
- * Azure JSON `{ data:[{b64_json}], usage }` plus an `_endpoint` index for
- * observability.
+ * POSTs it here. This handler re-POSTs that form to one of several configured
+ * Azure deployments (in different regions) chosen by a sliding-window rate
+ * limiter, then returns the Azure JSON `{ data:[{b64_json}], usage }` plus an
+ * `_endpoint` index for observability.
  *
- * Azure credentials live exclusively on the server — `AZURE_IMAGE_ENDPOINT_1`,
- * `AZURE_IMAGE_KEY_1`, `AZURE_IMAGE_ENDPOINT_2`, `AZURE_IMAGE_KEY_2`.
+ * Endpoint selection, rate limiting, rotation and cooldown live in
+ * `src/lib/azure-image-pool.ts`. Azure credentials live exclusively on the
+ * server — `AZURE_IMAGE_ENDPOINT_{1..4}` / `AZURE_IMAGE_KEY_{1..4}` — plus an
+ * optional `AZURE_IMAGE_RPM_PER_ENDPOINT` (default 5).
  */
-
-// Module-level rotation counter — alternates between deployment 1 and 2.
-let counter = 0;
 
 interface AzureImageResponse {
   data?: Array<{ b64_json?: string }>;
@@ -26,16 +34,22 @@ interface AzureImageResponse {
   error?: { message?: string; code?: string };
 }
 
+/** Build the upstream multipart form; rebuilt per attempt (a body is one-shot). */
+function rebuildForm(incoming: FormData): FormData {
+  const outgoing = new FormData();
+  for (const [field, value] of incoming.entries()) {
+    if (value instanceof File) {
+      outgoing.append(field, value, value.name);
+    } else {
+      outgoing.append(field, value);
+    }
+  }
+  return outgoing;
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const incoming = await request.formData();
-
-    const endpoint1 = process.env.AZURE_IMAGE_ENDPOINT_1;
-    const key1 = process.env.AZURE_IMAGE_KEY_1;
-    const endpoint2 = process.env.AZURE_IMAGE_ENDPOINT_2;
-    const key2 = process.env.AZURE_IMAGE_KEY_2;
-
-    if (!endpoint1 || !key1) {
+    if (!isConfigured()) {
       return NextResponse.json(
         {
           error:
@@ -45,33 +59,41 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Round-robin: even calls → deployment 1, odd calls → deployment 2.
-    // Fall back to deployment 1 if the second deployment is unset.
-    const hasSecond = Boolean(endpoint2 && key2);
-    const useSecond = hasSecond && counter++ % 2 === 1;
-    const endpoint = useSecond ? endpoint2! : endpoint1;
-    const apiKey = useSecond ? key2! : key1;
-    const endpointIndex = useSecond ? 2 : 1;
-    console.log(`[azure-image] routing to Azure deployment #${endpointIndex}`);
+    const incoming = await request.formData();
 
-    // Reconstruct the multipart form for the upstream call.
-    const outgoing = new FormData();
-    for (const [field, value] of incoming.entries()) {
-      if (value instanceof File) {
-        outgoing.append(field, value, value.name);
-      } else {
-        outgoing.append(field, value);
+    // Retry across distinct endpoints on throttling: at most one attempt per
+    // configured deployment (capped at 4). Endpoints that 429/503 are excluded
+    // from subsequent attempts and put into cooldown by the pool.
+    const maxAttempts = Math.min(poolSize(), 4);
+    const tried = new Set<number>();
+    let lastDetail = "";
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const ep: EndpointRecord = await acquireEndpoint(request.signal, tried);
+      tried.add(ep.index);
+
+      const azureResponse = await fetch(ep.url, {
+        method: "POST",
+        headers: { "api-key": ep.key },
+        body: rebuildForm(incoming),
+        signal: request.signal,
+      });
+
+      if (azureResponse.ok) {
+        const json = (await azureResponse.json()) as AzureImageResponse;
+        return NextResponse.json({ ...json, _endpoint: ep.index });
       }
-    }
 
-    const azureResponse = await fetch(endpoint, {
-      method: "POST",
-      headers: { "api-key": apiKey },
-      body: outgoing,
-      signal: request.signal,
-    });
+      // Throttled / transiently unavailable — cool this endpoint down and fail
+      // over to another one.
+      if (azureResponse.status === 429 || azureResponse.status === 503) {
+        const retryAfterMs = parseRetryAfterMs(azureResponse.headers.get("retry-after"));
+        reportRateLimited(ep, retryAfterMs);
+        lastDetail = `${azureResponse.status} ${azureResponse.statusText} on deployment #${ep.index}`;
+        continue;
+      }
 
-    if (!azureResponse.ok) {
+      // Any other upstream error is not a rate-limit problem — surface it.
       let detail = `${azureResponse.status} ${azureResponse.statusText}`;
       try {
         const errJson = (await azureResponse.json()) as AzureImageResponse;
@@ -86,9 +108,18 @@ export async function POST(request: NextRequest) {
       throw new Error(`Azure gpt-image-2 request failed — ${detail}`);
     }
 
-    const json = (await azureResponse.json()) as AzureImageResponse;
-    return NextResponse.json({ ...json, _endpoint: endpointIndex });
+    // Exhausted all endpoints while being throttled. Return 429 so the client's
+    // existing auto-retry path re-queues the request.
+    return NextResponse.json(
+      {
+        error: `Azure gpt-image-2 rate limited across all deployments — ${lastDetail || "all endpoints throttled"}`,
+      },
+      { status: 429 },
+    );
   } catch (error: unknown) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return NextResponse.json({ error: "Request cancelled" }, { status: 499 });
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.error("Azure image generation error:", message);
     return NextResponse.json({ error: message }, { status: 500 });
