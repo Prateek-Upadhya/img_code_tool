@@ -5564,31 +5564,25 @@ Do not include any preamble, commentary, or closing remarks — output the compo
 }
 
 /**
- * Step 2 — Render the infographic with gemini-3.1-flash-image-preview from the enriched
- * prompt + product reference images (+ optional brand logo). Returns the saved content
- * parts and response content so the result can be refined via {@link editInfographicImage}.
+ * Builds the multimodal content parts for an infographic render: the product
+ * reference images (source of truth), the optional brand logo, and the
+ * composition prompt. Shared by {@link generateInfographicImage} (which sends
+ * these to Gemini) and by the Refine path, which rebuilds them to replay the
+ * original turn — so Refine works regardless of which engine produced the image.
  */
-export async function generateInfographicImage({
-  apiKey,
+export async function buildInfographicImageContentParts({
   prompt,
   productImages,
   logoFile,
   brandPlacementInstructions,
   aspectRatio,
-  imageSize = "2K",
-  abortSignal,
 }: {
-  apiKey: string;
   prompt: string;
   productImages: { file: File }[];
   logoFile?: File;
   brandPlacementInstructions?: string;
   aspectRatio: AspectRatio;
-  imageSize?: "1K" | "2K" | "4K";
-  abortSignal?: AbortSignal;
-}): Promise<{ imageData: string; cost: StepCost; responseContent: unknown; contentParts: ContentPart[] }> {
-  const ai = getGeminiClient(apiKey);
-
+}): Promise<ContentPart[]> {
   const contents: ContentPart[] = [];
 
   contents.push({
@@ -5617,6 +5611,43 @@ ${prompt}
 ${INFOGRAPHIC_PROMPTING_PRINCIPLES}
 
 Render a single, finished, professional product infographic in a ${aspectRatio} canvas — a complete marketing asset with the product, callouts, text and branding baked into the image.`,
+  });
+
+  return contents;
+}
+
+/**
+ * Step 2 — Render the infographic with gemini-3.1-flash-image-preview from the enriched
+ * prompt + product reference images (+ optional brand logo). Returns the saved content
+ * parts and response content so the result can be refined via {@link editInfographicImage}.
+ */
+export async function generateInfographicImage({
+  apiKey,
+  prompt,
+  productImages,
+  logoFile,
+  brandPlacementInstructions,
+  aspectRatio,
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  prompt: string;
+  productImages: { file: File }[];
+  logoFile?: File;
+  brandPlacementInstructions?: string;
+  aspectRatio: AspectRatio;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; cost: StepCost; responseContent: unknown; contentParts: ContentPart[] }> {
+  const ai = getGeminiClient(apiKey);
+
+  const contents = await buildInfographicImageContentParts({
+    prompt,
+    productImages,
+    logoFile,
+    brandPlacementInstructions,
+    aspectRatio,
   });
 
   const response = await ai.models.generateContent({
@@ -5658,6 +5689,7 @@ Render a single, finished, professional product infographic in a ${aspectRatio} 
  */
 export async function editInfographicImage({
   apiKey,
+  textGenModel = "gemini",
   originalContentParts,
   imageGenResponseContent,
   editHistory,
@@ -5670,6 +5702,8 @@ export async function editInfographicImage({
   abortSignal,
 }: {
   apiKey: string;
+  /** Provider for the Pro edit-instruction step (Step A). Default: gemini. */
+  textGenModel?: TextGenModel;
   originalContentParts: ContentPart[];
   imageGenResponseContent: unknown;
   editHistory?: EditHistoryEntry[];
@@ -5681,6 +5715,9 @@ export async function editInfographicImage({
   imageSize?: "1K" | "2K" | "4K";
   abortSignal?: AbortSignal;
 }): Promise<{ imageData: string; promptCost: StepCost; imageCost: StepCost; responseContent: unknown; editInstruction: string }> {
+  // Step A (edit-instruction) honours the selected text provider; Step B (image
+  // replay) always runs on Gemini / Nano Banana 2.
+  const aiText = getTextClient(textGenModel);
   const ai = getGeminiClient(apiKey);
 
   // ── Step A: Pro writes a minimal, strictly-constrained edit instruction ──
@@ -5707,7 +5744,7 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
     enrichContents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
   }
 
-  const enrichResponse = await ai.models.generateContent({
+  const enrichResponse = await aiText.models.generateContent({
     model: "gemini-3.1-pro-preview",
     contents: enrichContents,
     config: {
@@ -5722,7 +5759,7 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
   }
   const promptTokens = extractTokenUsage(enrichResponse);
   const promptCost = computeStepCost(
-    "gemini-3.1-pro-preview",
+    textCostModel(textGenModel),
     "Contextual Retry Prompt (Gemini 3.1 Pro)",
     promptTokens
   );

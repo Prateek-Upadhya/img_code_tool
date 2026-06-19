@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Agent } from "undici";
 import {
   acquireEndpoint,
   isConfigured,
@@ -11,6 +12,19 @@ import {
 // gpt-image-2 edits can take a while at higher qualities; match the Gemini budget.
 // Queued requests may also wait briefly in `acquireEndpoint`, which is within this.
 export const maxDuration = 300;
+
+// gpt-image-2 renders (especially 2K/4K) routinely take 1–3 minutes to return.
+// Node's built-in fetch (undici) aborts on its own header/body timeouts and the
+// connect timeout defaults to only ~10s, which surfaced as intermittent
+// "fetch failed" / timeout errors on slow renders. A dedicated dispatcher gives
+// each upstream request an explicit 3-minute window for response headers and
+// body, with a roomier connect timeout. Mirrors the azure-text route.
+const IMAGE_TIMEOUT_MS = 180_000; // 3 minutes
+const azureImageDispatcher = new Agent({
+  headersTimeout: IMAGE_TIMEOUT_MS,
+  bodyTimeout: IMAGE_TIMEOUT_MS,
+  connectTimeout: 30_000,
+});
 
 /**
  * Server-side bridge to the Azure OpenAI gpt-image-2 `/images/edits` endpoint.
@@ -77,7 +91,11 @@ export async function POST(request: NextRequest) {
         headers: { "api-key": ep.key },
         body: rebuildForm(incoming),
         signal: request.signal,
-      });
+        // Give slow gpt-image-2 renders the full 3-minute window instead of
+        // undici's shorter defaults. `dispatcher` is an undici extension Node's
+        // fetch supports but the DOM RequestInit type doesn't know about.
+        dispatcher: azureImageDispatcher,
+      } as RequestInit);
 
       if (azureResponse.ok) {
         const json = (await azureResponse.json()) as AzureImageResponse;

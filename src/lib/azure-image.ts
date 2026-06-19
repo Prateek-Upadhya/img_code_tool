@@ -219,3 +219,87 @@ export async function generateVTONImageAzure({
     responseContent: json,
   };
 }
+
+// --- Infographic image generation ---------------------------------------
+
+export interface AzureInfographicImageArgs {
+  prompt: string;
+  productImages: { file: File }[];
+  logoFile?: File;
+  aspectRatio: AspectRatio;
+  imageSize: "1K" | "2K" | "4K";
+}
+
+/**
+ * Generates a product infographic using Azure gpt-image-2.
+ *
+ * Return shape matches the Gemini `generateInfographicImage` (minus the
+ * Gemini-only `contentParts`) so callers can swap them freely. Reference images
+ * are submitted as repeated `image[]` form fields — product images first (the
+ * source of truth), then the optional brand logo. Logo placement and all layout
+ * direction reach gpt-image-2 through the enriched prose `prompt`, since the
+ * `/images/edits` endpoint takes only a flat prompt plus images.
+ */
+export async function generateInfographicImageAzure({
+  prompt,
+  productImages,
+  logoFile,
+  aspectRatio,
+  imageSize,
+}: AzureInfographicImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
+  const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
+
+  const form = new FormData();
+  form.append("prompt", prompt);
+  form.append("model", "gpt-image-2");
+  form.append("n", "1");
+  form.append("size", size);
+  form.append("quality", quality);
+
+  for (const img of productImages) {
+    form.append("image[]", img.file, img.file.name);
+  }
+  if (logoFile) {
+    form.append("image[]", logoFile, logoFile.name);
+  }
+
+  // Proxied through our own route so Azure credentials stay server-side and the
+  // endpoint pool can be rotated with 429 failover.
+  const response = await fetch("/api/azure-image/generate", {
+    method: "POST",
+    body: form,
+  });
+
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const errJson = (await response.json()) as AzureImageResponse;
+      if (errJson.error?.message) detail = `${detail}: ${errJson.error.message}`;
+    } catch {
+      try {
+        detail = `${detail}: ${await response.text()}`;
+      } catch {
+        // noop
+      }
+    }
+    throw new Error(`Azure gpt-image-2 request failed — ${detail}`);
+  }
+
+  const json = (await response.json()) as AzureImageResponse;
+  const b64 = json.data?.[0]?.b64_json;
+  if (!b64) {
+    throw new Error("No image returned from Azure gpt-image-2");
+  }
+
+  const tokens: TokenUsage = {
+    inputTokens: json.usage?.input_tokens ?? 0,
+    outputTokens: json.usage?.output_tokens ?? 0,
+  };
+  const cost = computeAzureImageGenCost("Infographic Image (gpt-image-2)", tokens, quality);
+
+  return {
+    imageData: `data:image/png;base64,${b64}`,
+    cost,
+    responseContent: json,
+  };
+}

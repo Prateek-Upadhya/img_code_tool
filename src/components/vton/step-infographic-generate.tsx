@@ -27,7 +27,10 @@ import {
   generateInfographicPrompt,
   generateInfographicImage,
   editInfographicImage,
+  buildInfographicImageContentParts,
 } from "@/lib/gemini";
+import { generateInfographicImageAzure } from "@/lib/azure-image";
+import { ModelComboPicker } from "./model-combo-picker";
 import { INFOGRAPHIC_TEMPLATE_OPTIONS } from "@/lib/constants";
 import type { VTONStore } from "@/store/vton-store";
 import type { InfographicResult, InfographicTemplate, StepCost } from "@/lib/types";
@@ -73,6 +76,8 @@ function StatusBadge({ status }: { status: InfographicResult["status"] }) {
 export function StepInfographicGenerate({ store }: { store: VTONStore }) {
   const {
     apiKey,
+    textGenModel,
+    imageGenModel,
     infographicCategory,
     infographicFolders,
     infographicBrand,
@@ -132,6 +137,7 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
 
         const promptRes = await generateInfographicPrompt({
           apiKey,
+          textGenModel,
           productImages,
           productInfo: folder.productInfo,
           productCategory: infographicCategory,
@@ -149,15 +155,31 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
         collected.push(promptRes.cost);
         updateInfographicResult(result.id, { enrichedPrompt: promptRes.enrichedPrompt, status: "generating-image" });
 
-        const imgRes = await generateInfographicImage({
-          apiKey,
-          prompt: promptRes.enrichedPrompt,
-          productImages,
-          logoFile: infographicBrand.logoFile,
-          brandPlacementInstructions: infographicBrand.logoPlacementInstructions,
-          aspectRatio: infographicAspectRatio,
-          imageSize: infographicImageSize,
-        });
+        // The Gemini path returns the original turn's content parts; the Azure
+        // path doesn't. Refine rebuilds these from inputs, so absence is fine.
+        let imgRes: { imageData: string; cost: StepCost; responseContent: unknown };
+        let contentParts: Awaited<ReturnType<typeof generateInfographicImage>>["contentParts"] | undefined;
+        if (imageGenModel === "gpt-image-2") {
+          imgRes = await generateInfographicImageAzure({
+            prompt: promptRes.enrichedPrompt,
+            productImages,
+            logoFile: infographicBrand.logoFile,
+            aspectRatio: infographicAspectRatio,
+            imageSize: infographicImageSize,
+          });
+        } else {
+          const res = await generateInfographicImage({
+            apiKey,
+            prompt: promptRes.enrichedPrompt,
+            productImages,
+            logoFile: infographicBrand.logoFile,
+            brandPlacementInstructions: infographicBrand.logoPlacementInstructions,
+            aspectRatio: infographicAspectRatio,
+            imageSize: infographicImageSize,
+          });
+          imgRes = res;
+          contentParts = res.contentParts;
+        }
         collected.push(imgRes.cost);
 
         const mainCost = collected.reduce((s, c) => s + c.totalCost, 0);
@@ -165,7 +187,7 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
         updateInfographicResult(result.id, {
           imageData: imgRes.imageData,
           imageGenResponseContent: imgRes.responseContent,
-          originalContentParts: imgRes.contentParts,
+          originalContentParts: contentParts,
           editHistory: [],
           status: "completed",
           costBreakdown: { steps: [...collected], totalCost: mainCost + retryCost, retrySteps },
@@ -190,6 +212,8 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
     },
     [
       apiKey,
+      textGenModel,
+      imageGenModel,
       infographicFolders,
       infographicCategory,
       infographicBackgroundStyle,
@@ -216,7 +240,11 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
     }));
     setInfographicResults(initial);
 
-    const concurrency = 4;
+    // Mirror VTON's provider-aware concurrency: the Azure gpt-image-2 endpoint
+    // pool + 429 failover absorbs bursts (10), while non-Gemini text providers
+    // are throttled tighter (2). Default Gemini path stays at 4.
+    const concurrency =
+      imageGenModel === "gpt-image-2" ? 10 : textGenModel !== "gemini" ? 2 : 4;
     let idx = 0;
     const runNext = async (): Promise<void> => {
       while (idx < initial.length) {
@@ -227,7 +255,7 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
     await Promise.all(Array.from({ length: Math.min(concurrency, initial.length) }, () => runNext()));
 
     setIsInfographicGenerating(false);
-  }, [canGenerate, plan, runOne, setInfographicResults, setIsInfographicGenerating]);
+  }, [canGenerate, plan, runOne, imageGenModel, textGenModel, setInfographicResults, setIsInfographicGenerating]);
 
   // Per-card retry — runs independently so multiple cards can retry in parallel
   // without freezing the rest. `runOne` drives only this result's status.
@@ -247,7 +275,7 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
     if (
       !folder ||
       !result.imageData ||
-      !result.originalContentParts ||
+      !result.enrichedPrompt ||
       result.imageGenResponseContent == null
     ) {
       return;
@@ -258,13 +286,27 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
     updateInfographicResult(result.id, { status: "editing", error: undefined });
 
     try {
+      const productImages = folder.images.map((i) => ({ file: i.file }));
+      // Rebuild the original render turn from inputs so Refine works regardless
+      // of which engine produced the image (the Azure path stores no parts).
+      const originalContentParts =
+        result.originalContentParts ??
+        (await buildInfographicImageContentParts({
+          prompt: result.enrichedPrompt,
+          productImages,
+          logoFile: infographicBrand.logoFile,
+          brandPlacementInstructions: infographicBrand.logoPlacementInstructions,
+          aspectRatio: infographicAspectRatio,
+        }));
+
       const res = await editInfographicImage({
         apiKey,
-        originalContentParts: result.originalContentParts,
+        textGenModel,
+        originalContentParts,
         imageGenResponseContent: result.imageGenResponseContent,
         editHistory: result.editHistory,
         generatedImageData: result.imageData,
-        productImages: folder.images.map((i) => ({ file: i.file })),
+        productImages,
         productInfo: folder.productInfo,
         userChangeRequest: change,
         aspectRatio: infographicAspectRatio,
@@ -297,7 +339,9 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
     contextualTarget,
     contextualText,
     infographicFolders,
+    infographicBrand,
     apiKey,
+    textGenModel,
     infographicAspectRatio,
     infographicImageSize,
     updateInfographicResult,
@@ -345,6 +389,11 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
 
   return (
     <div className="space-y-6 animate-fade-in-up">
+      {/* Model picker — choose prompt + image engines (Gemini / OpenAI) */}
+      <div className="rounded-xl border border-border bg-card p-4">
+        <ModelComboPicker store={store} />
+      </div>
+
       {/* Summary + generate */}
       <div className="rounded-xl border border-border bg-card p-4 sm:p-5">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
