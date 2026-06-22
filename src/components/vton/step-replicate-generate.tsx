@@ -20,7 +20,8 @@ import { generateReplicatePrompt, generateReplicateImage } from "@/lib/gemini";
 import type { VTONStore } from "@/store/vton-store";
 import type { ReplicateResult, ReplicateBulkResult } from "@/lib/types";
 
-const BULK_CONCURRENCY = 3;
+// Replicate images always render on Gemini → fixed cap of 5.
+const BULK_CONCURRENCY = 5;
 
 // ─── Status Badge ───
 

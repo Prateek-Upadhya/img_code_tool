@@ -960,14 +960,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    // gpt-5.4-pro is far slower per call and its Azure deployment throttles
-    // under load (503s / 5-min timeouts) — cap parallelism when it's selected.
-    // gpt-image-2 calls funnel through the server-side endpoint pool, which
-    // rate-limits and rotates across regional deployments — so the client can
-    // safely keep ~10 image requests in flight. The textGenModel cap still
-    // governs the slower prompt-generation stage for non-Gemini text models.
-    const CONCURRENCY_LIMIT =
-      imageGenModel === "gpt-image-2" ? 10 : textGenModel !== "gemini" ? 2 : 7;
+    // Enrichment + image generation is one atomic pipeline unit per result, so
+    // concurrency is gated on the image backend, not the text model. gpt-image-2
+    // funnels through the server-side endpoint pool (rate-limits + rotates across
+    // regional deployments with 429 failover), so it safely sustains ~10 in
+    // flight; Gemini (3.1 Flash Image) is capped at 5.
+    const CONCURRENCY_LIMIT = imageGenModel === "gpt-image-2" ? 10 : 5;
     for (let i = 0; i < initialResults.length; i += CONCURRENCY_LIMIT) {
       if (signal.aborted) break;
       const batch = initialResults.slice(i, i + CONCURRENCY_LIMIT);
@@ -1076,7 +1074,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    const UGC_CONCURRENCY = textGenModel !== "gemini" ? 2 : 5;
+    // UGC scenes always render on Gemini → fixed cap of 5, independent of text model.
+    const UGC_CONCURRENCY = 5;
     for (let i = 0; i < initialUgcResults.length; i += UGC_CONCURRENCY) {
       if (signal.aborted) break;
       const batch = initialUgcResults.slice(i, i + UGC_CONCURRENCY);
@@ -1430,14 +1429,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    // Process in batches with concurrency limit (reduced for the slower,
-    // throttle-prone gpt-5.4-pro Azure deployment).
-    // gpt-image-2 calls funnel through the server-side endpoint pool, which
-    // rate-limits and rotates across regional deployments — so the client can
-    // safely keep ~10 image requests in flight. The textGenModel cap still
-    // governs the slower prompt-generation stage for non-Gemini text models.
-    const CONCURRENCY_LIMIT =
-      imageGenModel === "gpt-image-2" ? 10 : textGenModel !== "gemini" ? 2 : 7;
+    // Concurrency is gated on the image backend (one atomic enrich+image unit per
+    // result). gpt-image-2 funnels through the server-side endpoint pool (rate-limit
+    // + rotation + 429 failover) so it sustains ~10 in flight; Gemini is capped at 5.
+    const CONCURRENCY_LIMIT = imageGenModel === "gpt-image-2" ? 10 : 5;
     for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
       if (signal.aborted) break;
       const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
@@ -1581,7 +1576,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
         }
       };
 
-      const UGC_CONCURRENCY = textGenModel !== "gemini" ? 2 : 5;
+      // UGC scenes always render on Gemini → fixed cap of 5, independent of text model.
+    const UGC_CONCURRENCY = 5;
       for (let i = 0; i < initialUgcResults.length; i += UGC_CONCURRENCY) {
         if (signal.aborted) break;
         const batch = initialUgcResults.slice(i, i + UGC_CONCURRENCY);
@@ -1967,7 +1963,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
     if (mismatched.length === 0 || isGenerating) return;
     setIsGenerating(true);
     try {
-      const CONCURRENCY = 5;
+      // Retries re-run the routed VTON image call, so gate on the image backend.
+      const CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : 5;
       for (let i = 0; i < mismatched.length; i += CONCURRENCY) {
         const batch = mismatched.slice(i, i + CONCURRENCY);
         await Promise.all(batch.map((r) => handleRetrySingle(r)));
@@ -1975,14 +1972,15 @@ export function StepGenerate({ store }: StepGenerateProps) {
     } finally {
       setIsGenerating(false);
     }
-  }, [results, isGenerating, handleRetrySingle, setIsGenerating]);
+  }, [results, isGenerating, handleRetrySingle, setIsGenerating, imageGenModel]);
 
   const handleRetryAllMismatchedBulk = useCallback(async () => {
     const mismatched = bulkResults.filter((r) => r.validationStatus === "warning" && r.status === "completed");
     if (mismatched.length === 0 || isGenerating) return;
     setIsGenerating(true);
     try {
-      const CONCURRENCY = 3;
+      // Retries re-run the routed VTON image call, so gate on the image backend.
+      const CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : 5;
       for (let i = 0; i < mismatched.length; i += CONCURRENCY) {
         const batch = mismatched.slice(i, i + CONCURRENCY);
         await Promise.all(batch.map((r) => handleRetryBulk(r)));
@@ -1990,7 +1988,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     } finally {
       setIsGenerating(false);
     }
-  }, [bulkResults, isGenerating, handleRetryBulk, setIsGenerating]);
+  }, [bulkResults, isGenerating, handleRetryBulk, setIsGenerating, imageGenModel]);
 
   // ======================================================================
   // MULTI-TURN EDIT HANDLERS
@@ -2998,9 +2996,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           }
         };
 
-        // gpt-image-2 is rate-limited + rotated server-side, so allow ~10 in
-        // flight; otherwise keep the conservative cap for this product batch.
-        const CONCURRENCY_LIMIT = imageGenModel === "gpt-image-2" ? 10 : 3;
+        // Set-product images always render on Gemini → fixed cap of 5.
+        const CONCURRENCY_LIMIT = 5;
         for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
           const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
           await Promise.all(batch.map(processResult));
@@ -3234,12 +3231,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    // gpt-image-2 calls funnel through the server-side endpoint pool, which
-    // rate-limits and rotates across regional deployments — so the client can
-    // safely keep ~10 image requests in flight. The textGenModel cap still
-    // governs the slower prompt-generation stage for non-Gemini text models.
-    const CONCURRENCY_LIMIT =
-      imageGenModel === "gpt-image-2" ? 10 : textGenModel !== "gemini" ? 2 : 7;
+    // Model-swap images always render on Gemini → fixed cap of 5.
+    const CONCURRENCY_LIMIT = 5;
     for (let i = 0; i < initialResults.length; i += CONCURRENCY_LIMIT) {
       const batch = initialResults.slice(i, i + CONCURRENCY_LIMIT);
       await Promise.all(batch.map(processImage));
@@ -3400,12 +3393,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     };
 
-    // gpt-image-2 calls funnel through the server-side endpoint pool, which
-    // rate-limits and rotates across regional deployments — so the client can
-    // safely keep ~10 image requests in flight. The textGenModel cap still
-    // governs the slower prompt-generation stage for non-Gemini text models.
-    const CONCURRENCY_LIMIT =
-      imageGenModel === "gpt-image-2" ? 10 : textGenModel !== "gemini" ? 2 : 7;
+    // Model-swap images always render on Gemini → fixed cap of 5.
+    const CONCURRENCY_LIMIT = 5;
     for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
       const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
       await Promise.all(batch.map(processResult));
@@ -3710,7 +3699,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
     if (mismatched.length === 0 || isGenerating) return;
     setIsGenerating(true);
     try {
-      const CONCURRENCY = 3;
+      // Model-swap images always render on Gemini → fixed cap of 5.
+      const CONCURRENCY = 5;
       for (let i = 0; i < mismatched.length; i += CONCURRENCY) {
         const batch = mismatched.slice(i, i + CONCURRENCY);
         await Promise.all(batch.map((r) => handleRetryModelSwapBulk(r)));

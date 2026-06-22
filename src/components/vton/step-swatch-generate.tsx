@@ -168,7 +168,8 @@ export function StepSwatchGenerate({ store }: { store: VTONStore }) {
     setSwatchResults(initialResults);
     setShowFailedOnly(false);
 
-    const concurrency = 7;
+    // Swatches always render on Gemini → fixed cap of 5.
+    const concurrency = 5;
     for (let i = 0; i < initialResults.length; i += concurrency) {
       const batch = initialResults.slice(i, i + concurrency);
       await Promise.all(
@@ -207,7 +208,8 @@ export function StepSwatchGenerate({ store }: { store: VTONStore }) {
 
     setRetryingFailed(true);
 
-    const concurrency = 7;
+    // Swatches always render on Gemini → fixed cap of 5.
+    const concurrency = 5;
     for (let i = 0; i < failed.length; i += concurrency) {
       const batch = failed.slice(i, i + concurrency);
       await Promise.all(

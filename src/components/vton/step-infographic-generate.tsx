@@ -240,11 +240,10 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
     }));
     setInfographicResults(initial);
 
-    // Mirror VTON's provider-aware concurrency: the Azure gpt-image-2 endpoint
-    // pool + 429 failover absorbs bursts (10), while non-Gemini text providers
-    // are throttled tighter (2). Default Gemini path stays at 4.
-    const concurrency =
-      imageGenModel === "gpt-image-2" ? 10 : textGenModel !== "gemini" ? 2 : 4;
+    // Concurrency is gated on the image backend, not the text model. gpt-image-2
+    // funnels through the Azure endpoint pool (+ 429 failover) so it sustains ~10
+    // in flight; Gemini is capped at 5.
+    const concurrency = imageGenModel === "gpt-image-2" ? 10 : 5;
     let idx = 0;
     const runNext = async (): Promise<void> => {
       while (idx < initial.length) {
@@ -255,7 +254,7 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
     await Promise.all(Array.from({ length: Math.min(concurrency, initial.length) }, () => runNext()));
 
     setIsInfographicGenerating(false);
-  }, [canGenerate, plan, runOne, imageGenModel, textGenModel, setInfographicResults, setIsInfographicGenerating]);
+  }, [canGenerate, plan, runOne, imageGenModel, setInfographicResults, setIsInfographicGenerating]);
 
   // Per-card retry — runs independently so multiple cards can retry in parallel
   // without freezing the rest. `runOne` drives only this result's status.
