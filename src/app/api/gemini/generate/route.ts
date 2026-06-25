@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { GenerateContentParameters } from "@google/genai";
 import { getGoogleClient, type GoogleBackend } from "@/lib/vertex-server";
+import {
+  acquireGeminiImageSlot,
+  releaseGeminiImageSlot,
+} from "@/lib/gemini-image-gate";
 
 // Image generation (Nano Banana) can take a while; allow a generous budget.
 export const maxDuration = 300;
@@ -31,18 +35,38 @@ export async function POST(request: NextRequest) {
     const backend: GoogleBackend =
       request.headers.get("x-google-backend") === "gemini" ? "gemini" : "vertex";
 
-    const ai = getGoogleClient(backend);
-    const response = await ai.models.generateContent(params);
+    // Cap Gemini image generation at a global 4 concurrent in-flight across all
+    // tabs (see src/lib/gemini-image-gate.ts). Acquire before the model call so
+    // an abort-while-queued is handled cleanly; release in `finally` so the slot
+    // is always returned. Non-image Gemini calls (text/prompt) are not gated.
+    const isGeminiImage = params.model === "gemini-3.1-flash-image-preview";
+    if (isGeminiImage) {
+      try {
+        await acquireGeminiImageSlot(request.signal);
+      } catch {
+        return NextResponse.json(
+          { error: "request aborted while queued" },
+          { status: 499 },
+        );
+      }
+    }
 
-    // Own enumerable props (candidates, usageMetadata, promptFeedback, ...).
-    const payload: Record<string, unknown> = JSON.parse(JSON.stringify(response));
+    try {
+      const ai = getGoogleClient(backend);
+      const response = await ai.models.generateContent(params);
 
-    // Re-attach the convenience getters the client relies on.
-    try { payload.text = response.text; } catch { /* non-text response */ }
-    try { payload.data = response.data; } catch { /* no inline data */ }
-    try { payload.functionCalls = response.functionCalls; } catch { /* none */ }
+      // Own enumerable props (candidates, usageMetadata, promptFeedback, ...).
+      const payload: Record<string, unknown> = JSON.parse(JSON.stringify(response));
 
-    return NextResponse.json(payload);
+      // Re-attach the convenience getters the client relies on.
+      try { payload.text = response.text; } catch { /* non-text response */ }
+      try { payload.data = response.data; } catch { /* no inline data */ }
+      try { payload.functionCalls = response.functionCalls; } catch { /* none */ }
+
+      return NextResponse.json(payload);
+    } finally {
+      if (isGeminiImage) releaseGeminiImageSlot();
+    }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("Vertex generateContent error:", message);
