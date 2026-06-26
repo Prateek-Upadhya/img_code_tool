@@ -5751,16 +5751,34 @@ export async function generateModelPrompt({
   const lockFace = hasReference && box.lockToReferenceFace;
   const distinctFace = !lockFace; // distinct face per variant unless locked to a reference
 
+  // Ethnicity / complexion spectrum the variations must stay inside.
+  const ethnicitySpectrum = ethnicity?.trim()
+    ? ethnicity.trim()
+    : hasReference
+      ? "the reference person's apparent ethnicity"
+      : "the model's casting ethnicity";
+
+  // Per-variant primary axis of facial variation, rotated so a set of variants
+  // diversifies across hairstyle → facial features → features + subtle complexion.
+  const axisIndex = (variantIndex - 1) % 3;
+  const primaryAxis =
+    axisIndex === 0
+      ? "the HAIRSTYLE — give a clearly different cut, length, texture or natural hair colour — while keeping the facial features and complexion close"
+      : axisIndex === 1
+        ? "the FACIAL FEATURES — a different combination of eye shape, nose, lips, brow and jawline — while keeping the hairstyle and complexion close"
+        : `the FACIAL FEATURES together with a fresh hairstyle, plus a VERY subtle complexion shift kept strictly within ${ethnicitySpectrum}`;
+
   const referenceDirective = hasReference
     ? lockFace
-      ? `A REFERENCE PORTRAIT of a real person is attached. Use ONLY their facial features, face shape, hairstyle, hair color/texture and skin complexion, and recreate that SAME face and hair faithfully and consistently. IGNORE everything else in the reference (its clothing, body, background, pose, framing and lighting).`
-      : `A REFERENCE PORTRAIT of a real person is attached. Use it ONLY as loose inspiration for facial features, hairstyle, hair color and complexion — do NOT copy it exactly; this variant should be a DISTINCT individual within the same family of looks.`
-    : `No reference image is provided — invent a believable, photogenic face that fits the casting attributes below.`;
+      ? `A REFERENCE PORTRAIT of a real person is attached. Use ONLY their facial features, face shape, hairstyle, hair color/texture and skin complexion, and recreate that SAME face and hair faithfully and consistently. IGNORE everything else in the reference (its clothing, body, background, pose, framing and lighting). The image model WILL also receive this reference, so keep the identity description consistent with it.`
+      : `A REFERENCE PORTRAIT of a real person is attached FOR YOUR ANALYSIS ONLY — it will NOT be shown to the image model. Read it to identify the hairstyle, the set of facial features (eye shape, nose, lips, brow, jaw) and the complexion, and infer the person's ethnicity. Then DESIGN A DISTINCT INDIVIDUAL who is clearly NOT the reference person — a different identity with different facial features — while staying within the SAME ethnicity and complexion spectrum (${ethnicitySpectrum}). Because the image model receives ONLY your written description, describe this new face fully and concretely.`
+    : `No reference image is provided — invent a believable, photogenic face that fits the casting attributes${ethnicity?.trim() ? `, within the ${ethnicitySpectrum} spectrum` : ""}.`;
 
   const variantDirective =
     variantCount > 1
       ? distinctFace
-        ? `This is variant ${variantIndex} of ${variantCount}. Render a DISTINCT, different individual from the other variants — a unique face, hair and features — while strictly matching ALL casting attributes, the brand direction and this brief. Vary the PERSON only; never vary the locked wardrobe, background, framing or lighting rules.`
+        ? `═══ FACIAL VARIATION (variant ${variantIndex} of ${variantCount}) ═══
+This variant MUST be a genuinely DISTINCT individual — a different person with different FACIAL FEATURES, ${hasReference ? "clearly NOT the reference person and " : ""}NOT merely a different pose or expression of the same face. Vary the identity across three independent axes — (1) hairstyle, (2) facial features, (3) complexion — using graded, realistic changes. For THIS variant, primarily change ${primaryAxis}, and introduce only minor incidental differences elsewhere so the person reads as unique. Complexion may shift ONLY very subtly and MUST remain within ${ethnicitySpectrum} — never change the model's ethnicity. Keep gender, age and body type exactly as specified; only the face / hair / complexion identity varies between variants.`
         : `This is variant ${variantIndex} of ${variantCount}. Keep the SAME identity (same face, hair and complexion) across every variant; introduce only subtle differences in stance, hand placement, weight shift and camera angle, always within the full-body framing rule.`
       : "";
 
@@ -5784,7 +5802,7 @@ ${referenceDirective}
 ${variantDirective ? `\n═══ VARIATION ═══\n${variantDirective}` : ""}
 
 ═══ OUTPUT FORMAT ═══
-Output ONLY the final image-generation prompt as flowing prose. It MUST restate, in positive photographic language: the full-body head-to-toe framing, the barefoot feet, the exact black wardrobe for this gender, the pure-white empty studio background, the neutral comfortable closed-lip smile, and the flat, even, shadowless high-key lighting (include the verbatim lighting anchor sentence). Describe the model's face, hair, build and styling concretely. No preamble, no commentary.`;
+Output ONLY the final image-generation prompt as flowing prose. It MUST restate, in positive photographic language: the full-body head-to-toe framing, the barefoot feet, the exact black wardrobe for this gender, the pure-white empty studio background, the neutral comfortable closed-lip smile, and the flat, even, shadowless high-key lighting (include the verbatim lighting anchor sentence). Describe the model's face, hair, complexion, build and styling in concrete, unambiguous detail — the image model relies on this text to render the identity and does NOT see the reference image unless the face is locked. No preamble, no commentary.`;
 
   const contents: ContentPart[] = [{ text: systemPrompt }];
   if (box.referenceImage) {
@@ -5841,11 +5859,14 @@ export async function generateModelImage({
   const ai = getGeminiClient(apiKey);
 
   const contents: ContentPart[] = [];
+  // The reference image only reaches this function when the user locked the face
+  // (see the caller in step-model-generate.tsx). In non-lock mode the reference
+  // is given exclusively to the enrichment model, which writes a distinct face
+  // into `prompt`; the image model then works from text only. So whenever a
+  // reference IS present here, copy the face/hair exactly.
   if (referenceImage) {
     contents.push({
-      text: lockToReferenceFace
-        ? `═══ FACE REFERENCE — COPY FACE & HAIR ONLY ═══\nThe attached image is a face reference. Reproduce ONLY the person's facial features, face shape, hairstyle, hair color/texture and skin complexion EXACTLY. Ignore the reference's clothing, body, background, pose, framing and lighting entirely.`
-        : `═══ FACE REFERENCE — LOOSE INSPIRATION ═══\nThe attached image is a loose face reference. Take inspiration from its facial features, hairstyle, hair color and complexion only — the rendered person should be a distinct individual. Ignore its clothing, body, background and pose.`,
+      text: `═══ FACE REFERENCE — COPY FACE & HAIR ONLY ═══\nThe attached image is a face reference. Reproduce ONLY the person's facial features, face shape, hairstyle, hair color/texture and skin complexion EXACTLY. Ignore the reference's clothing, body, background, pose, framing and lighting entirely.`,
     });
     const base64 = await fileToBase64(referenceImage.file);
     contents.push({ inlineData: { mimeType: referenceImage.file.type, data: base64 } });

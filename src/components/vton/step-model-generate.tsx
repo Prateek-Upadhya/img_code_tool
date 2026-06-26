@@ -155,7 +155,11 @@ export function StepModelGenerate({ store }: Props) {
       return generateModelImage({
         apiKey,
         prompt,
-        referenceImage: box.referenceImage ? { file: box.referenceImage.file } : undefined,
+        // Only attach the reference to the image model when locking the face.
+        // In non-lock mode the reference reached only the enrichment model, which
+        // authored a distinct face into the prompt — sending the image here would
+        // make Nano Banana clone the reference and defeat the variations.
+        referenceImage: lock && box.referenceImage ? { file: box.referenceImage.file } : undefined,
         lockToReferenceFace: lock,
         aspectRatio,
         imageSize,
