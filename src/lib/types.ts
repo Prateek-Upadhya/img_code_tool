@@ -344,9 +344,126 @@ export type WizardStep = 1 | 2 | 3 | 4 | 5;
 
 export type AppMode = "single" | "bulk";
 
-export type FeatureMode = "vton" | "model-swap" | "swatch" | "replicate" | "product-video" | "room-staging" | "infographic";
+export type FeatureMode = "vton" | "model-swap" | "swatch" | "replicate" | "product-video" | "room-staging" | "infographic" | "model-creation";
 
 export type NamingLogic = "folder-name-sequential" | "folder-name-sequential-1";
+
+// --- AI Model Creation Types ---
+
+/**
+ * Model gender. Only male/female (no unisex) because the locked wardrobe rule is
+ * gender-specific: men → black short-sleeve T-shirt + black shorts; women →
+ * black crop top + black shorts.
+ */
+export type ModelCreationGender = "male" | "female";
+
+export type ModelAgeRange = "18-25" | "26-35" | "36-45" | "46-60" | "60+";
+
+export type ModelBodyType =
+  | "slim"
+  | "athletic"
+  | "average"
+  | "curvy"
+  | "plus-size"
+  | "muscular";
+
+export interface ModelReferenceImage {
+  file: File;
+  preview: string;
+}
+
+/**
+ * One model "brief" card on the Models step. Only the face / hairstyle /
+ * complexion / hair-color are ever pulled from {@link referenceImage}.
+ */
+export interface ModelBox {
+  id: string;
+  name: string;
+  /** Free-text visual direction for this model's appearance. */
+  description: string;
+  /** Optional face/hair/complexion reference. Only those traits are used. */
+  referenceImage?: ModelReferenceImage;
+  /** 1–5 — number of output images generated for this box. */
+  variantCount: number;
+  /**
+   * When a reference image is set, copy its face onto EVERY variant (identity
+   * locked). When false, each variant gets a distinct face. Ignored when no
+   * reference image is present (faces are always distinct per variant then).
+   */
+  lockToReferenceFace: boolean;
+}
+
+/** One generated result image — one variant of one {@link ModelBox}. */
+export interface ModelCreationResult {
+  id: string;
+  boxId: string;
+  boxName: string;
+  /** 1-based variant number within this box. */
+  variantIndex: number;
+  variantCount: number;
+  status:
+    | "pending"
+    | "generating-prompt"
+    | "generating-image"
+    | "auto-retrying"
+    | "completed"
+    | "cancelled"
+    | "error";
+  enrichedPrompt?: string;
+  /** Generated image as a data URL. */
+  imageData?: string;
+  costBreakdown?: GenerationCostBreakdown;
+  error?: string;
+  /** True once this result has been saved into the Model Library. */
+  saved?: boolean;
+}
+
+/** A model persisted to the IndexedDB-backed Model Library. */
+export interface SavedModel {
+  id: string;
+  name: string;
+  /** Base64 data URL of the model image. */
+  imageData: string;
+  gender: ModelCreationGender;
+  ageRange: ModelAgeRange;
+  bodyType: ModelBodyType;
+  ethnicity: string;
+  brandName?: string;
+  description?: string;
+  createdAt: number;
+}
+
+/** One uploaded source image in the Edit-models sub-mode (1:1 → one result). */
+export interface ModelEditSource {
+  id: string;
+  file: File;
+  preview: string;
+}
+
+/** One edited output — exactly one per uploaded {@link ModelEditSource}. */
+export interface ModelEditResult {
+  id: string;
+  sourceId: string;
+  sourceName: string;
+  /** Aspect ratio derived from the source image and used for this render. */
+  aspectRatio: AspectRatio;
+  status:
+    | "pending"
+    | "generating-instruction"
+    | "generating-image"
+    | "auto-retrying"
+    | "completed"
+    | "cancelled"
+    | "error";
+  /** The concise "what changes" snippet from the enrichment step. */
+  editInstruction?: string;
+  /** Edited image as a data URL. */
+  imageData?: string;
+  costBreakdown?: GenerationCostBreakdown;
+  error?: string;
+  /** True once this result has been saved into the Model Library. */
+  saved?: boolean;
+}
 
 // --- Swatch Types ---
 

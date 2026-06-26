@@ -1,4 +1,4 @@
-import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SwatchShape, TextGenModel, TopwearLength } from "./types";
+import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SwatchShape, TextGenModel, TopwearLength } from "./types";
 
 export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; description: string }[] = [
   { value: "clothing", label: "Clothing", description: "Apparel, garments, and fashion items" },
@@ -2854,6 +2854,56 @@ export const INFOGRAPHIC_WIZARD_STEPS = [
   { step: 3, title: "Template", description: "Template, aspect ratio & styling" },
   { step: 4, title: "Generate", description: "Generate & refine infographics" },
 ] as const;
+
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║                    AI MODEL CREATION FEATURE                       ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+
+export const MODEL_CREATION_WIZARD_STEPS = [
+  { step: 1, title: "Casting", description: "Define the global look & brand direction" },
+  { step: 2, title: "Models", description: "Add model briefs & reference images" },
+  { step: 3, title: "Generate", description: "Choose engines, generate & save your models" },
+] as const;
+
+export const MODEL_EDIT_WIZARD_STEPS = [
+  { step: 1, title: "Upload", description: "Upload the set of model images to edit" },
+  { step: 2, title: "Edit", description: "Describe the one change + optional reference" },
+  { step: 3, title: "Generate", description: "Apply the edit to every image & save" },
+] as const;
+
+export const MODEL_GENDER_OPTIONS: { value: ModelCreationGender; label: string; description: string }[] = [
+  { value: "female", label: "Female", description: "Black crop top + black shorts" },
+  { value: "male", label: "Male", description: "Black short-sleeve tee + black shorts" },
+];
+
+export const MODEL_AGE_OPTIONS: { value: ModelAgeRange; label: string }[] = [
+  { value: "18-25", label: "18–25" },
+  { value: "26-35", label: "26–35" },
+  { value: "36-45", label: "36–45" },
+  { value: "46-60", label: "46–60" },
+  { value: "60+", label: "60+" },
+];
+
+export const MODEL_BODY_TYPE_OPTIONS: { value: ModelBodyType; label: string; description: string }[] = [
+  { value: "slim", label: "Slim", description: "Lean, slight frame" },
+  { value: "athletic", label: "Athletic", description: "Toned, fit build" },
+  { value: "average", label: "Average", description: "Balanced, everyday proportions" },
+  { value: "curvy", label: "Curvy", description: "Fuller, hourglass figure" },
+  { value: "plus-size", label: "Plus-size", description: "Fuller-figured, plus proportions" },
+  { value: "muscular", label: "Muscular", description: "Strong, well-developed musculature" },
+];
+
+/** Preset ethnicity / skin-tone options. The UI also allows free-text "Custom". */
+export const MODEL_ETHNICITY_OPTIONS: string[] = [
+  "African",
+  "East Asian",
+  "South Asian",
+  "Southeast Asian",
+  "Caucasian / European",
+  "Hispanic / Latino",
+  "Middle Eastern",
+  "Mixed / Multiracial",
+];
 
 /**
  * Product categories surfaced in the infographic wizard.

@@ -87,6 +87,15 @@ import {
   InfographicResult,
   InfographicBackgroundStyle,
   InfographicTemplate,
+  ModelCreationGender,
+  ModelAgeRange,
+  ModelBodyType,
+  ModelBox,
+  ModelCreationResult,
+  ModelReferenceImage,
+  ModelEditSource,
+  ModelEditResult,
+  SavedModel,
 } from "@/lib/types";
 import { MAX_CAMERA_MOVEMENTS, MAX_MODEL_MOVEMENTS } from "@/lib/constants";
 
@@ -320,6 +329,124 @@ export function useVTONStore() {
   const [infographicStylingInstructions, setInfographicStylingInstructions] = useState("");
   const [infographicResults, setInfographicResults] = useState<InfographicResult[]>([]);
   const [isInfographicGenerating, setIsInfographicGenerating] = useState(false);
+
+  // --- AI Model Creation State ---
+  // Global "casting" attributes — apply to every model box in the batch.
+  const [modelGender, setModelGender] = useState<ModelCreationGender>("female");
+  const [modelAgeRange, setModelAgeRange] = useState<ModelAgeRange>("26-35");
+  const [modelBodyType, setModelBodyType] = useState<ModelBodyType>("average");
+  const [modelEthnicity, setModelEthnicity] = useState<string>("");
+  // Optional brand identity. Directives are auto-researched (web search) then
+  // editable, and applied to every generation.
+  const [modelBrandName, setModelBrandName] = useState<string>("");
+  const [modelBrandDirectives, setModelBrandDirectives] = useState<string>("");
+  const [modelBrandStatus, setModelBrandStatus] = useState<"idle" | "researching" | "ready" | "error">("idle");
+  // Optional extra visual-appearance guidelines from the user.
+  const [modelGuidelines, setModelGuidelines] = useState<string>("");
+  const [modelBoxes, setModelBoxes] = useState<ModelBox[]>([]);
+  const [modelCreationResults, setModelCreationResults] = useState<ModelCreationResult[]>([]);
+  // Mirrors the IndexedDB-backed Model Library; loaded on mount by the Generate step.
+  const [savedModels, setSavedModels] = useState<SavedModel[]>([]);
+  const [isModelCreationGenerating, setIsModelCreationGenerating] = useState(false);
+
+  // --- AI Model Creation Actions ---
+  const addModelBox = useCallback(() => {
+    setModelBoxes((prev) => [
+      ...prev,
+      {
+        id: `mb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: "",
+        description: "",
+        variantCount: 1,
+        lockToReferenceFace: true,
+      },
+    ]);
+  }, []);
+
+  const updateModelBox = useCallback(
+    (id: string, update: Partial<Omit<ModelBox, "id" | "referenceImage">>) => {
+      setModelBoxes((prev) => prev.map((b) => (b.id === id ? { ...b, ...update } : b)));
+    },
+    []
+  );
+
+  const removeModelBox = useCallback((id: string) => {
+    setModelBoxes((prev) => {
+      const removed = prev.find((b) => b.id === id);
+      if (removed?.referenceImage) URL.revokeObjectURL(removed.referenceImage.preview);
+      return prev.filter((b) => b.id !== id);
+    });
+  }, []);
+
+  const setModelBoxReferenceImage = useCallback((id: string, file: File | null) => {
+    setModelBoxes((prev) =>
+      prev.map((b) => {
+        if (b.id !== id) return b;
+        if (b.referenceImage) URL.revokeObjectURL(b.referenceImage.preview);
+        return {
+          ...b,
+          referenceImage: file
+            ? { file, preview: URL.createObjectURL(file) }
+            : undefined,
+        };
+      })
+    );
+  }, []);
+
+  const updateModelCreationResult = useCallback(
+    (id: string, update: Partial<ModelCreationResult>) => {
+      setModelCreationResults((prev) => prev.map((r) => (r.id === id ? { ...r, ...update } : r)));
+    },
+    []
+  );
+
+  const resetModelCreationResults = useCallback(() => {
+    setModelCreationResults([]);
+  }, []);
+
+  // --- AI Model Editing (sub-mode of model-creation) ---
+  // "create" = generate models from scratch; "edit" = edit a set of uploaded models.
+  const [modelCreationMode, setModelCreationMode] = useState<"create" | "edit">("create");
+  const [modelEditSources, setModelEditSources] = useState<ModelEditSource[]>([]);
+  const [modelEditDirective, setModelEditDirective] = useState<string>("");
+  const [modelEditReferenceDirective, setModelEditReferenceDirective] = useState<string>("");
+  const [modelEditReference, setModelEditReferenceState] = useState<ModelReferenceImage | undefined>(undefined);
+  const [modelEditResults, setModelEditResults] = useState<ModelEditResult[]>([]);
+  const [isModelEditGenerating, setIsModelEditGenerating] = useState(false);
+
+  const addModelEditSources = useCallback((files: File[]) => {
+    setModelEditSources((prev) => [
+      ...prev,
+      ...files.map((file) => ({
+        id: `mes-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        file,
+        preview: URL.createObjectURL(file),
+      })),
+    ]);
+  }, []);
+
+  const removeModelEditSource = useCallback((id: string) => {
+    setModelEditSources((prev) => {
+      const removed = prev.find((s) => s.id === id);
+      if (removed) URL.revokeObjectURL(removed.preview);
+      return prev.filter((s) => s.id !== id);
+    });
+  }, []);
+
+  const setModelEditReference = useCallback((file: File | null) => {
+    setModelEditReferenceState((prev) => {
+      if (prev) URL.revokeObjectURL(prev.preview);
+      return file ? { file, preview: URL.createObjectURL(file) } : undefined;
+    });
+  }, []);
+
+  const updateModelEditResult = useCallback((id: string, update: Partial<ModelEditResult>) => {
+    setModelEditResults((prev) => prev.map((r) => (r.id === id ? { ...r, ...update } : r)));
+  }, []);
+
+  const resetModelEditResults = useCallback(() => {
+    setModelEditResults([]);
+  }, []);
 
   // --- Single Mode Actions ---
 
@@ -1720,6 +1847,29 @@ export function useVTONStore() {
         }
       }
 
+      // --- AI MODEL CREATION MODE ---
+      if (featureMode === "model-creation") {
+        if (modelCreationMode === "edit") {
+          const hasSources = modelEditSources.length > 0;
+          const hasDirective = modelEditDirective.trim() !== "";
+          switch (step) {
+            case 1: return true;                       // Upload
+            case 2: return hasSources;                 // Edit directive
+            case 3: return hasSources && hasDirective; // Generate
+            default: return false;
+          }
+        }
+        const hasReadyBoxes = modelBoxes.some(
+          (b) => b.name.trim() !== "" || b.description.trim() !== "" || !!b.referenceImage
+        );
+        switch (step) {
+          case 1: return true;          // Casting
+          case 2: return true;          // Models (boxes are added on this step)
+          case 3: return hasReadyBoxes; // Generate
+          default: return false;
+        }
+      }
+
       // --- SWATCH MODE ---
       if (featureMode === "swatch") {
         switch (step) {
@@ -1905,7 +2055,7 @@ export function useVTONStore() {
           return false;
       }
     },
-    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts]
+    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts, modelBoxes, modelCreationMode, modelEditSources, modelEditDirective]
   );
 
   return {
@@ -2269,6 +2419,27 @@ export function useVTONStore() {
     infographicResults, setInfographicResults,
     updateInfographicResult, resetInfographicResults,
     isInfographicGenerating, setIsInfographicGenerating,
+    // AI Model Creation
+    modelGender, setModelGender,
+    modelAgeRange, setModelAgeRange,
+    modelBodyType, setModelBodyType,
+    modelEthnicity, setModelEthnicity,
+    modelBrandName, setModelBrandName,
+    modelBrandDirectives, setModelBrandDirectives,
+    modelBrandStatus, setModelBrandStatus,
+    modelGuidelines, setModelGuidelines,
+    modelBoxes, addModelBox, updateModelBox, removeModelBox, setModelBoxReferenceImage,
+    modelCreationResults, setModelCreationResults, updateModelCreationResult, resetModelCreationResults,
+    savedModels, setSavedModels,
+    isModelCreationGenerating, setIsModelCreationGenerating,
+    // AI Model Editing (sub-mode)
+    modelCreationMode, setModelCreationMode,
+    modelEditSources, addModelEditSources, removeModelEditSource,
+    modelEditDirective, setModelEditDirective,
+    modelEditReferenceDirective, setModelEditReferenceDirective,
+    modelEditReference, setModelEditReference,
+    modelEditResults, setModelEditResults, updateModelEditResult, resetModelEditResults,
+    isModelEditGenerating, setIsModelEditGenerating,
   };
 }
 

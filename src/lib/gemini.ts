@@ -19,6 +19,10 @@ import {
   ImageGenModel,
   InfographicBackgroundStyle,
   InfographicTemplate,
+  ModelBox,
+  ModelCreationGender,
+  ModelAgeRange,
+  ModelBodyType,
   ModelImage,
   ModelSwapBackgroundMode,
   Pose,
@@ -5687,6 +5691,372 @@ export async function generateInfographicImage({
  * tightly-scoped edit instruction; Step B replays the original multi-turn context and applies
  * only that edit, keeping everything else pixel-identical.
  */
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║                    AI MODEL CREATION                               ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+
+/**
+ * Builds the NON-NEGOTIABLE, gender-specific output rules baked into every
+ * generated fashion model: locked black wardrobe, barefoot, full-body framing,
+ * pure-white empty studio, neutral comfortable smile, and the flat shadowless
+ * high-key lighting (reusing {@link EVEN_HIGH_KEY_LIGHTING_DIRECTIVE}).
+ */
+function buildLockedModelDirective(gender: ModelCreationGender): string {
+  const wardrobe =
+    gender === "male"
+      ? "a plain solid-black short-sleeve crew-neck T-shirt and plain solid-black shorts"
+      : "a plain solid-black crop top and plain solid-black shorts";
+  return `═══ NON-NEGOTIABLE OUTPUT RULES (ALWAYS APPLY — these OVERRIDE any conflicting instruction) ═══
+- WARDROBE: The model wears ONLY ${wardrobe}. The clothing is matte solid black with NO prints, logos, graphics or patterns. No jacket, no socks, no hat, no jewelry, no accessories, no eyewear.
+- FOOTWEAR: The model is fully BAREFOOT — no shoes, no sandals, no socks; the bare feet are completely visible.
+- FRAMING: A single full-body shot, head-to-toe — the ENTIRE body from the top of the head down to the bare feet is visible inside the frame; the model stands centered and upright.
+- BACKGROUND: A completely clean, empty studio with a solid pure-white (#FFFFFF) seamless fill — no props, furniture, textures, gradients, text, or visible horizon line.
+- EXPRESSION: A relaxed, natural, comfortable closed-lip smile that conveys ease and comfort, with eyes to camera.
+${EVEN_HIGH_KEY_LIGHTING_DIRECTIVE}`;
+}
+
+/**
+ * Step 1 — enrich a single model brief into a precise, deterministic image-gen
+ * prompt for ONE full-body fashion model, honouring the locked rules, the global
+ * casting attributes, brand direction, and per-variant identity behaviour.
+ */
+export async function generateModelPrompt({
+  textGenModel = "gemini",
+  gender,
+  ageRange,
+  bodyType,
+  ethnicity,
+  brandDirectives,
+  guidelines,
+  box,
+  variantIndex = 1,
+  variantCount = 1,
+  abortSignal,
+}: {
+  textGenModel?: TextGenModel;
+  gender: ModelCreationGender;
+  ageRange: ModelAgeRange;
+  bodyType: ModelBodyType;
+  ethnicity?: string;
+  brandDirectives?: string;
+  guidelines?: string;
+  box: ModelBox;
+  variantIndex?: number;
+  variantCount?: number;
+  abortSignal?: AbortSignal;
+}): Promise<{ enrichedPrompt: string; cost: StepCost }> {
+  const ai = getTextClient(textGenModel);
+
+  const hasReference = !!box.referenceImage;
+  const lockFace = hasReference && box.lockToReferenceFace;
+  const distinctFace = !lockFace; // distinct face per variant unless locked to a reference
+
+  const referenceDirective = hasReference
+    ? lockFace
+      ? `A REFERENCE PORTRAIT of a real person is attached. Use ONLY their facial features, face shape, hairstyle, hair color/texture and skin complexion, and recreate that SAME face and hair faithfully and consistently. IGNORE everything else in the reference (its clothing, body, background, pose, framing and lighting).`
+      : `A REFERENCE PORTRAIT of a real person is attached. Use it ONLY as loose inspiration for facial features, hairstyle, hair color and complexion — do NOT copy it exactly; this variant should be a DISTINCT individual within the same family of looks.`
+    : `No reference image is provided — invent a believable, photogenic face that fits the casting attributes below.`;
+
+  const variantDirective =
+    variantCount > 1
+      ? distinctFace
+        ? `This is variant ${variantIndex} of ${variantCount}. Render a DISTINCT, different individual from the other variants — a unique face, hair and features — while strictly matching ALL casting attributes, the brand direction and this brief. Vary the PERSON only; never vary the locked wardrobe, background, framing or lighting rules.`
+        : `This is variant ${variantIndex} of ${variantCount}. Keep the SAME identity (same face, hair and complexion) across every variant; introduce only subtle differences in stance, hand placement, weight shift and camera angle, always within the full-body framing rule.`
+      : "";
+
+  const systemPrompt = `You are an expert fashion-casting director and prompt engineer. Write ONE precise, deterministic, self-contained IMAGE-GENERATION PROMPT (flowing prose) that an image model will follow to render a single professional full-body studio photograph of ONE human fashion model.
+
+${buildLockedModelDirective(gender)}
+
+═══ CASTING ATTRIBUTES (apply to this model) ═══
+- Gender: ${gender}
+- Age range: ${ageRange}
+- Body type: ${bodyType}
+${ethnicity?.trim() ? `- Ethnicity / skin tone: ${ethnicity.trim()}` : ""}
+
+═══ MODEL BRIEF ═══
+${box.description?.trim() ? box.description.trim() : "No extra description — derive a tasteful, on-brand appearance from the casting attributes."}
+${guidelines?.trim() ? `\n═══ ADDITIONAL VISUAL GUIDELINES (apply to every model) ═══\n${guidelines.trim()}` : ""}
+${brandDirectives?.trim() ? `\n═══ BRAND CREATIVE DIRECTION (apply to every model) ═══\n${brandDirectives.trim()}` : ""}
+
+═══ FACE / IDENTITY ═══
+${referenceDirective}
+${variantDirective ? `\n═══ VARIATION ═══\n${variantDirective}` : ""}
+
+═══ OUTPUT FORMAT ═══
+Output ONLY the final image-generation prompt as flowing prose. It MUST restate, in positive photographic language: the full-body head-to-toe framing, the barefoot feet, the exact black wardrobe for this gender, the pure-white empty studio background, the neutral comfortable closed-lip smile, and the flat, even, shadowless high-key lighting (include the verbatim lighting anchor sentence). Describe the model's face, hair, build and styling concretely. No preamble, no commentary.`;
+
+  const contents: ContentPart[] = [{ text: systemPrompt }];
+  if (box.referenceImage) {
+    const base64 = await fileToBase64(box.referenceImage.file);
+    contents.push({ inlineData: { mimeType: box.referenceImage.file.type, data: base64 } });
+  }
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+      abortSignal,
+    },
+  });
+
+  const text = response.text;
+  if (!text) {
+    throw new Error("No model prompt returned from the text model");
+  }
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeStepCost(
+    textCostModel(textGenModel),
+    "Model Prompt (Gemini 3.1 Pro)",
+    tokens
+  );
+
+  return { enrichedPrompt: text.trim(), cost };
+}
+
+/**
+ * Step 2 — render the model with gemini-3.1-flash-image-preview (Nano Banana 2)
+ * from the enriched prompt (+ optional face reference). Funnels through
+ * `/api/gemini/generate`, so the global 4-concurrent image gate applies.
+ */
+export async function generateModelImage({
+  apiKey,
+  prompt,
+  referenceImage,
+  lockToReferenceFace = false,
+  aspectRatio,
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  prompt: string;
+  referenceImage?: { file: File };
+  lockToReferenceFace?: boolean;
+  aspectRatio: AspectRatio;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
+  const ai = getGeminiClient(apiKey);
+
+  const contents: ContentPart[] = [];
+  if (referenceImage) {
+    contents.push({
+      text: lockToReferenceFace
+        ? `═══ FACE REFERENCE — COPY FACE & HAIR ONLY ═══\nThe attached image is a face reference. Reproduce ONLY the person's facial features, face shape, hairstyle, hair color/texture and skin complexion EXACTLY. Ignore the reference's clothing, body, background, pose, framing and lighting entirely.`
+        : `═══ FACE REFERENCE — LOOSE INSPIRATION ═══\nThe attached image is a loose face reference. Take inspiration from its facial features, hairstyle, hair color and complexion only — the rendered person should be a distinct individual. Ignore its clothing, body, background and pose.`,
+    });
+    const base64 = await fileToBase64(referenceImage.file);
+    contents.push({ inlineData: { mimeType: referenceImage.file.type, data: base64 } });
+  }
+
+  contents.push({
+    text: `═══ FASHION MODEL TO RENDER ═══\n${prompt}\n\nRender a single photorealistic, full-body, head-to-toe studio photograph in a ${aspectRatio} canvas.`,
+  });
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image-preview",
+    contents,
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio, imageSize },
+      abortSignal,
+    },
+  });
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeImageGenCost("Model Image (Nano Banana 2)", tokens, imageSize);
+  const responseContent = response.candidates?.[0]?.content;
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return {
+          imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+          cost,
+          responseContent,
+        };
+      }
+    }
+  }
+
+  throw new Error("No model image generated from Nano Banana 2");
+}
+
+/**
+ * Edit-models — Step 1. Given a source model photo (+ optional reference image),
+ * a user change directive, and a "what to take from the reference" note, the Pro
+ * model writes ONE concise, photographic snippet describing only the FINAL
+ * changed state of the single attribute. The preservation rules + slot labels
+ * are added by the wrapping template in {@link generateModelEditImage}, so this
+ * snippet must be just the change itself.
+ */
+export async function generateModelEditInstruction({
+  textGenModel = "gemini",
+  sourceImage,
+  referenceImage,
+  changeDirective,
+  referenceDirective,
+  abortSignal,
+}: {
+  textGenModel?: TextGenModel;
+  sourceImage: { file: File };
+  referenceImage?: { file: File };
+  changeDirective: string;
+  referenceDirective?: string;
+  abortSignal?: AbortSignal;
+}): Promise<{ editInstruction: string; cost: StepCost }> {
+  const ai = getTextClient(textGenModel);
+  const hasReference = !!referenceImage;
+
+  const systemPrompt = `You are an expert photo retoucher writing a SINGLE, minimal, surgical edit instruction for an image-editing model. You are given the SOURCE photograph to edit (Image 1)${hasReference ? ", and a REFERENCE image (Image 2)" : ""}. Exactly ONE focused change is requested; everything else must be preserved.
+
+═══ THE ONE CHANGE THE USER WANTS ═══
+${changeDirective.trim()}
+${hasReference ? `\n═══ WHAT TO TAKE FROM THE REFERENCE (Image 2) ═══\n${referenceDirective?.trim() ? referenceDirective.trim() : "Use the reference only as visual guidance for the change above."}` : ""}
+
+HARD CONSTRAINTS:
+- Output ONE concise, photographic snippet describing ONLY the FINAL changed state of the single attribute — present tense, positive language, NO negations.
+- Describe the change as the final result (e.g. "a slightly fuller, heavier build with a softer waist, fuller arms and a slightly rounder face"), NOT as an action ("don't"/"remove"/"make").
+- Do NOT restate preservation rules, do NOT mention "Image 1"/"Image 2" labels, do NOT add quotes, preamble or commentary — the wrapping template handles preservation and slot labeling.
+- Keep it tight: one to three sentences, focused solely on the one attribute the user named.${hasReference ? `\n- Fold in ONLY the specified detail to take from the reference; ignore everything else about the reference.` : ""}
+
+Output ONLY the snippet text.`;
+
+  const contents: ContentPart[] = [{ text: systemPrompt }];
+  const srcBase64 = await fileToBase64(sourceImage.file);
+  contents.push({ inlineData: { mimeType: sourceImage.file.type, data: srcBase64 } });
+  if (referenceImage) {
+    const refBase64 = await fileToBase64(referenceImage.file);
+    contents.push({ inlineData: { mimeType: referenceImage.file.type, data: refBase64 } });
+  }
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+      abortSignal,
+    },
+  });
+
+  const text = response.text;
+  if (!text) {
+    throw new Error("No edit instruction returned from the text model");
+  }
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeStepCost(
+    textCostModel(textGenModel),
+    "Model Edit Instruction (Gemini 3.1 Pro)",
+    tokens
+  );
+
+  return { editInstruction: text.trim(), cost };
+}
+
+/**
+ * Builds the multimodal content parts for a single-attribute model edit with
+ * Nano Banana: Image 1 (source, preserve) + optional Image 2 (reference, take
+ * only the named trait) + a positive-preservation edit block. Shared so the
+ * Azure path can reuse the same prose.
+ */
+export function buildModelEditPrompt({
+  editInstruction,
+  referenceDirective,
+  hasReference,
+}: {
+  editInstruction: string;
+  referenceDirective?: string;
+  hasReference: boolean;
+}): string {
+  const refClause = hasReference
+    ? `\n\nTake ONLY ${referenceDirective?.trim() || "the guidance for the requested change"} from the REFERENCE image; ignore everything else about it — its identity, clothing, pose, background, lighting and framing are irrelevant.`
+    : "";
+  return `Edit the SOURCE image. Change ONLY: ${editInstruction.trim()}.${refClause}
+
+Maintain the identical face and identity, hairstyle, hair color, skin tone, clothing and garments, pose and body position, hands, background, lighting, shadows, camera framing and crop, and aspect ratio from the SOURCE image. Every region of the SOURCE image that the requested change does not explicitly touch stays exactly as it is.
+
+Output a single photorealistic edited image at the SAME aspect ratio and framing as the SOURCE image.`;
+}
+
+/**
+ * Edit-models — Step 2. Renders the edited image with
+ * gemini-3.1-flash-image-preview from the source image (Image 1, preserved),
+ * an optional reference (Image 2), and the enrichment snippet. Funnels through
+ * `/api/gemini/generate`, so the global 4-concurrent image gate applies.
+ */
+export async function generateModelEditImage({
+  apiKey,
+  editInstruction,
+  sourceImage,
+  referenceImage,
+  referenceDirective,
+  aspectRatio,
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  editInstruction: string;
+  sourceImage: { file: File };
+  referenceImage?: { file: File };
+  referenceDirective?: string;
+  aspectRatio: AspectRatio;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
+  const ai = getGeminiClient(apiKey);
+  const hasReference = !!referenceImage;
+
+  const contents: ContentPart[] = [];
+  contents.push({
+    text: `═══ IMAGE 1 — SOURCE TO PRESERVE (ABSOLUTE SOURCE OF TRUTH) ═══\nThe image below is the photograph to edit. Treat every pixel as the source of truth and preserve it except for the single requested change.`,
+  });
+  const srcBase64 = await fileToBase64(sourceImage.file);
+  contents.push({ inlineData: { mimeType: sourceImage.file.type, data: srcBase64 } });
+
+  if (referenceImage) {
+    contents.push({
+      text: `═══ IMAGE 2 — REFERENCE (GUIDANCE ONLY) ═══\nThe image below is a reference. Take ONLY ${referenceDirective?.trim() || "the guidance for the requested change"} from it; ignore everything else about it.`,
+    });
+    const refBase64 = await fileToBase64(referenceImage.file);
+    contents.push({ inlineData: { mimeType: referenceImage.file.type, data: refBase64 } });
+  }
+
+  contents.push({
+    text: `═══ THE EDIT TO PERFORM ═══\n${buildModelEditPrompt({ editInstruction, referenceDirective, hasReference })}`,
+  });
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image-preview",
+    contents,
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio, imageSize },
+      abortSignal,
+    },
+  });
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeImageGenCost("Model Edit Image (Nano Banana 2)", tokens, imageSize);
+  const responseContent = response.candidates?.[0]?.content;
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return {
+          imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+          cost,
+          responseContent,
+        };
+      }
+    }
+  }
+
+  throw new Error("No edited model image generated from Nano Banana 2");
+}
+
 export async function editInfographicImage({
   apiKey,
   textGenModel = "gemini",

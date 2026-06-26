@@ -94,7 +94,10 @@ export function ModelComboPicker({ store }: ModelComboPickerProps) {
 
   // Image generation is user-selectable for VTON and infographic flows; every
   // other mode is fixed to the Gemini backend (matches the prior picker gating).
-  const showImage = featureMode === "vton" || featureMode === "infographic";
+  const showImage =
+    featureMode === "vton" ||
+    featureMode === "infographic" ||
+    featureMode === "model-creation";
 
   return (
     <div className="space-y-3">

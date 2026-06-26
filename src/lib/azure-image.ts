@@ -222,6 +222,164 @@ export async function generateVTONImageAzure({
 
 // --- Infographic image generation ---------------------------------------
 
+// --- AI Model Creation image generation ---------------------------------
+
+export interface AzureModelImageArgs {
+  prompt: string;
+  /** Optional face reference. When absent, the route uses /images/generations. */
+  referenceImage?: { file: File };
+  aspectRatio: AspectRatio;
+  imageSize: "1K" | "2K" | "4K";
+}
+
+/**
+ * Renders a full-body fashion model with Azure gpt-image-2. Return shape matches
+ * the Gemini `generateModelImage` (minus `contentParts`) so callers can swap
+ * them freely. When a face reference is supplied it is sent as `image[]` (the
+ * route hits /images/edits); with no reference the route falls back to
+ * /images/generations. Goes through `/api/azure-image/generate`, so the Azure
+ * endpoint pool + 429 failover (≈10 concurrent) apply.
+ */
+export async function generateModelImageAzure({
+  prompt,
+  referenceImage,
+  aspectRatio,
+  imageSize,
+}: AzureModelImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
+  const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
+
+  const form = new FormData();
+  form.append("prompt", prompt);
+  form.append("model", "gpt-image-2");
+  form.append("n", "1");
+  form.append("size", size);
+  form.append("quality", quality);
+  if (referenceImage) {
+    form.append("image[]", referenceImage.file, referenceImage.file.name);
+  }
+
+  const response = await fetch("/api/azure-image/generate", {
+    method: "POST",
+    body: form,
+  });
+
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const errJson = (await response.json()) as AzureImageResponse;
+      if (errJson.error?.message) detail = `${detail}: ${errJson.error.message}`;
+    } catch {
+      try {
+        detail = `${detail}: ${await response.text()}`;
+      } catch {
+        // noop
+      }
+    }
+    throw new Error(`Azure gpt-image-2 request failed — ${detail}`);
+  }
+
+  const json = (await response.json()) as AzureImageResponse;
+  const b64 = json.data?.[0]?.b64_json;
+  if (!b64) {
+    throw new Error("No image returned from Azure gpt-image-2");
+  }
+
+  const tokens: TokenUsage = {
+    inputTokens: json.usage?.input_tokens ?? 0,
+    outputTokens: json.usage?.output_tokens ?? 0,
+  };
+  const cost = computeAzureImageGenCost("Model Image (gpt-image-2)", tokens, quality);
+
+  return {
+    imageData: `data:image/png;base64,${b64}`,
+    cost,
+    responseContent: json,
+  };
+}
+
+export interface AzureModelEditImageArgs {
+  editInstruction: string;
+  sourceImage: { file: File };
+  referenceImage?: { file: File };
+  referenceDirective?: string;
+  aspectRatio: AspectRatio;
+  imageSize: "1K" | "2K" | "4K";
+}
+
+/**
+ * Edits a single model image with Azure gpt-image-2 (single-attribute change,
+ * everything else preserved). The source is always attached, so the route hits
+ * `/images/edits`. gpt-image-2 has no slot labels, so the source/reference are
+ * referenced by ORDER in the flat prompt prose. Return shape matches the Gemini
+ * `generateModelEditImage` (minus `contentParts`).
+ */
+export async function generateModelEditImageAzure({
+  editInstruction,
+  sourceImage,
+  referenceImage,
+  referenceDirective,
+  aspectRatio,
+  imageSize,
+}: AzureModelEditImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
+  const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
+
+  const refClause = referenceImage
+    ? ` The second attached image is a REFERENCE — take ONLY ${
+        referenceDirective?.trim() || "guidance for the requested change"
+      } from it and ignore everything else about it.`
+    : "";
+  const prompt = `Edit the first attached image (the SOURCE). Change ONLY: ${editInstruction.trim()}.${refClause} Maintain the identical face and identity, hairstyle, hair color, skin tone, clothing, pose and body position, hands, background, lighting, shadows, framing and crop from the source image — every region the change does not touch stays exactly the same. Output a single photorealistic edited image keeping the same framing as the source.`;
+
+  const form = new FormData();
+  form.append("prompt", prompt);
+  form.append("model", "gpt-image-2");
+  form.append("n", "1");
+  form.append("size", size);
+  form.append("quality", quality);
+  form.append("image[]", sourceImage.file, sourceImage.file.name);
+  if (referenceImage) {
+    form.append("image[]", referenceImage.file, referenceImage.file.name);
+  }
+
+  const response = await fetch("/api/azure-image/generate", {
+    method: "POST",
+    body: form,
+  });
+
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const errJson = (await response.json()) as AzureImageResponse;
+      if (errJson.error?.message) detail = `${detail}: ${errJson.error.message}`;
+    } catch {
+      try {
+        detail = `${detail}: ${await response.text()}`;
+      } catch {
+        // noop
+      }
+    }
+    throw new Error(`Azure gpt-image-2 request failed — ${detail}`);
+  }
+
+  const json = (await response.json()) as AzureImageResponse;
+  const b64 = json.data?.[0]?.b64_json;
+  if (!b64) {
+    throw new Error("No image returned from Azure gpt-image-2");
+  }
+
+  const tokens: TokenUsage = {
+    inputTokens: json.usage?.input_tokens ?? 0,
+    outputTokens: json.usage?.output_tokens ?? 0,
+  };
+  const cost = computeAzureImageGenCost("Model Edit Image (gpt-image-2)", tokens, quality);
+
+  return {
+    imageData: `data:image/png;base64,${b64}`,
+    cost,
+    responseContent: json,
+  };
+}
+
 export interface AzureInfographicImageArgs {
   prompt: string;
   productImages: { file: File }[];

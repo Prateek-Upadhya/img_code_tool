@@ -11,6 +11,8 @@ import {
   VIDEO_WIZARD_STEPS,
   ROOM_STAGING_WIZARD_STEPS,
   INFOGRAPHIC_WIZARD_STEPS,
+  MODEL_CREATION_WIZARD_STEPS,
+  MODEL_EDIT_WIZARD_STEPS,
 } from "@/lib/constants";
 import { StepGarments } from "./step-garments";
 import { StepStyling } from "./step-styling";
@@ -36,6 +38,12 @@ import { StepInfographicProducts } from "./step-infographic-products";
 import { StepInfographicBackground } from "./step-infographic-background";
 import { StepInfographicTemplate } from "./step-infographic-template";
 import { StepInfographicGenerate } from "./step-infographic-generate";
+import { StepModelCasting } from "./step-model-casting";
+import { StepModelBoxes } from "./step-model-boxes";
+import { StepModelGenerate } from "./step-model-generate";
+import { StepModelEditUpload } from "./step-model-edit-upload";
+import { StepModelEditDirective } from "./step-model-edit-directive";
+import { StepModelEditGenerate } from "./step-model-edit-generate";
 import { AppSidebar } from "./app-sidebar";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -58,6 +66,8 @@ import {
   Video,
   Sofa,
   LayoutTemplate,
+  UsersRound,
+  Wand2,
 } from "lucide-react";
 import type { AppMode, FeatureMode, WizardStep } from "@/lib/types";
 import {
@@ -117,6 +127,18 @@ const INFOGRAPHIC_STEP_ICONS: Record<number, React.ReactNode> = {
   4: <Sparkles className="w-4 h-4" />,
 };
 
+const MODEL_CREATION_STEP_ICONS: Record<number, React.ReactNode> = {
+  1: <UsersRound className="w-4 h-4" />,
+  2: <ImageIcon className="w-4 h-4" />,
+  3: <Sparkles className="w-4 h-4" />,
+};
+
+const MODEL_EDIT_STEP_ICONS: Record<number, React.ReactNode> = {
+  1: <Upload className="w-4 h-4" />,
+  2: <Wand2 className="w-4 h-4" />,
+  3: <Sparkles className="w-4 h-4" />,
+};
+
 function getFeatureLabel(featureMode: FeatureMode) {
   switch (featureMode) {
     case "vton":
@@ -133,6 +155,8 @@ function getFeatureLabel(featureMode: FeatureMode) {
       return "Room Staging";
     case "infographic":
       return "Infographics";
+    case "model-creation":
+      return "AI Models";
   }
 }
 
@@ -154,6 +178,10 @@ export function VTONWizard() {
     isVideoGenerating,
     isRoomStagingGenerating,
     isInfographicGenerating,
+    isModelCreationGenerating,
+    modelCreationMode,
+    setModelCreationMode,
+    isModelEditGenerating,
   } = store;
 
   // Mirror the selected Google backend into the gemini-client module so every
@@ -169,7 +197,13 @@ export function VTONWizard() {
   const isProductVideo = featureMode === "product-video";
   const isRoomStaging = featureMode === "room-staging";
   const isInfographic = featureMode === "infographic";
-  const activeWizardSteps = isInfographic
+  const isModelCreation = featureMode === "model-creation";
+  const isModelEdit = isModelCreation && modelCreationMode === "edit";
+  const activeWizardSteps = isModelCreation
+    ? isModelEdit
+      ? MODEL_EDIT_WIZARD_STEPS
+      : MODEL_CREATION_WIZARD_STEPS
+    : isInfographic
     ? INFOGRAPHIC_WIZARD_STEPS
     : isRoomStaging
     ? ROOM_STAGING_WIZARD_STEPS
@@ -183,7 +217,7 @@ export function VTONWizard() {
     ? MODEL_SWAP_WIZARD_STEPS
     : WIZARD_STEPS;
   const maxStep = activeWizardSteps.length;
-  const anyGenerating = isGenerating || isSwatchGenerating || isReplicateGenerating || isVideoGenerating || isRoomStagingGenerating || isInfographicGenerating;
+  const anyGenerating = isGenerating || isSwatchGenerating || isReplicateGenerating || isVideoGenerating || isRoomStagingGenerating || isInfographicGenerating || isModelCreationGenerating || isModelEditGenerating;
 
   const goNext = () => {
     const nextStep = (currentStep + 1) as WizardStep;
@@ -219,7 +253,18 @@ export function VTONWizard() {
     }
   };
 
-  const stepIcons = isInfographic
+  const handleModelModeSwitch = (newMode: "create" | "edit") => {
+    if (newMode !== modelCreationMode && !anyGenerating) {
+      setModelCreationMode(newMode);
+      setCurrentStep(1);
+    }
+  };
+
+  const stepIcons = isModelCreation
+    ? isModelEdit
+      ? MODEL_EDIT_STEP_ICONS
+      : MODEL_CREATION_STEP_ICONS
+    : isInfographic
     ? INFOGRAPHIC_STEP_ICONS
     : isRoomStaging
     ? ROOM_STAGING_STEP_ICONS
@@ -359,8 +404,40 @@ export function VTONWizard() {
                 </p>
               </div>
 
+              {/* Create / Edit sub-mode toggle (AI Models only) */}
+              {isModelCreation && (
+                <div className="flex items-center rounded-xl border border-border/50 bg-muted/50 p-1 self-start sm:self-end backdrop-blur-sm">
+                  <button
+                    onClick={() => handleModelModeSwitch("create")}
+                    disabled={anyGenerating}
+                    className={cn(
+                      "flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium transition-all duration-200",
+                      modelCreationMode === "create"
+                        ? "bg-card text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <UsersRound className="w-3.5 h-3.5" />
+                    Create
+                  </button>
+                  <button
+                    onClick={() => handleModelModeSwitch("edit")}
+                    disabled={anyGenerating}
+                    className={cn(
+                      "flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium transition-all duration-200",
+                      modelCreationMode === "edit"
+                        ? "bg-card text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <Wand2 className="w-3.5 h-3.5" />
+                    Edit
+                  </button>
+                </div>
+              )}
+
               {/* Single/Bulk toggle */}
-              {!isSwatch && !isInfographic && (
+              {!isSwatch && !isInfographic && !isModelCreation && (
                 <div className="flex items-center rounded-xl border border-border/50 bg-muted/50 p-1 self-start sm:self-end backdrop-blur-sm">
                   <button
                     onClick={() => handleModeSwitch("single")}
@@ -434,7 +511,21 @@ export function VTONWizard() {
 
             {/* Step Content */}
             <div className="min-h-[400px]">
-              {isInfographic ? (
+              {isModelCreation ? (
+                isModelEdit ? (
+                  <>
+                    {currentStep === 1 && <StepModelEditUpload store={store} />}
+                    {currentStep === 2 && <StepModelEditDirective store={store} />}
+                    {currentStep === 3 && <StepModelEditGenerate store={store} />}
+                  </>
+                ) : (
+                  <>
+                    {currentStep === 1 && <StepModelCasting store={store} />}
+                    {currentStep === 2 && <StepModelBoxes store={store} />}
+                    {currentStep === 3 && <StepModelGenerate store={store} />}
+                  </>
+                )
+              ) : isInfographic ? (
                 <>
                   {currentStep === 1 && <StepInfographicProducts store={store} />}
                   {currentStep === 2 && <StepInfographicBackground store={store} />}

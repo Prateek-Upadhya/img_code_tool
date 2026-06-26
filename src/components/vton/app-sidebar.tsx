@@ -23,6 +23,7 @@ import {
   Video,
   Sofa,
   LayoutTemplate,
+  UsersRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { FeatureMode } from "@/lib/types";
@@ -79,6 +80,12 @@ const NAV_ITEMS: {
     label: "Infographics",
     icon: LayoutTemplate,
     description: "Bulk product infographics",
+  },
+  {
+    id: "model-creation",
+    label: "AI Models",
+    icon: UsersRound,
+    description: "Create custom fashion models",
   },
 ];
 

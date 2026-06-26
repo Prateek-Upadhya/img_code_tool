@@ -75,6 +75,16 @@ export async function POST(request: NextRequest) {
 
     const incoming = await request.formData();
 
+    // Configured endpoints point at `/images/edits` (every existing caller sends
+    // at least one reference image). AI Model Creation may render a model from
+    // text alone (no reference image), which the edits endpoint rejects — in that
+    // case route to `/images/generations` on the same deployment instead.
+    const hasImage = incoming
+      .getAll("image[]")
+      .some((v) => v instanceof File && v.size > 0);
+    const toGenerationsUrl = (url: string) =>
+      url.replace("/images/edits", "/images/generations");
+
     // Retry across distinct endpoints on throttling: at most one attempt per
     // configured deployment (capped at 4). Endpoints that 429/503 are excluded
     // from subsequent attempts and put into cooldown by the pool.
@@ -86,7 +96,8 @@ export async function POST(request: NextRequest) {
       const ep: EndpointRecord = await acquireEndpoint(request.signal, tried);
       tried.add(ep.index);
 
-      const azureResponse = await fetch(ep.url, {
+      const targetUrl = hasImage ? ep.url : toGenerationsUrl(ep.url);
+      const azureResponse = await fetch(targetUrl, {
         method: "POST",
         headers: { "api-key": ep.key },
         body: rebuildForm(incoming),
