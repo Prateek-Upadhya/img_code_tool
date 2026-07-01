@@ -1595,6 +1595,15 @@ export function useVTONStore() {
     setInfographicFolders((prev) => prev.map((f) => (f.id === id ? { ...f, productInfo } : f)));
   }, []);
 
+  // Generic per-product patch — used for the template-specific callout info boxes and the
+  // fixed sole-construction layer count.
+  const updateInfographicFolder = useCallback(
+    (id: string, patch: Partial<InfographicProductFolder>) => {
+      setInfographicFolders((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+    },
+    []
+  );
+
   const addInfographicFolderImage = useCallback(
     (folderId: string, image: { id: string; file: File; preview: string }) => {
       setInfographicFolders((prev) =>
@@ -2406,7 +2415,7 @@ export function useVTONStore() {
     infographicCategory, setInfographicCategory,
     infographicFolders, setInfographicFolders,
     addInfographicFolder, removeInfographicFolder,
-    renameInfographicFolder, updateInfographicFolderProductInfo,
+    renameInfographicFolder, updateInfographicFolderProductInfo, updateInfographicFolder,
     addInfographicFolderImage, removeInfographicFolderImage,
     infographicBrand, setInfographicBrand,
     setInfographicBrandLogo, setInfographicBrandPlacement,

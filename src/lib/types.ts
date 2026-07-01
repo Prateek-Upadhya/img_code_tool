@@ -1189,12 +1189,19 @@ export type InfographicBackgroundStyle =
 /** Infographic layout/composition template. */
 export type InfographicTemplate = "minimalistic" | "sole-construction";
 
+/**
+ * Number of exploded horizontal layers to render for a sole-construction infographic.
+ * Fixed per product. See {@link InfographicProductFolder.soleConstructionLayers} and
+ * `buildSoleConstructionSnippet` in constants for what each layer means per count.
+ */
+export type SoleConstructionLayerCount = 2 | 3 | 4;
+
 /** Structural content-part shape shared with the Gemini image pipeline (text or inline image). */
 export type InfographicContentPart =
   | { text: string }
   | { inlineData: { mimeType: string; data: string } };
 
-/** One product in the bulk infographic queue — images + free-form product info. */
+/** One product in the bulk infographic queue — images + per-template callout info. */
 export interface InfographicProductFolder {
   id: string;
   name: string;
@@ -1203,8 +1210,22 @@ export interface InfographicProductFolder {
     file: File;
     preview: string;
   }>;
-  /** Bullets or a paragraph; long paragraphs are summarised to bullets during enrichment. */
+  /**
+   * Legacy / shared free-form product info. Kept as a fallback when a template-specific
+   * field below is empty. Bullets or a paragraph; long paragraphs are summarised to
+   * bullets during enrichment.
+   */
   productInfo?: string;
+  /** Callout info used ONLY for the minimalistic template. Falls back to `productInfo`. */
+  minimalisticInfo?: string;
+  /**
+   * Callout info used ONLY for the sole-construction template — ideally one short label
+   * per layer, top-to-bottom, matching {@link soleConstructionLayers}. Falls back to
+   * `productInfo`. Quoted text renders verbatim; each label is pinned to its layer.
+   */
+  soleConstructionInfo?: string;
+  /** Fixed exploded-layer count for this product's sole-construction infographic. Default 3. */
+  soleConstructionLayers?: SoleConstructionLayerCount;
 }
 
 /** Optional brand logo + placement guidance applied to every generation in the batch. */

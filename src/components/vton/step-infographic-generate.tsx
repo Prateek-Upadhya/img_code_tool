@@ -33,7 +33,17 @@ import { generateInfographicImageAzure } from "@/lib/azure-image";
 import { ModelComboPicker } from "./model-combo-picker";
 import { INFOGRAPHIC_TEMPLATE_OPTIONS } from "@/lib/constants";
 import type { VTONStore } from "@/store/vton-store";
-import type { InfographicResult, InfographicTemplate, StepCost } from "@/lib/types";
+import type { InfographicProductFolder, InfographicResult, InfographicTemplate, StepCost } from "@/lib/types";
+
+/** Template-specific callout info for a product, falling back to the shared productInfo. */
+function pickTemplateInfo(
+  folder: InfographicProductFolder,
+  template: InfographicTemplate
+): string | undefined {
+  const specific =
+    template === "sole-construction" ? folder.soleConstructionInfo : folder.minimalisticInfo;
+  return specific && specific.trim() ? specific : folder.productInfo;
+}
 
 const TEMPLATE_LABEL: Record<InfographicTemplate, string> = {
   minimalistic: "Minimalistic",
@@ -139,10 +149,11 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
           apiKey,
           textGenModel,
           productImages,
-          productInfo: folder.productInfo,
+          productInfo: pickTemplateInfo(folder, result.template),
           productCategory: infographicCategory,
           backgroundStyle: infographicBackgroundStyle,
           template: result.template,
+          soleConstructionLayers: folder.soleConstructionLayers ?? 3,
           brand: {
             logoPresent: !!infographicBrand.logoFile,
             placementInstructions: infographicBrand.logoPlacementInstructions,
@@ -308,7 +319,7 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
         editHistory: result.editHistory,
         generatedImageData: result.imageData,
         productImages,
-        productInfo: folder.productInfo,
+        productInfo: pickTemplateInfo(folder, result.template),
         userChangeRequest: change,
         aspectRatio: infographicAspectRatio,
         imageSize: infographicImageSize,

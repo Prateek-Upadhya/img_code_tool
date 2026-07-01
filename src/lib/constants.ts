@@ -1,4 +1,4 @@
-import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SwatchShape, TextGenModel, TopwearLength } from "./types";
+import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SoleConstructionLayerCount, SwatchShape, TextGenModel, TopwearLength } from "./types";
 
 export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; description: string }[] = [
   { value: "clothing", label: "Clothing", description: "Apparel, garments, and fashion items" },
@@ -2975,15 +2975,123 @@ Compose a clean, minimalistic infographic showing the PAIR of footwear (exactly 
 - CALLOUTS: place a few minimalistic callouts (typically 3–5) with thin leader lines and small, highly contextual, minimalistic icons chosen to suit the shoe's style. DISTRIBUTE the callouts EQUALLY across BOTH shoes so each shoe carries a roughly equal share (e.g. for 4 callouts, two point to the sole-facing shoe and two to the upper-facing shoe); never cluster them all on one shoe. Each callout label must be short (1–4 words). Associate each label with the correct region of the shoe it describes.
 - COPY: derive the callout text from the product information. If the product info is already bullet points, use them directly; if it is a long paragraph, FIRST summarise it into concise bullet points, then use only those bullets.
 - FEEL: premium, editorial, uncluttered — reference the look of clean floating-product infographics with NO decorative background rings or artifacts.`,
-  "sole-construction": `TEMPLATE — SOLE CONSTRUCTION (EXPLODED STACK):
-Compose a minimalistic infographic showing a SINGLE shoe from the product (exactly one shoe) rendered as an exploded SOLE-CONSTRUCTION diagram: the shoe separated into distinct horizontal layers, stacked and slightly separated vertically to reveal the construction.
-- LAYERS (FIXED — always exactly THREE): render the exploded stack as exactly three distinct horizontal layers, separated vertically top-to-bottom: (1) the UPPER element alone — the tongue for laced footwear, or the single strap for sandals/slides/strap styles, choosing whichever actually matches the reference shoe; (2) the FOOTBED / insole; (3) a THIN SOLE layer (the outsole) kept visibly slim relative to the others. Always exactly three layers regardless of how many materials the product info lists.
-- ORIENTATION: present the shoe and its exploded layers at a consistent, legible angle so each layer reads clearly and separately.
-- GROUNDING: add a highly subtle contact shadow under the stack; shadow and background gradient direction share one light source.
-- CALLOUTS: place exactly one minimalistic callout next to each of the three layers (three total) with a thin leader line and a small contextual icon; each label short (1–4 words) and associated with the exact layer it describes.
-- COPY: derive callout text from the product info; if it is a long paragraph, summarise to bullets first, then use those bullets.
-- FEEL: clean, technical, premium — no decorative background rings or artifacts.`,
+  // Placeholder — the sole-construction snippet is layer-count-specific and produced by
+  // buildSoleConstructionSnippet() below. This default (3 layers) exists so the Record
+  // stays complete for any code that reads the map directly; the enrichment pipeline
+  // always calls buildSoleConstructionSnippet(product.soleConstructionLayers) instead.
+  "sole-construction": "",
 };
+
+/** Human-readable option list for the per-product sole-construction layer-count selector. */
+export const SOLE_CONSTRUCTION_LAYER_OPTIONS: {
+  value: SoleConstructionLayerCount;
+  label: string;
+  description: string;
+}[] = [
+  { value: 2, label: "2 Layers", description: "Upper assembly (everything except the outsole) + outsole." },
+  { value: 3, label: "3 Layers", description: "Upper strap/vamp/thong + footbed + outsole." },
+  { value: 4, label: "4 Layers", description: "Strap outer shell + strap underbelly + footbed + outsole." },
+];
+
+/**
+ * Per-layer definitions for each supported sole-construction layer count. Authored to the
+ * user's exact spec. The `pixelPerfect` layers are REAL product parts that must be
+ * transferred verbatim from the reference photos (their texture/pattern/text must NOT be
+ * described in words); the single non-pixel-perfect layer (the 4-layer underbelly) is
+ * extrapolated as a solid color matched in shape/size/curvature to the layer above it.
+ */
+const SOLE_CONSTRUCTION_LAYERS: Record<
+  SoleConstructionLayerCount,
+  { n: number; title: string; pixelPerfect: boolean; body: string }[]
+> = {
+  2: [
+    {
+      n: 1,
+      title: "Upper assembly (everything except the outsole)",
+      pixelPerfect: true,
+      body: "the ENTIRE footwear EXCEPT the outsole — the upper/strap(s) together with the footbed as one assembled top unit, exactly as it appears in the reference.",
+    },
+    {
+      n: 2,
+      title: "Outsole",
+      pixelPerfect: true,
+      body: "the outsole alone, kept visibly slim relative to Layer 1.",
+    },
+  ],
+  3: [
+    {
+      n: 1,
+      title: "Upper strap / vamp strap / thong strap",
+      pixelPerfect: true,
+      body: "the single upper element alone — whichever strap type the reference actually shows (a slide's vamp band, a thong/toe-post, or a strap); infer the real type from the photos and do NOT rename or restyle it.",
+    },
+    {
+      n: 2,
+      title: "Footbed",
+      pixelPerfect: true,
+      body: "the footbed / insole, shaped with subtle indented slots where the strap attaches (no upward-projecting flaps).",
+    },
+    {
+      n: 3,
+      title: "Outsole",
+      pixelPerfect: true,
+      body: "the outsole, kept visibly slim relative to the layers above.",
+    },
+  ],
+  4: [
+    {
+      n: 1,
+      title: "Upper strap — outer shell only (thin, NO underbelly)",
+      pixelPerfect: true,
+      body: "ONLY the outer shell of the upper strap — a thin, arched, curved band showing exclusively the outer skin. CRITICAL: zero underbelly / inner-lining color may be visible on this layer — it is exclusively the outer surface.",
+    },
+    {
+      n: 2,
+      title: "Upper strap — underbelly (extrapolated, solid color)",
+      pixelPerfect: false,
+      body: "the underbelly / inner lining of the upper strap, which is only partially visible in the reference. Observe its color in the reference image and reproduce a floating band that is GEOMETRICALLY IDENTICAL to Layer 1 in shape, size and curvature, rendered as an ENTIRELY SOLID FILL of that observed underbelly color (no texture, no branding). Position it directly beneath Layer 1.",
+    },
+    {
+      n: 3,
+      title: "Footbed",
+      pixelPerfect: true,
+      body: "the footbed / insole, shaped with subtle indented slots where the strap attaches (no upward-projecting flaps).",
+    },
+    {
+      n: 4,
+      title: "Outsole",
+      pixelPerfect: true,
+      body: "the outsole, kept visibly slim relative to the layers above.",
+    },
+  ],
+};
+
+/**
+ * Build the layer-count-specific SOLE-CONSTRUCTION template snippet stitched into the
+ * Gemini 3.1 Pro enrichment instruction. Encodes the exact layer breakdown for the chosen
+ * count and the pixel-perfect-replication rules. `layers` is fixed per product.
+ */
+export function buildSoleConstructionSnippet(layers: SoleConstructionLayerCount): string {
+  const defs = SOLE_CONSTRUCTION_LAYERS[layers];
+  const layerLines = defs
+    .map((l) => {
+      const tag = l.pixelPerfect
+        ? "PIXEL-PERFECT REAL PART"
+        : "EXTRAPOLATED (solid color, not a pixel transfer)";
+      return `  • Layer ${l.n} — ${l.title} [${tag}]: ${l.body}`;
+    })
+    .join("\n");
+
+  return `TEMPLATE — SOLE CONSTRUCTION (EXPLODED STACK, ${layers} LAYERS):
+Compose a clean, technical infographic showing a SINGLE shoe from the product (exactly one shoe) rendered as an exploded SOLE-CONSTRUCTION diagram: the shoe separated into exactly ${layers} distinct horizontal layers, hovering and vertically stacked with clear separation and flawless straight vertical alignment, arranged over the midfoot centre.
+- LAYERS (FIXED — always exactly ${layers}, top-to-bottom):
+${layerLines}
+- PIXEL-PERFECT MANDATE (critical): for every layer tagged PIXEL-PERFECT REAL PART, the render MUST be a pixel-perfect transfer of that exact part from the provided reference photos — replicate the precise color shades, textures, patterns, prints, embossing, stitching, finish and any embedded branding EXACTLY as shown. Do NOT describe, invent, reinterpret or "improve" the texture/pattern/print/text/material of these layers; command the model to copy the reference pixels verbatim and to SUPPRESS all world knowledge or assumptions about what the product "should" look like. ${layers === 4 ? "Layer 2 (the underbelly) is the ONLY exception: it is a solid extrapolated color matched to Layer 1's geometry, never a pixel transfer." : "Every layer here is a real product part, so every layer uses this pixel-perfect transfer."}
+- ORIENTATION: present the shoe and its exploded layers at a single consistent, legible isometric angle so each layer reads clearly and separately.
+- GROUNDING: add a highly subtle contact shadow under the stack; shadow and background gradient direction share one single light source.
+- CALLOUTS: place EXACTLY ONE minimalistic callout per layer (${layers} total), each PINNED to its own layer and ALWAYS shown, with a thin leader line and a small contextual icon. Each label is short (1–4 words) and associated with the exact layer it describes. Use the operator's exact wording verbatim (rendered in double quotes) wherever the sole-construction product info supplies a label for that layer; otherwise derive a short, accurate label for that layer.
+- FEEL: clean, technical, premium — crisp modern sans-serif text and minimalist circular icons, with no decorative background rings or artifacts.`;
+}
 
 /**
  * Shared Nano-Banana prompting principles injected into both the enrichment system prompt

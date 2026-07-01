@@ -19,6 +19,7 @@ import {
   ImageGenModel,
   InfographicBackgroundStyle,
   InfographicTemplate,
+  SoleConstructionLayerCount,
   ModelBox,
   ModelCreationGender,
   ModelAgeRange,
@@ -53,6 +54,7 @@ import {
   TOPWEAR_LENGTH_OPTIONS,
   INFOGRAPHIC_BACKGROUND_SNIPPETS,
   INFOGRAPHIC_TEMPLATE_SNIPPETS,
+  buildSoleConstructionSnippet,
   INFOGRAPHIC_PROMPTING_PRINCIPLES,
 } from "./constants";
 
@@ -5462,6 +5464,7 @@ export async function generateInfographicPrompt({
   productCategory = "footwear",
   backgroundStyle,
   template,
+  soleConstructionLayers = 3,
   brand,
   aspectRatio,
   stylingInstructions,
@@ -5477,6 +5480,8 @@ export async function generateInfographicPrompt({
   productCategory?: ProductCategory;
   backgroundStyle: InfographicBackgroundStyle;
   template: InfographicTemplate;
+  /** Fixed exploded-layer count for the sole-construction template (ignored otherwise). */
+  soleConstructionLayers?: SoleConstructionLayerCount;
   brand?: InfographicBrandInput;
   aspectRatio: AspectRatio;
   stylingInstructions?: string;
@@ -5489,7 +5494,10 @@ export async function generateInfographicPrompt({
   const ai = getTextClient(textGenModel);
 
   const backgroundSnippet = INFOGRAPHIC_BACKGROUND_SNIPPETS[backgroundStyle];
-  const templateSnippet = INFOGRAPHIC_TEMPLATE_SNIPPETS[template];
+  const templateSnippet =
+    template === "sole-construction"
+      ? buildSoleConstructionSnippet(soleConstructionLayers)
+      : INFOGRAPHIC_TEMPLATE_SNIPPETS[template];
 
   const variationDirective = variationCount > 1
     ? `═══ VARIATION ═══
@@ -5535,7 +5543,19 @@ Output ONLY the final composition description as flowing, well-structured prose 
 4. The contact-shadow direction and softness, kept in sync with the lighting and any background gradient.
 5. The brand-logo placement (if a logo is provided).
 6. The target aspect ratio: ${aspectRatio} (mention the canvas orientation in the description).
-Do not include any preamble, commentary, or closing remarks — output the composition description only.`;
+Do not include any preamble, commentary, or closing remarks — output the composition description only.${template === "sole-construction"
+    ? `
+
+═══ SOLE-CONSTRUCTION OUTPUT REQUIREMENTS (critical — override anything above that conflicts) ═══
+- LENGTH: write a rich, highly contextual composition of roughly 300–350 words.
+- Describe EXACTLY ${soleConstructionLayers} hovering layers, top-to-bottom, each as its own labelled "Layer N" line, following the LAYERS breakdown in the template direction precisely (same parts, same order, same count).
+- PIXEL-PERFECT LAYERS: for every layer that is a REAL product part (all layers${soleConstructionLayers === 4 ? " EXCEPT Layer 2, the underbelly" : ""}), you MUST NOT describe its texture, pattern, print, surface graphics, embedded text, branding or material in words. Instead, for each such layer issue an explicit "CRITICAL INSTRUCTION: perform a pixel-perfect transfer of this exact part from the provided reference images — replicate the precise color shades, textures and any branding exactly as shown, and suppress all world knowledge, relying only on the reference pixels."${soleConstructionLayers === 4
+      ? `
+- LAYER 2 (UNDERBELLY) IS THE ONLY EXCEPTION: do not pixel-transfer it. State its observed underbelly color and render it as a floating band that is an entirely solid fill of that color, geometrically identical to Layer 1 in shape, size and curvature, directly beneath Layer 1. Ensure Layer 1 shows zero underbelly color (outer skin only).`
+      : ""}
+- CALLOUTS: include EXACTLY ${soleConstructionLayers} callouts — one pinned to each layer and ALWAYS shown — each with the exact quoted label, a thin leader line, a minimalist circular icon, and its position. Use the operator's verbatim wording where the product information supplies a label for a layer.
+- LAYOUT: keep flawless straight vertical alignment; hover any upper/strap layers centred over the footbed and outsole.`
+    : ""}`;
 
   const contents: ContentPart[] = [{ text: systemPrompt }];
   for (const img of productImages) {

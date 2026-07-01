@@ -5,7 +5,7 @@ import { Plus, Pencil, Trash2, Check, X, Upload, ImageIcon, FolderOpen } from "l
 import { ImageUploadZone } from "./image-upload-zone";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { INFOGRAPHIC_CATEGORY_OPTIONS } from "@/lib/constants";
+import { INFOGRAPHIC_CATEGORY_OPTIONS, SOLE_CONSTRUCTION_LAYER_OPTIONS } from "@/lib/constants";
 import type { VTONStore } from "@/store/vton-store";
 import type { InfographicProductFolder } from "@/lib/types";
 
@@ -91,7 +91,7 @@ function ProductCard({
   onRemove,
   onAddImages,
   onRemoveImage,
-  onProductInfoChange,
+  onFieldChange,
 }: {
   folder: InfographicProductFolder;
   index: number;
@@ -99,7 +99,7 @@ function ProductCard({
   onRemove: (id: string) => void;
   onAddImages: (folderId: string, files: File[]) => void;
   onRemoveImage: (folderId: string, imageId: string) => void;
-  onProductInfoChange: (id: string, value: string) => void;
+  onFieldChange: (id: string, patch: Partial<InfographicProductFolder>) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(folder.name);
@@ -170,16 +170,54 @@ function ProductCard({
         compact
       />
 
-      {/* Product info */}
+      {/* Minimalistic callout info */}
       <div>
         <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 mb-1.5">
-          Product information
+          ✨ Minimalistic callouts
         </label>
         <Textarea
-          value={folder.productInfo ?? ""}
-          onChange={(e) => onProductInfoChange(folder.id, e.target.value)}
-          placeholder="Feature bullets or a description. Bullets are used directly; long paragraphs are summarised to bullets automatically. e.g. • Breathable knit upper • Carbon-plate midsole • Rubber grip outsole"
-          className="min-h-[90px] text-sm resize-y"
+          value={folder.minimalisticInfo ?? folder.productInfo ?? ""}
+          onChange={(e) => onFieldChange(folder.id, { minimalisticInfo: e.target.value })}
+          placeholder="Feature bullets for the floating-pair infographic. e.g. • Breathable knit upper • Carbon-plate midsole • Rubber grip outsole. Wrap exact words in quotes to render them verbatim."
+          className="min-h-[80px] text-sm resize-y"
+        />
+      </div>
+
+      {/* Sole-construction: layer count + per-layer callout info */}
+      <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
+        <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+          🧱 Sole-construction layers
+        </label>
+        <div className="grid grid-cols-3 gap-2">
+          {SOLE_CONSTRUCTION_LAYER_OPTIONS.map((opt) => {
+            const active = (folder.soleConstructionLayers ?? 3) === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => onFieldChange(folder.id, { soleConstructionLayers: opt.value })}
+                title={opt.description}
+                className={cn(
+                  "rounded-lg border px-2 py-2 text-left transition-all",
+                  active
+                    ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                    : "border-border hover:border-primary/40 hover:bg-muted/40"
+                )}
+              >
+                <div className="text-xs font-semibold text-foreground">{opt.label}</div>
+                <div className="text-[10px] leading-tight text-muted-foreground mt-0.5">{opt.description}</div>
+              </button>
+            );
+          })}
+        </div>
+        <Textarea
+          value={folder.soleConstructionInfo ?? folder.productInfo ?? ""}
+          onChange={(e) => onFieldChange(folder.id, { soleConstructionInfo: e.target.value })}
+          placeholder={
+            "One short callout label per layer, top-to-bottom (rendered verbatim). e.g.\n" +
+            "Upper Strap\nContoured Footbed\nGrip Outsole"
+          }
+          className="min-h-[80px] text-sm resize-y"
         />
       </div>
     </div>
@@ -196,7 +234,7 @@ export function StepInfographicProducts({ store }: { store: VTONStore }) {
     renameInfographicFolder,
     addInfographicFolderImage,
     removeInfographicFolderImage,
-    updateInfographicFolderProductInfo,
+    updateInfographicFolder,
     infographicBrand,
     setInfographicBrandLogo,
     setInfographicBrandPlacement,
@@ -208,6 +246,9 @@ export function StepInfographicProducts({ store }: { store: VTONStore }) {
       name: `Product ${infographicFolders.length + 1}`,
       images: [],
       productInfo: "",
+      minimalisticInfo: "",
+      soleConstructionInfo: "",
+      soleConstructionLayers: 3,
     });
   };
 
@@ -232,6 +273,9 @@ export function StepInfographicProducts({ store }: { store: VTONStore }) {
           preview: URL.createObjectURL(file),
         })),
         productInfo: "",
+        minimalisticInfo: "",
+        soleConstructionInfo: "",
+        soleConstructionLayers: 3,
       });
     });
   };
@@ -334,7 +378,7 @@ export function StepInfographicProducts({ store }: { store: VTONStore }) {
                 onRemove={removeInfographicFolder}
                 onAddImages={handleAddImages}
                 onRemoveImage={removeInfographicFolderImage}
-                onProductInfoChange={updateInfographicFolderProductInfo}
+                onFieldChange={updateInfographicFolder}
               />
             ))}
           </div>
