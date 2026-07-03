@@ -13,6 +13,7 @@ import {
   INFOGRAPHIC_WIZARD_STEPS,
   MODEL_CREATION_WIZARD_STEPS,
   MODEL_EDIT_WIZARD_STEPS,
+  EDIT_IMAGE_WIZARD_STEPS,
 } from "@/lib/constants";
 import { StepGarments } from "./step-garments";
 import { StepStyling } from "./step-styling";
@@ -44,6 +45,10 @@ import { StepModelGenerate } from "./step-model-generate";
 import { StepModelEditUpload } from "./step-model-edit-upload";
 import { StepModelEditDirective } from "./step-model-edit-directive";
 import { StepModelEditGenerate } from "./step-model-edit-generate";
+import { StepEditImageUpload } from "./step-edit-image-upload";
+import { StepEditImageType } from "./step-edit-image-type";
+import { StepEditImageVariation } from "./step-edit-image-variation";
+import { StepEditImageGenerate } from "./step-edit-image-generate";
 import { AppSidebar } from "./app-sidebar";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -139,6 +144,13 @@ const MODEL_EDIT_STEP_ICONS: Record<number, React.ReactNode> = {
   3: <Sparkles className="w-4 h-4" />,
 };
 
+const EDIT_IMAGE_STEP_ICONS: Record<number, React.ReactNode> = {
+  1: <Upload className="w-4 h-4" />,
+  2: <Layers className="w-4 h-4" />,
+  3: <Wand2 className="w-4 h-4" />,
+  4: <Sparkles className="w-4 h-4" />,
+};
+
 function getFeatureLabel(featureMode: FeatureMode) {
   switch (featureMode) {
     case "vton":
@@ -157,6 +169,8 @@ function getFeatureLabel(featureMode: FeatureMode) {
       return "Infographics";
     case "model-creation":
       return "AI Models";
+    case "edit-image":
+      return "Edit Image";
   }
 }
 
@@ -182,6 +196,7 @@ export function VTONWizard() {
     modelCreationMode,
     setModelCreationMode,
     isModelEditGenerating,
+    isEditImageGenerating,
   } = store;
 
   // Mirror the selected Google backend into the gemini-client module so every
@@ -199,7 +214,10 @@ export function VTONWizard() {
   const isInfographic = featureMode === "infographic";
   const isModelCreation = featureMode === "model-creation";
   const isModelEdit = isModelCreation && modelCreationMode === "edit";
-  const activeWizardSteps = isModelCreation
+  const isEditImage = featureMode === "edit-image";
+  const activeWizardSteps = isEditImage
+    ? EDIT_IMAGE_WIZARD_STEPS
+    : isModelCreation
     ? isModelEdit
       ? MODEL_EDIT_WIZARD_STEPS
       : MODEL_CREATION_WIZARD_STEPS
@@ -217,7 +235,7 @@ export function VTONWizard() {
     ? MODEL_SWAP_WIZARD_STEPS
     : WIZARD_STEPS;
   const maxStep = activeWizardSteps.length;
-  const anyGenerating = isGenerating || isSwatchGenerating || isReplicateGenerating || isVideoGenerating || isRoomStagingGenerating || isInfographicGenerating || isModelCreationGenerating || isModelEditGenerating;
+  const anyGenerating = isGenerating || isSwatchGenerating || isReplicateGenerating || isVideoGenerating || isRoomStagingGenerating || isInfographicGenerating || isModelCreationGenerating || isModelEditGenerating || isEditImageGenerating;
 
   const goNext = () => {
     const nextStep = (currentStep + 1) as WizardStep;
@@ -260,7 +278,9 @@ export function VTONWizard() {
     }
   };
 
-  const stepIcons = isModelCreation
+  const stepIcons = isEditImage
+    ? EDIT_IMAGE_STEP_ICONS
+    : isModelCreation
     ? isModelEdit
       ? MODEL_EDIT_STEP_ICONS
       : MODEL_CREATION_STEP_ICONS
@@ -511,7 +531,14 @@ export function VTONWizard() {
 
             {/* Step Content */}
             <div className="min-h-[400px]">
-              {isModelCreation ? (
+              {isEditImage ? (
+                <>
+                  {currentStep === 1 && <StepEditImageUpload store={store} />}
+                  {currentStep === 2 && <StepEditImageType store={store} />}
+                  {currentStep === 3 && <StepEditImageVariation store={store} />}
+                  {currentStep === 4 && <StepEditImageGenerate store={store} />}
+                </>
+              ) : isModelCreation ? (
                 isModelEdit ? (
                   <>
                     {currentStep === 1 && <StepModelEditUpload store={store} />}

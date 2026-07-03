@@ -22,9 +22,11 @@ import type {
   ComplementaryImage,
   GarmentImage,
   ModelImage,
+  ProductOfInterest,
   StepCost,
   TokenUsage,
 } from "./types";
+import { buildEditImagePrompt } from "./gemini";
 
 // --- Size resolver -------------------------------------------------------
 
@@ -372,6 +374,87 @@ export async function generateModelEditImageAzure({
     outputTokens: json.usage?.output_tokens ?? 0,
   };
   const cost = computeAzureImageGenCost("Model Edit Image (gpt-image-2)", tokens, quality);
+
+  return {
+    imageData: `data:image/png;base64,${b64}`,
+    cost,
+    responseContent: json,
+  };
+}
+
+export interface AzureEditImageArgs {
+  editInstruction: string;
+  aiImage: { file: File };
+  productImages: { file: File }[];
+  productOfInterest: ProductOfInterest;
+  aspectRatio: AspectRatio;
+  imageSize: "1K" | "2K" | "4K";
+}
+
+/**
+ * Renders one Edit Image variation with Azure gpt-image-2. The AI base image is
+ * always attached first (so the route hits `/images/edits`), followed by the
+ * product reference images. gpt-image-2 has no slot labels, so images are
+ * referenced by ORDER inside the flat prompt (which reuses the same
+ * preservation prose as the Gemini path via {@link buildEditImagePrompt}).
+ * Return shape matches the Gemini `generateEditImage` (minus `contentParts`).
+ */
+export async function generateEditImageAzure({
+  editInstruction,
+  aiImage,
+  productImages,
+  productOfInterest,
+  aspectRatio,
+  imageSize,
+}: AzureEditImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
+  const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
+
+  const prompt = `The first attached image is the AI-GENERATED base image to edit. The remaining attached image(s) are the PRODUCT REFERENCE showing the product that must be replicated exactly — use them only as the product's identity reference, never copy their framing or background.\n\n${buildEditImagePrompt(
+    { editInstruction, productOfInterest }
+  )}`;
+
+  const form = new FormData();
+  form.append("prompt", prompt);
+  form.append("model", "gpt-image-2");
+  form.append("n", "1");
+  form.append("size", size);
+  form.append("quality", quality);
+  form.append("image[]", aiImage.file, aiImage.file.name);
+  for (const img of productImages) {
+    form.append("image[]", img.file, img.file.name);
+  }
+
+  const response = await fetch("/api/azure-image/generate", {
+    method: "POST",
+    body: form,
+  });
+
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const errJson = (await response.json()) as AzureImageResponse;
+      if (errJson.error?.message) detail = `${detail}: ${errJson.error.message}`;
+    } catch {
+      try {
+        detail = `${detail}: ${await response.text()}`;
+      } catch {
+        // noop
+      }
+    }
+    throw new Error(`Azure gpt-image-2 request failed — ${detail}`);
+  }
+
+  const json = (await response.json()) as AzureImageResponse;
+  const b64 = json.data?.[0]?.b64_json;
+  if (!b64) {
+    throw new Error("No image returned from Azure gpt-image-2");
+  }
+
+  const tokens: TokenUsage = {
+    inputTokens: json.usage?.input_tokens ?? 0,
+    outputTokens: json.usage?.output_tokens ?? 0,
+  };
+  const cost = computeAzureImageGenCost("Edit Image (gpt-image-2)", tokens, quality);
 
   return {
     imageData: `data:image/png;base64,${b64}`,

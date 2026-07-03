@@ -344,7 +344,7 @@ export type WizardStep = 1 | 2 | 3 | 4 | 5;
 
 export type AppMode = "single" | "bulk";
 
-export type FeatureMode = "vton" | "model-swap" | "swatch" | "replicate" | "product-video" | "room-staging" | "infographic" | "model-creation";
+export type FeatureMode = "vton" | "model-swap" | "swatch" | "replicate" | "product-video" | "room-staging" | "infographic" | "model-creation" | "edit-image";
 
 export type NamingLogic = "folder-name-sequential" | "folder-name-sequential-1";
 
@@ -462,6 +462,79 @@ export interface ModelEditResult {
   costBreakdown?: GenerationCostBreakdown;
   error?: string;
   /** True once this result has been saved into the Model Library. */
+  saved?: boolean;
+}
+
+// --- Edit Image Types ---
+
+/** Which product in the paired product images must be replicated perfectly during the edit. */
+export type ProductOfInterest = "topwear" | "bottomwear" | "footwear";
+
+/** The nature of the bulk edit. Only "variation" is currently selectable. */
+export type EditType = "variation" | "replace" | "fix";
+
+/** One uploaded image (AI generation, product reference, or global variation reference). */
+export interface EditImageAsset {
+  id: string;
+  file: File;
+  preview: string;
+}
+
+/**
+ * One correlated subfolder: a set of AI-generated images (edit targets) paired by
+ * shared subfolder name with a set of product images (identity reference). Each AI
+ * image is edited individually; the product images tell the model exactly which
+ * product to replicate perfectly.
+ */
+export interface EditImageSubfolder {
+  id: string;
+  /** Shared subfolder name — the correlation key between the two parent folders. */
+  name: string;
+  /** AI-generated images to edit — one edited output is produced per image. */
+  aiImages: EditImageAsset[];
+  /** Product images used purely as identity reference; never altered in the output. */
+  productImages: EditImageAsset[];
+  /** Which product must be replicated perfectly. Required before generation. */
+  productOfInterest?: ProductOfInterest;
+  /** Set when only one side of the pair was uploaded — flagged in the UI, excluded from generation. */
+  unmatched?: "ai-only" | "product-only";
+}
+
+/** One edited output — exactly one per AI-generated source image. */
+export interface EditImageResult {
+  id: string;
+  subfolderId: string;
+  subfolderName: string;
+  sourceAiImageId: string;
+  /** Original AI image preview — shown alongside the output in review mode. */
+  sourcePreview: string;
+  /** Product image previews — shown alongside the output in review mode. */
+  productPreviews: string[];
+  productOfInterest?: ProductOfInterest;
+  /** Per-image seed used to drive a distinct variation across the batch. */
+  diversityIndex: number;
+  aspectRatio: AspectRatio;
+  status:
+    | "pending"
+    | "generating-instruction"
+    | "generating-image"
+    | "auto-retrying"
+    | "editing"
+    | "completed"
+    | "cancelled"
+    | "error";
+  /** The concise "what changes" snippet from the enrichment step. */
+  editInstruction?: string;
+  /** Edited image as a data URL. */
+  imageData?: string;
+  /** Model's response Content from the image step — replayed for contextual retry. */
+  imageGenResponseContent?: unknown;
+  /** Original image-step content parts — replayed for contextual retry. */
+  originalContentParts?: InfographicContentPart[];
+  /** History of contextual-retry exchanges for iterative refinement. */
+  editHistory?: EditHistoryEntry[];
+  costBreakdown?: GenerationCostBreakdown;
+  error?: string;
   saved?: boolean;
 }
 

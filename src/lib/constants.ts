@@ -1,4 +1,4 @@
-import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SoleConstructionLayerCount, SwatchShape, TextGenModel, TopwearLength } from "./types";
+import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, EditType, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, ProductOfInterest, SetLayoutStyle, SleeveLength, SoleConstructionLayerCount, SwatchShape, TextGenModel, TopwearLength } from "./types";
 
 export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; description: string }[] = [
   { value: "clothing", label: "Clothing", description: "Apparel, garments, and fashion items" },
@@ -2870,6 +2870,37 @@ export const MODEL_EDIT_WIZARD_STEPS = [
   { step: 2, title: "Edit", description: "Describe the one change + optional reference" },
   { step: 3, title: "Generate", description: "Apply the edit to every image & save" },
 ] as const;
+
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║                      EDIT IMAGE FEATURE                            ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+
+export const EDIT_IMAGE_WIZARD_STEPS = [
+  { step: 1, title: "Upload & Pair", description: "Upload AI generations + product garments" },
+  { step: 2, title: "Edit Type", description: "Choose the nature of the bulk edit" },
+  { step: 3, title: "Variation", description: "Describe what should vary + references" },
+  { step: 4, title: "Review", description: "Generate, review & refine edits" },
+] as const;
+
+/** Edit types. Only "variation" is selectable today; the rest are surfaced as "Coming soon". */
+export const EDIT_TYPE_OPTIONS: {
+  id: EditType;
+  label: string;
+  description: string;
+  icon: string;
+  enabled: boolean;
+}[] = [
+  { id: "variation", label: "Variation", description: "Introduce a distinct contextual variation into every image (e.g. a different prop) while keeping the product unchanged", icon: "🎲", enabled: true },
+  { id: "replace", label: "Replace", description: "Swap out a specific element across the batch", icon: "🔁", enabled: false },
+  { id: "fix", label: "Fix", description: "Correct artefacts or defects across the batch", icon: "🩹", enabled: false },
+];
+
+/** Fixed product-of-interest options — tells the editor which product to replicate perfectly. */
+export const PRODUCT_OF_INTEREST_OPTIONS: { value: ProductOfInterest; label: string }[] = [
+  { value: "topwear", label: "Topwear" },
+  { value: "bottomwear", label: "Bottomwear" },
+  { value: "footwear", label: "Footwear" },
+];
 
 export const MODEL_GENDER_OPTIONS: { value: ModelCreationGender; label: string; description: string }[] = [
   { value: "female", label: "Female", description: "Black crop top + black shorts" },

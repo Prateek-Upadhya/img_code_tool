@@ -96,6 +96,10 @@ import {
   ModelEditSource,
   ModelEditResult,
   SavedModel,
+  EditImageSubfolder,
+  EditImageAsset,
+  EditImageResult,
+  EditType,
 } from "@/lib/types";
 import { MAX_CAMERA_MOVEMENTS, MAX_MODEL_MOVEMENTS } from "@/lib/constants";
 
@@ -446,6 +450,62 @@ export function useVTONStore() {
 
   const resetModelEditResults = useCallback(() => {
     setModelEditResults([]);
+  }, []);
+
+  // --- Edit Image State ---
+  const [editImageSubfolders, setEditImageSubfolders] = useState<EditImageSubfolder[]>([]);
+  const [editType, setEditType] = useState<EditType>("variation");
+  const [editImageVariationInstructions, setEditImageVariationInstructions] = useState<string>("");
+  const [editImageReferenceImages, setEditImageReferenceImages] = useState<EditImageAsset[]>([]);
+  const [editImageResults, setEditImageResults] = useState<EditImageResult[]>([]);
+  const [isEditImageGenerating, setIsEditImageGenerating] = useState(false);
+
+  const updateEditImageSubfolder = useCallback(
+    (id: string, patch: Partial<EditImageSubfolder>) => {
+      setEditImageSubfolders((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+    },
+    []
+  );
+
+  const removeEditImageSubfolder = useCallback((id: string) => {
+    setEditImageSubfolders((prev) => {
+      const removed = prev.find((s) => s.id === id);
+      if (removed) {
+        for (const img of [...removed.aiImages, ...removed.productImages]) {
+          URL.revokeObjectURL(img.preview);
+        }
+      }
+      return prev.filter((s) => s.id !== id);
+    });
+  }, []);
+
+  const addEditImageReferenceImages = useCallback((files: File[]) => {
+    setEditImageReferenceImages((prev) => [
+      ...prev,
+      ...files
+        .filter((f) => f.type.startsWith("image/"))
+        .map((file) => ({
+          id: `eir-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          file,
+          preview: URL.createObjectURL(file),
+        })),
+    ]);
+  }, []);
+
+  const removeEditImageReferenceImage = useCallback((id: string) => {
+    setEditImageReferenceImages((prev) => {
+      const removed = prev.find((r) => r.id === id);
+      if (removed) URL.revokeObjectURL(removed.preview);
+      return prev.filter((r) => r.id !== id);
+    });
+  }, []);
+
+  const updateEditImageResult = useCallback((id: string, update: Partial<EditImageResult>) => {
+    setEditImageResults((prev) => prev.map((r) => (r.id === id ? { ...r, ...update } : r)));
+  }, []);
+
+  const resetEditImageResults = useCallback(() => {
+    setEditImageResults([]);
   }, []);
 
   // --- Single Mode Actions ---
@@ -1856,6 +1916,25 @@ export function useVTONStore() {
         }
       }
 
+      // --- EDIT IMAGE MODE ---
+      if (featureMode === "edit-image") {
+        const hasValidPairs = editImageSubfolders.some(
+          (s) =>
+            !s.unmatched &&
+            s.aiImages.length > 0 &&
+            s.productImages.length > 0 &&
+            !!s.productOfInterest
+        );
+        const hasInstructions = editImageVariationInstructions.trim() !== "";
+        switch (step) {
+          case 1: return true;                                          // Upload & Pair
+          case 2: return hasValidPairs;                                 // Edit Type
+          case 3: return hasValidPairs && editType === "variation";     // Variation
+          case 4: return hasValidPairs && editType === "variation" && hasInstructions; // Review
+          default: return false;
+        }
+      }
+
       // --- AI MODEL CREATION MODE ---
       if (featureMode === "model-creation") {
         if (modelCreationMode === "edit") {
@@ -2064,7 +2143,7 @@ export function useVTONStore() {
           return false;
       }
     },
-    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts, modelBoxes, modelCreationMode, modelEditSources, modelEditDirective]
+    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts, modelBoxes, modelCreationMode, modelEditSources, modelEditDirective, editImageSubfolders, editImageVariationInstructions, editType]
   );
 
   return {
@@ -2449,6 +2528,14 @@ export function useVTONStore() {
     modelEditReference, setModelEditReference,
     modelEditResults, setModelEditResults, updateModelEditResult, resetModelEditResults,
     isModelEditGenerating, setIsModelEditGenerating,
+
+    // --- Edit Image ---
+    editImageSubfolders, setEditImageSubfolders, updateEditImageSubfolder, removeEditImageSubfolder,
+    editType, setEditType,
+    editImageVariationInstructions, setEditImageVariationInstructions,
+    editImageReferenceImages, addEditImageReferenceImages, removeEditImageReferenceImage,
+    editImageResults, setEditImageResults, updateEditImageResult, resetEditImageResults,
+    isEditImageGenerating, setIsEditImageGenerating,
   };
 }
 

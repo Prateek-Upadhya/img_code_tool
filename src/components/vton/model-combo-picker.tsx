@@ -97,7 +97,8 @@ export function ModelComboPicker({ store }: ModelComboPickerProps) {
   const showImage =
     featureMode === "vton" ||
     featureMode === "infographic" ||
-    featureMode === "model-creation";
+    featureMode === "model-creation" ||
+    featureMode === "edit-image";
 
   return (
     <div className="space-y-3">

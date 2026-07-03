@@ -24,6 +24,7 @@ import {
   Sofa,
   LayoutTemplate,
   UsersRound,
+  Wand2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { FeatureMode } from "@/lib/types";
@@ -86,6 +87,12 @@ const NAV_ITEMS: {
     label: "AI Models",
     icon: UsersRound,
     description: "Create custom fashion models",
+  },
+  {
+    id: "edit-image",
+    label: "Edit Image",
+    icon: Wand2,
+    description: "Bulk-edit AI generations",
   },
 ];
 

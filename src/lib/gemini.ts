@@ -29,6 +29,7 @@ import {
   Pose,
   PoseViewAngle,
   ProductCategory,
+  ProductOfInterest,
   SetLayoutStyle,
   SetVariantFolder,
   SleeveLength,
@@ -6220,4 +6221,359 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
   }
 
   throw new Error("No image generated from contextual retry");
+}
+
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║                      EDIT IMAGE FEATURE                            ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+
+/** Human-readable label for the product that must be replicated perfectly. */
+export function productOfInterestLabel(product: ProductOfInterest): string {
+  switch (product) {
+    case "topwear":
+      return "topwear garment";
+    case "bottomwear":
+      return "bottomwear garment";
+    case "footwear":
+      return "footwear";
+  }
+}
+
+/**
+ * Edit Image — Step 1. Given the AI-generated base image to edit (+ optional
+ * global reference image(s)) and the user's variation request, the Pro model
+ * writes ONE concise, strictly-constrained edit instruction (≤200 words) that
+ * introduces a variation distinct from the rest of the batch while preserving
+ * the product of interest and everything else. Per requirement, ONLY the base
+ * AI image and the user's reference images are sent to the enricher — the
+ * product reference images are withheld here and only reach the render step.
+ */
+export async function generateEditImageInstruction({
+  textGenModel = "gemini",
+  aiImage,
+  referenceImages = [],
+  variationInstructions,
+  productOfInterest,
+  diversityIndex,
+  abortSignal,
+}: {
+  textGenModel?: TextGenModel;
+  aiImage: { file: File };
+  referenceImages?: { file: File }[];
+  variationInstructions: string;
+  productOfInterest: ProductOfInterest;
+  diversityIndex: number;
+  abortSignal?: AbortSignal;
+}): Promise<{ editInstruction: string; cost: StepCost }> {
+  const ai = getTextClient(textGenModel);
+  const hasRefs = referenceImages.length > 0;
+  const productLabel = productOfInterestLabel(productOfInterest);
+
+  const systemPrompt = `You are an expert photo retoucher writing a SINGLE, surgical edit instruction for an image-editing model performing a BULK VARIATION pass. You are given the AI-GENERATED base image to edit (Image 1)${hasRefs ? ", and REFERENCE image(s) for visual guidance (the subsequent images)" : ""}.
+
+═══ THE VARIATION THE USER WANTS ═══
+${variationInstructions.trim()}
+
+═══ PRODUCT THAT MUST BE REPLICATED PERFECTLY ═══
+The ${productLabel} in the base image is the product of interest. It must remain pixel-identical — do NOT restyle, recolor, reshape, rebrand, resize or move it. Only the element(s) the user asked to vary may change.
+
+═══ BATCH DIVERSITY (variant #${diversityIndex}) ═══
+This is one image in a large batch, and every image must receive a DIFFERENT, distinct variation. Deliberately avoid the most obvious or default choice; pick a fresh, contextually plausible option unique to this variant (diversity seed ${diversityIndex}). The variation must stay coherent with the scene's existing style, materials, lighting and perspective.
+
+HARD CONSTRAINTS:
+- Output ONE concise, photographic instruction of NO MORE THAN 200 words, describing ONLY the FINAL changed state of what the user asked to vary — present tense, positive language, no negations, no action verbs like "remove"/"don't"/"make".
+- Begin with "Change only" and end with an explicit clause that the ${productLabel} product and every other region — the subject, pose, composition, background aside from the varied element, lighting, shadows, framing and aspect ratio — remain EXACTLY the same.
+- Do NOT restate slot labels or mention "Image 1/2"; the render template handles labeling.${hasRefs ? "\n- Use the reference image(s) ONLY as visual guidance for the variation; ignore everything else about them." : ""}
+
+Output ONLY the instruction text — no preamble, no commentary.`;
+
+  const contents: ContentPart[] = [{ text: systemPrompt }];
+  const aiBase64 = await fileToBase64(aiImage.file);
+  contents.push({ inlineData: { mimeType: aiImage.file.type, data: aiBase64 } });
+  for (const ref of referenceImages) {
+    const refBase64 = await fileToBase64(ref.file);
+    contents.push({ inlineData: { mimeType: ref.file.type, data: refBase64 } });
+  }
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+      abortSignal,
+    },
+  });
+
+  const text = response.text;
+  if (!text) {
+    throw new Error("No edit instruction returned from the text model");
+  }
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeStepCost(
+    textCostModel(textGenModel),
+    "Edit Image Instruction (Gemini 3.1 Pro)",
+    tokens
+  );
+
+  return { editInstruction: text.trim(), cost };
+}
+
+/**
+ * Builds the positive-preservation edit block for an Edit Image render. Shared by
+ * the Gemini and Azure render paths so both speak the same preservation prose.
+ */
+export function buildEditImagePrompt({
+  editInstruction,
+  productOfInterest,
+}: {
+  editInstruction: string;
+  productOfInterest: ProductOfInterest;
+}): string {
+  const productLabel = productOfInterestLabel(productOfInterest);
+  return `Edit the AI-GENERATED base image. Change only: ${editInstruction.trim()}.
+
+Replicate the ${productLabel} product exactly as shown in the PRODUCT REFERENCE image(s) — its shape, proportions, colorway, materials, logos and detailing must stay identical and unmoved. Every other region of the base image — the subject, pose and body position, hands, composition and background aside from the element being varied, lighting, shadows, camera framing, crop and aspect ratio — stays exactly as it is in the base image.
+
+Only change what is explicitly requested above; nothing else may change.
+
+Output a single photorealistic edited image at the SAME aspect ratio and framing as the base image.`;
+}
+
+/**
+ * Builds the multimodal render turn for an Edit Image generation: the AI base
+ * image (source of truth) + the product reference image(s) (identity source) +
+ * the positive-preservation edit block. Shared so a contextual retry can rebuild
+ * the exact original turn regardless of which engine produced the image.
+ */
+export async function buildEditImageContentParts({
+  editInstruction,
+  aiImage,
+  productImages,
+  productOfInterest,
+}: {
+  editInstruction: string;
+  aiImage: { file: File };
+  productImages: { file: File }[];
+  productOfInterest: ProductOfInterest;
+}): Promise<ContentPart[]> {
+  const productLabel = productOfInterestLabel(productOfInterest);
+  const contentParts: ContentPart[] = [];
+  contentParts.push({
+    text: `═══ IMAGE 1 — AI-GENERATED BASE (ABSOLUTE SOURCE OF TRUTH) ═══\nThe image below is the photograph to edit. Treat every pixel as the source of truth and preserve it except for the single requested variation.`,
+  });
+  const aiBase64 = await fileToBase64(aiImage.file);
+  contentParts.push({ inlineData: { mimeType: aiImage.file.type, data: aiBase64 } });
+
+  contentParts.push({
+    text: `═══ PRODUCT REFERENCE — REPLICATE THIS ${productLabel.toUpperCase()} EXACTLY ═══\nThe image(s) below show the ${productLabel} product exactly as it must appear in the output. Use them ONLY as the identity reference for that product; do not copy their framing, background, lighting or any other content into the edit.`,
+  });
+  for (const img of productImages) {
+    const base64 = await fileToBase64(img.file);
+    contentParts.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+  }
+
+  contentParts.push({
+    text: `═══ THE EDIT TO PERFORM ═══\n${buildEditImagePrompt({ editInstruction, productOfInterest })}`,
+  });
+  return contentParts;
+}
+
+/**
+ * Edit Image — Step 2. Renders the edited image with
+ * gemini-3.1-flash-image-preview from the AI base image (preserved except the
+ * requested variation), the product reference images (identity source of truth),
+ * and the enrichment instruction. Returns `contentParts` so the caller can replay
+ * them for a later contextual retry.
+ */
+export async function generateEditImage({
+  apiKey,
+  editInstruction,
+  aiImage,
+  productImages,
+  productOfInterest,
+  aspectRatio,
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  editInstruction: string;
+  aiImage: { file: File };
+  productImages: { file: File }[];
+  productOfInterest: ProductOfInterest;
+  aspectRatio: AspectRatio;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; cost: StepCost; responseContent: unknown; contentParts: ContentPart[] }> {
+  const ai = getGeminiClient(apiKey);
+
+  const contentParts = await buildEditImageContentParts({
+    editInstruction,
+    aiImage,
+    productImages,
+    productOfInterest,
+  });
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image-preview",
+    contents: contentParts,
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio, imageSize },
+      abortSignal,
+    },
+  });
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeImageGenCost("Edit Image (Nano Banana 2)", tokens, imageSize);
+  const responseContent = response.candidates?.[0]?.content;
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return {
+          imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+          cost,
+          responseContent,
+          contentParts,
+        };
+      }
+    }
+  }
+
+  throw new Error("No edited image generated from Nano Banana 2");
+}
+
+/**
+ * Edit Image — contextual retry (review mode). Mirrors {@link editInfographicImage}:
+ * Step A re-enriches a minimal edit instruction from the current output, the
+ * product references, an optional user-uploaded retry image and the new change
+ * request; Step B replays the original multi-turn context + edit history and
+ * applies only the new instruction, so untouched regions stay pixel-identical.
+ */
+export async function contextualRetryEditImage({
+  apiKey,
+  textGenModel = "gemini",
+  originalContentParts,
+  imageGenResponseContent,
+  editHistory,
+  generatedImageData,
+  productImages,
+  productOfInterest,
+  userChangeRequest,
+  referenceImage,
+  aspectRatio,
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  textGenModel?: TextGenModel;
+  originalContentParts: ContentPart[];
+  imageGenResponseContent: unknown;
+  editHistory?: EditHistoryEntry[];
+  generatedImageData: string;
+  productImages: { file: File }[];
+  productOfInterest: ProductOfInterest;
+  userChangeRequest: string;
+  referenceImage?: { file: File };
+  aspectRatio: AspectRatio;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; promptCost: StepCost; imageCost: StepCost; responseContent: unknown; editInstruction: string }> {
+  const aiText = getTextClient(textGenModel);
+  const ai = getGeminiClient(apiKey);
+  const productLabel = productOfInterestLabel(productOfInterest);
+  const hasReference = !!referenceImage;
+
+  // ── Step A: Pro writes a minimal, strictly-constrained edit instruction ──
+  const enrichSystemPrompt = `You are an expert photo retoucher performing a SURGICAL edit. You are given the currently generated edited image (first image), the original product reference photo(s) (subsequent images)${hasReference ? ", and a user-supplied REFERENCE image for guidance (the final image)" : ""}, and the user's requested change. Write a SINGLE, minimal, strictly-constrained edit instruction for an image-editing model.
+
+HARD CONSTRAINTS:
+- Make ONLY the change the user asked for. Change nothing else.
+- Begin the instruction with "Change only" and end it with an explicit clause that everything else — the ${productLabel} product identity and colorway, the subject, pose, composition, background, lighting, shadows and framing — must remain EXACTLY the same and pixel-identical.
+- Preserve the ${productLabel} product's identity from the product reference photos at all costs; do not redesign, recolor, rebrand, or alter any region the user did not mention.
+- Be concrete and unambiguous so the result is reproducible.${hasReference ? "\n- Use the user-supplied reference image ONLY as visual guidance for the requested change; ignore everything else about it." : ""}
+
+USER'S REQUESTED CHANGE:
+${userChangeRequest.trim()}
+
+Output ONLY the edit instruction text — no preamble, no commentary.`;
+
+  const enrichContents: ContentPart[] = [{ text: enrichSystemPrompt }];
+  const [genMime, genData] = parseDataUrl(generatedImageData);
+  enrichContents.push({ inlineData: { mimeType: genMime, data: genData } });
+  for (const img of productImages) {
+    const base64 = await fileToBase64(img.file);
+    enrichContents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+  }
+  if (referenceImage) {
+    const refBase64 = await fileToBase64(referenceImage.file);
+    enrichContents.push({ inlineData: { mimeType: referenceImage.file.type, data: refBase64 } });
+  }
+
+  const enrichResponse = await aiText.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents: enrichContents,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+      abortSignal,
+    },
+  });
+
+  const editInstruction = enrichResponse.text?.trim();
+  if (!editInstruction) {
+    throw new Error("No edit instruction returned from Gemini 3.1 Pro");
+  }
+  const promptTokens = extractTokenUsage(enrichResponse);
+  const promptCost = computeStepCost(
+    textCostModel(textGenModel),
+    "Edit Image Retry Prompt (Gemini 3.1 Pro)",
+    promptTokens
+  );
+
+  // ── Step B: replay the original multi-turn context and apply only that edit ──
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const contents: any[] = [
+    { role: "user", parts: originalContentParts },
+    imageGenResponseContent,
+  ];
+
+  if (editHistory && editHistory.length > 0) {
+    for (const entry of editHistory) {
+      contents.push({ role: "user", parts: [{ text: entry.userInstruction }] });
+      contents.push(entry.modelResponseContent);
+    }
+  }
+
+  contents.push({ role: "user", parts: [{ text: editInstruction }] });
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image-preview",
+    contents,
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio, imageSize },
+      abortSignal,
+    },
+  });
+
+  const imageTokens = extractTokenUsage(response);
+  const imageCost = computeImageGenCost("Edit Image Retry (Nano Banana 2)", imageTokens, imageSize);
+  const responseContent = response.candidates?.[0]?.content;
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return {
+          imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+          promptCost,
+          imageCost,
+          responseContent,
+          editInstruction,
+        };
+      }
+    }
+  }
+
+  throw new Error("No image generated from Edit Image contextual retry");
 }
