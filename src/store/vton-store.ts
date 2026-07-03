@@ -479,6 +479,21 @@ export function useVTONStore() {
     });
   }, []);
 
+  const removeEditImageAsset = useCallback(
+    (subfolderId: string, assetId: string, side: "ai" | "product") => {
+      setEditImageSubfolders((prev) =>
+        prev.map((s) => {
+          if (s.id !== subfolderId) return s;
+          const key = side === "ai" ? "aiImages" : "productImages";
+          const removed = s[key].find((a) => a.id === assetId);
+          if (removed) URL.revokeObjectURL(removed.preview);
+          return { ...s, [key]: s[key].filter((a) => a.id !== assetId) };
+        })
+      );
+    },
+    []
+  );
+
   const addEditImageReferenceImages = useCallback((files: File[]) => {
     setEditImageReferenceImages((prev) => [
       ...prev,
@@ -2530,7 +2545,7 @@ export function useVTONStore() {
     isModelEditGenerating, setIsModelEditGenerating,
 
     // --- Edit Image ---
-    editImageSubfolders, setEditImageSubfolders, updateEditImageSubfolder, removeEditImageSubfolder,
+    editImageSubfolders, setEditImageSubfolders, updateEditImageSubfolder, removeEditImageSubfolder, removeEditImageAsset,
     editType, setEditType,
     editImageVariationInstructions, setEditImageVariationInstructions,
     editImageReferenceImages, addEditImageReferenceImages, removeEditImageReferenceImage,

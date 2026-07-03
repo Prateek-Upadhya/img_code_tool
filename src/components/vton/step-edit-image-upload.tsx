@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useRef } from "react";
-import { FolderOpen, Trash2, AlertTriangle, ImageIcon, Package } from "lucide-react";
+import { FolderOpen, Trash2, AlertTriangle, ImageIcon, Package, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { groupFilesByFolder, correlateFolders, type GroupedFolder } from "@/lib/folder-upload";
 import { PRODUCT_OF_INTEREST_OPTIONS } from "@/lib/constants";
@@ -61,16 +61,32 @@ function FolderUploadButton({
   );
 }
 
-function ImageGrid({ images }: { images: EditImageAsset[] }) {
+function ImageGrid({
+  images,
+  onRemove,
+}: {
+  images: EditImageAsset[];
+  onRemove: (assetId: string) => void;
+}) {
   if (images.length === 0) {
     return <p className="text-[11px] italic text-muted-foreground">None uploaded</p>;
   }
   return (
     <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-5">
       {images.map((img) => (
-        <div key={img.id} className="aspect-square overflow-hidden rounded-md border border-border/60 bg-muted/20">
+        <div
+          key={img.id}
+          className="group/img relative aspect-square overflow-hidden rounded-md border border-border/60 bg-muted/20"
+        >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={img.preview} alt="" className="h-full w-full object-cover" />
+          <button
+            onClick={() => onRemove(img.id)}
+            className="absolute right-0.5 top-0.5 rounded-full bg-black/60 p-0.5 text-white opacity-0 transition-opacity hover:bg-red-500 group-hover/img:opacity-100"
+            title="Remove image"
+          >
+            <X className="h-3 w-3" />
+          </button>
         </div>
       ))}
     </div>
@@ -78,7 +94,13 @@ function ImageGrid({ images }: { images: EditImageAsset[] }) {
 }
 
 export function StepEditImageUpload({ store }: Props) {
-  const { editImageSubfolders, setEditImageSubfolders, updateEditImageSubfolder, removeEditImageSubfolder } = store;
+  const {
+    editImageSubfolders,
+    setEditImageSubfolders,
+    updateEditImageSubfolder,
+    removeEditImageSubfolder,
+    removeEditImageAsset,
+  } = store;
 
   const recorrelate = useCallback(
     (ai: GroupedFolder[], product: GroupedFolder[]) => {
@@ -170,13 +192,19 @@ export function StepEditImageUpload({ store }: Props) {
                 <p className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                   <ImageIcon className="h-3.5 w-3.5" /> AI Generations ({sub.aiImages.length})
                 </p>
-                <ImageGrid images={sub.aiImages} />
+                <ImageGrid
+                  images={sub.aiImages}
+                  onRemove={(assetId) => removeEditImageAsset(sub.id, assetId, "ai")}
+                />
               </div>
               <div className="space-y-2">
                 <p className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                   <Package className="h-3.5 w-3.5" /> Product Garments ({sub.productImages.length})
                 </p>
-                <ImageGrid images={sub.productImages} />
+                <ImageGrid
+                  images={sub.productImages}
+                  onRemove={(assetId) => removeEditImageAsset(sub.id, assetId, "product")}
+                />
               </div>
             </div>
 
