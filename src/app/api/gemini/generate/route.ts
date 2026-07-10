@@ -55,12 +55,19 @@ export async function POST(request: NextRequest) {
       const ai = getGoogleClient(backend);
       const response = await ai.models.generateContent(params);
 
-      // Own enumerable props (candidates, usageMetadata, promptFeedback, ...).
-      const payload: Record<string, unknown> = JSON.parse(JSON.stringify(response));
+      // Shallow-copy own enumerable props (candidates, usageMetadata,
+      // promptFeedback, ...). Avoids the JSON.stringify -> JSON.parse deep clone
+      // of the multi-MB base64 image, which — with 4 concurrent 2K/4K requests in
+      // the single pm2 Node heap — spiked memory into OOM territory (connection
+      // resets). NextResponse.json serializes this once on the way out.
+      const payload: Record<string, unknown> = { ...response };
 
-      // Re-attach the convenience getters the client relies on.
+      // Re-attach the convenience getters the client relies on. `.text` and
+      // `.functionCalls` are prototype getters dropped by serialization, so
+      // materialize them. Deliberately NOT re-attaching `.data`: it duplicates the
+      // base64 already carried under candidates[].content.parts[].inlineData.data,
+      // and no client code reads the top-level `.data` field.
       try { payload.text = response.text; } catch { /* non-text response */ }
-      try { payload.data = response.data; } catch { /* no inline data */ }
       try { payload.functionCalls = response.functionCalls; } catch { /* none */ }
 
       return NextResponse.json(payload);

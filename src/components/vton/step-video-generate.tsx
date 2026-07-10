@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { generateVideoPrompt, generateVideoExtensionPrompt } from "@/lib/gemini";
+import { fileToBase64Cached } from "@/lib/image-downscale";
 import {
   VIDEO_THEME_OPTIONS,
   VIDEO_CAMERA_MOVEMENT_OPTIONS,
@@ -25,17 +26,10 @@ import {
 import type { VTONStore } from "@/store/vton-store";
 import type { VideoGeneratedResult, VideoGenerationStatus } from "@/lib/types";
 
+// Downscales large source images before base64-encoding (shared cache with the
+// image-gen path). See src/lib/image-downscale.ts.
 function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const base64 = result.split(",")[1];
-      resolve(base64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
+  return fileToBase64Cached(file);
 }
 
 function isRetryableError(message: string): boolean {

@@ -964,8 +964,11 @@ export function StepGenerate({ store }: StepGenerateProps) {
     // concurrency is gated on the image backend, not the text model. gpt-image-2
     // funnels through the server-side endpoint pool (rate-limits + rotates across
     // regional deployments with 429 failover), so it safely sustains ~10 in
-    // flight; Gemini (3.1 Flash Image) is capped at 5.
-    const CONCURRENCY_LIMIT = imageGenModel === "gpt-image-2" ? 10 : 5;
+    // flight; Gemini (3.1 Flash Image) is capped at 4 to match the authoritative
+    // server-side gate (src/lib/gemini-image-gate.ts MAX_CONCURRENT). Firing more
+    // just queues server-side and inflates peak base64 buffering in the single
+    // pm2 Node heap, which was tipping the EC2 host into OOM / connection resets.
+    const CONCURRENCY_LIMIT = imageGenModel === "gpt-image-2" ? 10 : 4;
     for (let i = 0; i < initialResults.length; i += CONCURRENCY_LIMIT) {
       if (signal.aborted) break;
       const batch = initialResults.slice(i, i + CONCURRENCY_LIMIT);

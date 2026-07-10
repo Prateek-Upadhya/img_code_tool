@@ -85,6 +85,19 @@ export async function POST(request: NextRequest) {
     const toGenerationsUrl = (url: string) =>
       url.replace("/images/edits", "/images/generations");
 
+    // The `/images/edits` endpoint takes multipart/form-data (it carries image
+    // files), but `/images/generations` ONLY accepts application/json. When there
+    // is no reference image we hit generations, so build a JSON body from the
+    // same fields. A string body is reusable across retry attempts (unlike a
+    // one-shot FormData stream).
+    const generationsBody = JSON.stringify({
+      prompt: String(incoming.get("prompt") ?? ""),
+      model: String(incoming.get("model") ?? "gpt-image-2"),
+      n: Number(incoming.get("n") ?? 1),
+      size: String(incoming.get("size") ?? "1024x1024"),
+      quality: String(incoming.get("quality") ?? "medium"),
+    });
+
     // Retry across distinct endpoints on throttling: at most one attempt per
     // configured deployment (capped at 4). Endpoints that 429/503 are excluded
     // from subsequent attempts and put into cooldown by the pool.
@@ -99,8 +112,10 @@ export async function POST(request: NextRequest) {
       const targetUrl = hasImage ? ep.url : toGenerationsUrl(ep.url);
       const azureResponse = await fetch(targetUrl, {
         method: "POST",
-        headers: { "api-key": ep.key },
-        body: rebuildForm(incoming),
+        headers: hasImage
+          ? { "api-key": ep.key }
+          : { "api-key": ep.key, "Content-Type": "application/json" },
+        body: hasImage ? rebuildForm(incoming) : generationsBody,
         signal: request.signal,
         // Give slow gpt-image-2 renders the full 3-minute window instead of
         // undici's shorter defaults. `dispatcher` is an undici extension Node's

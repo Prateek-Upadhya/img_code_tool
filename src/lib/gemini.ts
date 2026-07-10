@@ -1,6 +1,7 @@
 import { ThinkingLevel } from "@google/genai";
 import { getGeminiClient } from "./gemini-client";
 import { getTextClient } from "./text-client";
+import { fileToBase64Cached } from "./image-downscale";
 import { buildPropInteractionCue } from "./utils";
 import {
   AccessoryItem,
@@ -110,18 +111,11 @@ export function computeImageGenCost(label: string, tokens: TokenUsage, imageSize
   return { model, label, tokens, inputCost, outputCost, totalCost: inputCost + outputCost };
 }
 
+// Downscales large source images (<= 2048px longest edge) before base64-encoding
+// so requests stay a few MB instead of 100+ MB. Results are cached per File and
+// shared across the prompt-gen + image-gen requests. See src/lib/image-downscale.ts.
 function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      // Strip the data URL prefix to get just base64
-      const base64 = result.split(",")[1];
-      resolve(base64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
+  return fileToBase64Cached(file);
 }
 
 /**
