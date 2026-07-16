@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Camera, Check, CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, Filter, GripVertical, ImageIcon, Package, Plus, ShieldCheck, ShieldOff, Sparkles, Trash2, Upload, User, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ACCESSORY_CATEGORIES, ASPECT_RATIOS, FRAMING_OPTIONS, POSES, FOOTWEAR_POSES, UGC_SHOT_TYPE_OPTIONS, UGC_SCENE_PRESETS } from "@/lib/constants";
@@ -10,9 +10,11 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import type { AccessoryCategory, AccessoryItem, CustomPose, FootwearType, GarmentType, NamingLogic, Pose, PoseFraming, PoseViewAngle, PropBucket, UGCScene, UGCShotType } from "@/lib/types";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { AccessoryCategory, AccessoryItem, CustomPose, FootwearType, GarmentType, NamingLogic, Pose, PoseFraming, PoseViewAngle, PropBucket, ReferenceImageItem, ReferencePhotoshootMode, UGCScene, UGCShotType } from "@/lib/types";
 import type { VTONStore } from "@/store/vton-store";
 import { GLOBAL_ACCESSORY_POSE_ID } from "@/store/vton-store";
+import { importReferenceFolders } from "@/lib/reference-folder-import";
 import { ImageUploadZone } from "./image-upload-zone";
 import { Layers } from "lucide-react";
 
@@ -1067,6 +1069,403 @@ function CustomPosesSection({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Reference-Driven Photoshoot (evolved custom-pose feature)          */
+/* ------------------------------------------------------------------ */
+
+const REFERENCE_PHOTOSHOOT_MODES: {
+  value: ReferencePhotoshootMode;
+  label: string;
+  desc: string;
+}[] = [
+  {
+    value: "variation",
+    label: "Inspiration: Variation",
+    desc: "Lock the reference's framing & camera distance (same crop, same subject distance). The pose is freshly re-invented and the background, model, garment & accessories follow your configuration.",
+  },
+  {
+    value: "pose-lock",
+    label: "Inspiration: Pose Lock",
+    desc: "Lock the reference's framing AND pose exactly. Only the background, AI model & garment change per your configuration.",
+  },
+  {
+    value: "replication",
+    label: "Replication",
+    desc: "Reproduce the reference exactly — background, lighting, pose & framing. Only the AI model, garment (always swapped) & accessories follow your configuration.",
+  },
+];
+
+/** Thumbnail grid with add + per-item delete; optionally a single-select (pick one) mode. */
+function ReferenceImageGrid({
+  images,
+  onAdd,
+  onRemove,
+  selectedId,
+  onSelect,
+  addLabel = "Add",
+  emptyHint,
+}: {
+  images: ReferenceImageItem[];
+  onAdd: (files: File[]) => void;
+  onRemove: (id: string) => void;
+  /** When provided (even null), thumbnails become single-select (pick one). */
+  selectedId?: string | null;
+  onSelect?: (id: string) => void;
+  addLabel?: string;
+  emptyHint?: string;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const selectable = selectedId !== undefined && !!onSelect;
+
+  return (
+    <div className="mt-1">
+      <div className="flex flex-wrap gap-2">
+        {images.map((img) => {
+          const isSel = selectable && selectedId === img.id;
+          return (
+            <div
+              key={img.id}
+              className={cn(
+                "group relative w-16 h-16 rounded-lg overflow-hidden border",
+                isSel ? "border-primary ring-2 ring-primary" : "border-border",
+                selectable && "cursor-pointer"
+              )}
+              onClick={selectable ? () => onSelect!(img.id) : undefined}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={img.preview} alt="reference" className="w-full h-full object-cover" />
+              {isSel && (
+                <div className="absolute top-0.5 left-0.5 bg-primary rounded-full p-0.5">
+                  <Check className="w-3 h-3 text-white" />
+                </div>
+              )}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemove(img.id);
+                }}
+                className="absolute top-0.5 right-0.5 p-0.5 rounded-md bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                title="Remove"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          );
+        })}
+        <button
+          onClick={() => inputRef.current?.click()}
+          className="w-16 h-16 rounded-lg border border-dashed border-primary/30 bg-muted flex flex-col items-center justify-center gap-0.5 text-primary/60 hover:text-primary hover:border-primary/50 hover:bg-primary/10 transition-colors"
+        >
+          <Upload className="w-4 h-4" />
+          <span className="text-[8px] font-medium">{addLabel}</span>
+        </button>
+      </div>
+      {images.length === 0 && emptyHint && (
+        <p className="text-[11px] text-muted-foreground mt-1">{emptyHint}</p>
+      )}
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files) onAdd(Array.from(e.target.files));
+          if (inputRef.current) inputRef.current.value = "";
+        }}
+      />
+    </div>
+  );
+}
+
+function ReferencePhotoshootSection({ store }: { store: VTONStore }) {
+  const {
+    mode,
+    primaryFolders,
+    background,
+    bulkBackgrounds,
+    referencePhotoshootMode,
+    setReferencePhotoshootMode,
+    singleReferenceImages,
+    addSingleReferenceImages,
+    removeSingleReferenceImage,
+    referenceFolders,
+    addReferenceFolders,
+    removeReferenceFolder,
+    clearReferenceFolders,
+    assignReferenceFolderMatch,
+    addReferenceImageToFolder,
+    removeReferenceImageFromFolder,
+    selectReferenceFolderBackground,
+    unmatchedReferenceFolders,
+  } = store;
+
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  // webkitdirectory / directory are non-standard input attributes — set imperatively.
+  useEffect(() => {
+    if (folderInputRef.current) {
+      folderInputRef.current.setAttribute("webkitdirectory", "");
+      folderInputRef.current.setAttribute("directory", "");
+    }
+  }, []);
+
+  const activeMode = REFERENCE_PHOTOSHOOT_MODES.find((m) => m.value === referencePhotoshootMode);
+
+  const folderNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    primaryFolders.forEach((f) => map.set(f.id, f.name));
+    return map;
+  }, [primaryFolders]);
+
+  const singleOutputCount = singleReferenceImages.length;
+  const bulkOutputCount = referenceFolders
+    .filter((f) => f.matchedFolderId)
+    .reduce((sum, f) => sum + f.referenceImages.length, 0);
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <h3 className="text-base font-semibold text-foreground">Reference Photoshoot</h3>
+          <Badge variant="secondary" className="text-xs">
+            {mode === "bulk" ? `${bulkOutputCount} output${bulkOutputCount === 1 ? "" : "s"}` : `${singleOutputCount} output${singleOutputCount === 1 ? "" : "s"}`}
+          </Badge>
+        </div>
+        <p className="text-sm text-muted-foreground mt-0.5">
+          Upload reference images to recreate a photoshoot. Each reference image produces one output.
+        </p>
+      </div>
+
+      {/* Batch-level composition mode */}
+      <div>
+        <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+          Composition Mode <span className="text-muted-foreground/50 normal-case">(applies to the whole batch)</span>
+        </label>
+        <Select
+          value={referencePhotoshootMode}
+          onValueChange={(v) => setReferencePhotoshootMode(v as ReferencePhotoshootMode)}
+        >
+          <SelectTrigger className="mt-1 w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {REFERENCE_PHOTOSHOOT_MODES.map((m) => (
+              <SelectItem key={m.value} value={m.value}>
+                {m.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {activeMode && <p className="text-[11px] text-muted-foreground mt-1">{activeMode.desc}</p>}
+      </div>
+
+      {/* ---------------- SINGLE MODE ---------------- */}
+      {mode === "single" && (
+        <div className="space-y-4">
+          <div>
+            <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+              Reference Images <span className="text-muted-foreground/50 normal-case">(each image = 1 output)</span>
+            </label>
+            <ReferenceImageGrid
+              images={singleReferenceImages}
+              onAdd={addSingleReferenceImages}
+              onRemove={removeSingleReferenceImage}
+              addLabel="Add"
+              emptyHint="Upload one or more reference images. Each becomes a separate output."
+            />
+          </div>
+          {referencePhotoshootMode !== "replication" && (
+            <p className="text-[11px] text-muted-foreground">
+              {(background.mode === "inspiration" && background.inspirationImage) || background.textDescription.trim()
+                ? "Background: uses the background you configured on the Styling step, applied to every output."
+                : "⚠ No background configured. Set a background on the Styling step (image or text) before generating."}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ---------------- BULK MODE ---------------- */}
+      {mode === "bulk" && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => folderInputRef.current?.click()}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-primary/30 bg-muted text-primary hover:bg-primary/10 hover:border-primary/50 transition-colors text-sm font-medium"
+            >
+              <Upload className="w-4 h-4" />
+              Upload reference folders
+            </button>
+            {referenceFolders.length > 0 && (
+              <button
+                onClick={clearReferenceFolders}
+                className="text-xs text-muted-foreground hover:text-red-500 transition-colors"
+              >
+                Clear all
+              </button>
+            )}
+            <input
+              ref={folderInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                  const folders = importReferenceFolders(e.target.files, primaryFolders);
+                  if (folders.length > 0) addReferenceFolders(folders);
+                }
+                if (folderInputRef.current) folderInputRef.current.value = "";
+              }}
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground -mt-2">
+            Pick a parent folder whose subfolders are named after your input products (e.g. &ldquo;prod 1&rdquo;, &ldquo;prod 2&rdquo;). Each subfolder&rsquo;s images become that product&rsquo;s references.
+          </p>
+
+          {/* Reconciliation UI for unmatched folders */}
+          {unmatchedReferenceFolders.length > 0 && (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 space-y-2">
+              <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                <AlertCircle className="w-4 h-4" />
+                <span className="text-sm font-medium">
+                  {unmatchedReferenceFolders.length} folder{unmatchedReferenceFolders.length === 1 ? "" : "s"} didn&rsquo;t match a product
+                </span>
+              </div>
+              <p className="text-[11px] text-muted-foreground">Map each unmatched reference folder to an input product.</p>
+              {unmatchedReferenceFolders.map((rf) => (
+                <div key={rf.id} className="flex items-center gap-2">
+                  <span className="text-sm text-foreground truncate flex-1" title={rf.name}>
+                    {rf.name} <span className="text-muted-foreground">({rf.referenceImages.length})</span>
+                  </span>
+                  <Select
+                    value=""
+                    onValueChange={(v) => assignReferenceFolderMatch(rf.id, v)}
+                  >
+                    <SelectTrigger className="w-48 h-8 text-xs">
+                      <SelectValue placeholder="Choose product…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {primaryFolders.map((pf) => (
+                        <SelectItem key={pf.id} value={pf.id}>
+                          {pf.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <button
+                    onClick={() => removeReferenceFolder(rf.id)}
+                    className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                    title="Discard folder"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Per-product accordion */}
+          {referenceFolders.length > 0 && (
+            <Accordion type="multiple" className="space-y-2">
+              {referenceFolders.map((rf) => {
+                const matchedName = rf.matchedFolderId ? folderNameById.get(rf.matchedFolderId) : undefined;
+                return (
+                  <AccordionItem
+                    key={rf.id}
+                    value={rf.id}
+                    className="rounded-lg border border-border bg-card px-3"
+                  >
+                    <AccordionTrigger className="hover:no-underline py-3">
+                      <div className="flex items-center gap-2 min-w-0 flex-1 pr-2">
+                        <span className="text-sm font-medium text-foreground truncate">{rf.name}</span>
+                        {matchedName ? (
+                          <Badge variant="secondary" className="text-[10px] shrink-0">
+                            → {matchedName}
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px] shrink-0 text-amber-600 border-amber-500/40">
+                            unmatched
+                          </Badge>
+                        )}
+                        <Badge variant="outline" className="text-[10px] shrink-0">
+                          {rf.referenceImages.length} ref{rf.referenceImages.length === 1 ? "" : "s"}
+                        </Badge>
+                      </div>
+                    </AccordionTrigger>
+                    <AccordionContent className="space-y-3 pb-3">
+                      <div>
+                        <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+                          Reference Images <span className="text-muted-foreground/50 normal-case">(each = 1 output)</span>
+                        </label>
+                        <ReferenceImageGrid
+                          images={rf.referenceImages}
+                          onAdd={(files) => addReferenceImageToFolder(rf.id, files)}
+                          onRemove={(imageId) => removeReferenceImageFromFolder(rf.id, imageId)}
+                        />
+                      </div>
+                      {referencePhotoshootMode !== "replication" && (
+                        <div>
+                          <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+                            Background <span className="text-muted-foreground/50 normal-case">(pick one from the Styling step — applied to all this product&rsquo;s images)</span>
+                          </label>
+                          {bulkBackgrounds.length === 0 ? (
+                            <p className="text-[11px] text-amber-600 mt-1">
+                              ⚠ No backgrounds configured. Add one on the Styling step first.
+                            </p>
+                          ) : (
+                            <Select
+                              value={rf.selectedBackgroundId ?? ""}
+                              onValueChange={(v) => selectReferenceFolderBackground(rf.id, v)}
+                            >
+                              <SelectTrigger className="mt-1 w-full h-9 text-sm">
+                                <SelectValue placeholder="Choose a background…" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {bulkBackgrounds.map((bg) => (
+                                  <SelectItem key={bg.id} value={bg.id}>
+                                    {bg.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        {!matchedName && (
+                          <Select value="" onValueChange={(v) => assignReferenceFolderMatch(rf.id, v)}>
+                            <SelectTrigger className="w-48 h-8 text-xs">
+                              <SelectValue placeholder="Map to product…" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {primaryFolders.map((pf) => (
+                                <SelectItem key={pf.id} value={pf.id}>
+                                  {pf.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                        <button
+                          onClick={() => removeReferenceFolder(rf.id)}
+                          className="ml-auto flex items-center gap-1 text-xs text-muted-foreground hover:text-red-500 transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Remove folder
+                        </button>
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                );
+              })}
+            </Accordion>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  UGC Scene Card                                                      */
 /* ------------------------------------------------------------------ */
 function UGCSceneCard({
@@ -2115,7 +2514,9 @@ export function StepOutput({ store }: StepOutputProps) {
       ? "Top Wear"
       : garmentType === "bottomwear"
         ? "Bottom Wear"
-        : "One Piece";
+        : garmentType === "complete-outfit"
+          ? "Complete Outfit"
+          : "One Piece";
 
   return (
     <div className="space-y-8">
@@ -2265,6 +2666,9 @@ export function StepOutput({ store }: StepOutputProps) {
         addCustomPoseImage={addCustomPoseImage}
         removeCustomPoseImage={removeCustomPoseImage}
       />
+
+      {/* Reference-Driven Photoshoot (evolved custom pose) */}
+      <ReferencePhotoshootSection store={store} />
 
       {/* UGC Scenes */}
       <UGCScenesSection

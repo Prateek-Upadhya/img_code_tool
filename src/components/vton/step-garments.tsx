@@ -152,6 +152,7 @@ const GARMENT_TYPES: { value: GarmentType; label: string; icon: React.ReactNode 
   { value: "topwear", label: "Top Wear", icon: <Shirt className="w-4 h-4" /> },
   { value: "bottomwear", label: "Bottom Wear", icon: <Scissors className="w-4 h-4" /> },
   { value: "onepiece", label: "One Piece", icon: <Shirt className="w-4 h-4" /> },
+  { value: "complete-outfit", label: "Complete Outfit", icon: <Shirt className="w-4 h-4" /> },
 ];
 
 /** Which per-product override dimension is shown in the folder card tab strip */
@@ -164,6 +165,7 @@ function productOverrideTabs(garmentType: GarmentType | undefined): ProductOverr
     case "bottomwear":
       return ["fit", "bottomlen"];
     case "onepiece":
+    case "complete-outfit":
       return ["fit", "sleeve", "tophem", "bottomlen"];
     default:
       return ["fit"];
@@ -1955,7 +1957,7 @@ export function StepGarments({ store }: StepGarmentsProps) {
       )}
 
       {/* Sleeve Length (clothing topwear / onepiece only) */}
-      {!isFootwear && (garmentType === "topwear" || garmentType === "onepiece") && (
+      {!isFootwear && (garmentType === "topwear" || garmentType === "onepiece" || garmentType === "complete-outfit") && (
         <div className="space-y-3">
           <div>
             <div className="flex items-center gap-2">
@@ -2003,7 +2005,7 @@ export function StepGarments({ store }: StepGarmentsProps) {
       )}
 
       {/* Top Hemline Length (clothing topwear / onepiece only) */}
-      {!isFootwear && (garmentType === "topwear" || garmentType === "onepiece") && (
+      {!isFootwear && (garmentType === "topwear" || garmentType === "onepiece" || garmentType === "complete-outfit") && (
         <div className="space-y-3">
           <div>
             <div className="flex items-center gap-2">
@@ -2051,7 +2053,7 @@ export function StepGarments({ store }: StepGarmentsProps) {
       )}
 
       {/* Bottomwear Outseam Length (clothing bottomwear / onepiece only) */}
-      {!isFootwear && (garmentType === "bottomwear" || garmentType === "onepiece") && (
+      {!isFootwear && (garmentType === "bottomwear" || garmentType === "onepiece" || garmentType === "complete-outfit") && (
         <div className="space-y-3">
           <div>
             <div className="flex items-center gap-2">

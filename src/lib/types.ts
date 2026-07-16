@@ -27,7 +27,7 @@ export type GoogleBackend = "vertex" | "gemini";
 
 export type Gender = "male" | "female" | "unisex";
 
-export type GarmentType = "topwear" | "bottomwear" | "onepiece";
+export type GarmentType = "topwear" | "bottomwear" | "onepiece" | "complete-outfit";
 
 export type FootwearType =
   | "casual-shoes"
@@ -279,6 +279,51 @@ export interface CustomPose {
   }[];
 }
 
+/* ------------------------------------------------------------------ */
+/*  Reference-Driven Photoshoot (evolved custom-pose feature)         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Batch-level composition mode governing how faithfully each uploaded reference
+ * image is reproduced. Applies to the whole run (single or bulk).
+ * - "variation": image framing / camera distance are LOCKED from the reference
+ *   (via the FRAMING & CROP CONTRACT); the pose is freshly AI-invented, and the
+ *   background comes from the selected product background.
+ * - "pose-lock": framing AND pose geometry are LOCKED from the reference; only
+ *   background (selected product bg), AI model, and garment change.
+ * - "replication": the reference is reproduced holistically — background,
+ *   lighting, pose, framing, and relative object layout — while the AI model,
+ *   garment (always replaced), and accessories come from configuration.
+ */
+export type ReferencePhotoshootMode = "variation" | "pose-lock" | "replication";
+
+/** A single uploaded reference or background image kept as File + object-URL preview. */
+export interface ReferenceImageItem {
+  id: string;
+  file: File;
+  preview: string;
+}
+
+/**
+ * Per-input-product reference set (bulk mode). Uploaded via a folder picker whose
+ * subfolders are matched to input {@link ProductFolder}s by name.
+ */
+export interface ProductReferenceFolder {
+  id: string;
+  /** Folder name exactly as uploaded (used to match a ProductFolder.name). */
+  name: string;
+  /** Matched input ProductFolder.id, or null while awaiting manual reconciliation. */
+  matchedFolderId: string | null;
+  /** Reference images — each one produces exactly one output for the matched product. */
+  referenceImages: ReferenceImageItem[];
+  /**
+   * The Styling-page background (a {@link BulkBackground}.id) chosen for this product;
+   * the selected one applies to ALL its outputs. `null` = none chosen yet. Ignored in
+   * Replication mode (the reference's own scene is reproduced).
+   */
+  selectedBackgroundId: string | null;
+}
+
 export interface VTONConfig {
   productCategory: ProductCategory;
   gender: Gender;
@@ -329,6 +374,30 @@ export interface GeneratedResult {
   customPose?: CustomPose;
   status: "pending" | "generating-prompt" | "generating-image" | "auto-retrying" | "editing" | "completed" | "cancelled" | "error";
   error?: string;
+  /**
+   * Reference-driven photoshoot context (evolved custom pose). When present, this
+   * result was produced from a single uploaded reference image under the batch-level
+   * `mode`, using the pre-analyzed `frozenScene` for its background instead of the
+   * global background config.
+   */
+  referencePhotoshoot?: {
+    mode: ReferencePhotoshootMode;
+    /** Product-bg scene (variation/pose-lock, image background) OR the reference's own scene (replication). */
+    frozenScene?: string;
+    /** Text background description (variation/pose-lock) when the chosen Styling background is text, not an image. */
+    backgroundText?: string;
+  };
+  /**
+   * The exact frozen-scene text used at generation, persisted so a HARD retry reproduces the
+   * identical background instead of re-deriving a different one. (For reference-photoshoot results
+   * this mirrors `referencePhotoshoot.frozenScene`.)
+   */
+  frozenSceneUsed?: string;
+  /**
+   * The background/scene image attached to the image generator for scene consistency (see Fix B).
+   * Persisted so a hard retry re-attaches the same image. Transient (in-memory) File handle.
+   */
+  sceneReferenceFile?: File;
   validationStatus?: ValidationStatus;
   validationMessage?: string;
   costBreakdown?: GenerationCostBreakdown;
@@ -640,6 +709,16 @@ export interface BulkGeneratedResult {
   customPose?: CustomPose;
   status: "pending" | "generating-prompt" | "generating-image" | "auto-retrying" | "editing" | "completed" | "cancelled" | "error";
   error?: string;
+  /** Reference-driven photoshoot context — see {@link GeneratedResult.referencePhotoshoot}. */
+  referencePhotoshoot?: {
+    mode: ReferencePhotoshootMode;
+    frozenScene?: string;
+    backgroundText?: string;
+  };
+  /** Frozen-scene text used at generation, persisted for exact hard-retry reproduction. */
+  frozenSceneUsed?: string;
+  /** Background/scene image attached to the generator; re-attached verbatim on hard retry. */
+  sceneReferenceFile?: File;
   validationStatus?: ValidationStatus;
   validationMessage?: string;
   costBreakdown?: GenerationCostBreakdown;

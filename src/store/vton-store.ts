@@ -96,6 +96,9 @@ import {
   ModelEditSource,
   ModelEditResult,
   SavedModel,
+  ReferencePhotoshootMode,
+  ReferenceImageItem,
+  ProductReferenceFolder,
 } from "@/lib/types";
 import { MAX_CAMERA_MOVEMENTS, MAX_MODEL_MOVEMENTS } from "@/lib/constants";
 
@@ -216,6 +219,16 @@ export function useVTONStore() {
     null
   );
   const [bulkSpreadsheetFilter, setBulkSpreadsheetFilterState] = useState<string>(BULK_SPREADSHEET_FILTER_ALL);
+
+  // --- Reference-Driven Photoshoot State (evolved custom-pose feature) ---
+  // Batch-level composition mode governing how faithfully each reference is reproduced.
+  const [referencePhotoshootMode, setReferencePhotoshootMode] =
+    useState<ReferencePhotoshootMode>("variation");
+  // Single mode: N reference images (each one → 1 output). The background is the one
+  // configured on the Styling page (`background`), applied to every reference output.
+  const [singleReferenceImages, setSingleReferenceImages] = useState<ReferenceImageItem[]>([]);
+  // Bulk mode: per-product reference folders matched to primaryFolders by name.
+  const [referenceFolders, setReferenceFolders] = useState<ProductReferenceFolder[]>([]);
 
   // --- Model Swap State ---
   const [modelSwapBgMode, setModelSwapBgMode] = useState<ModelSwapBackgroundMode>("keep-same");
@@ -815,6 +828,96 @@ export function useVTONStore() {
       })
     );
   }, []);
+
+  // --- Reference-Driven Photoshoot Actions ---
+
+  const makeRefImage = (file: File): ReferenceImageItem => ({
+    id: `ref-img-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    file,
+    preview: URL.createObjectURL(file),
+  });
+
+  // Single mode: reference images (each = 1 output)
+  const addSingleReferenceImages = useCallback((files: File[]) => {
+    setSingleReferenceImages((prev) => [...prev, ...files.map(makeRefImage)]);
+  }, []);
+
+  const removeSingleReferenceImage = useCallback((id: string) => {
+    setSingleReferenceImages((prev) => {
+      const img = prev.find((i) => i.id === id);
+      if (img) URL.revokeObjectURL(img.preview);
+      return prev.filter((i) => i.id !== id);
+    });
+  }, []);
+
+  // Bulk mode: reference folders
+  const addReferenceFolders = useCallback((folders: ProductReferenceFolder[]) => {
+    setReferenceFolders((prev) => [...prev, ...folders]);
+  }, []);
+
+  const revokeReferenceFolder = (folder: ProductReferenceFolder) => {
+    folder.referenceImages.forEach((img) => URL.revokeObjectURL(img.preview));
+  };
+
+  const removeReferenceFolder = useCallback((id: string) => {
+    setReferenceFolders((prev) => {
+      const folder = prev.find((f) => f.id === id);
+      if (folder) revokeReferenceFolder(folder);
+      return prev.filter((f) => f.id !== id);
+    });
+  }, []);
+
+  const clearReferenceFolders = useCallback(() => {
+    setReferenceFolders((prev) => {
+      prev.forEach(revokeReferenceFolder);
+      return [];
+    });
+  }, []);
+
+  const assignReferenceFolderMatch = useCallback(
+    (refFolderId: string, productFolderId: string | null) => {
+      setReferenceFolders((prev) =>
+        prev.map((f) => (f.id === refFolderId ? { ...f, matchedFolderId: productFolderId } : f))
+      );
+    },
+    []
+  );
+
+  const addReferenceImageToFolder = useCallback((refFolderId: string, files: File[]) => {
+    setReferenceFolders((prev) =>
+      prev.map((f) =>
+        f.id === refFolderId
+          ? { ...f, referenceImages: [...f.referenceImages, ...files.map(makeRefImage)] }
+          : f
+      )
+    );
+  }, []);
+
+  const removeReferenceImageFromFolder = useCallback((refFolderId: string, imageId: string) => {
+    setReferenceFolders((prev) =>
+      prev.map((f) => {
+        if (f.id !== refFolderId) return f;
+        const img = f.referenceImages.find((i) => i.id === imageId);
+        if (img) URL.revokeObjectURL(img.preview);
+        return { ...f, referenceImages: f.referenceImages.filter((i) => i.id !== imageId) };
+      })
+    );
+  }, []);
+
+  const selectReferenceFolderBackground = useCallback(
+    (refFolderId: string, backgroundId: string | null) => {
+      setReferenceFolders((prev) =>
+        prev.map((f) => (f.id === refFolderId ? { ...f, selectedBackgroundId: backgroundId } : f))
+      );
+    },
+    []
+  );
+
+  // Reference folders still awaiting a manual product match (reconciliation UI).
+  const unmatchedReferenceFolders = useMemo(
+    () => referenceFolders.filter((f) => !f.matchedFolderId),
+    [referenceFolders]
+  );
 
   const updateResult = useCallback((id: string, update: Partial<GeneratedResult>) => {
     setResults((prev) => prev.map((r) => (r.id === id ? { ...r, ...update } : r)));
@@ -2001,7 +2104,18 @@ export function useVTONStore() {
         }
         const hasPG = primaryFolders.some((f) => f.images.length > 0);
         const hasModels = bulkModelImages.length > 0;
-        const hasPoses = selectedPoses.length > 0 || customPoses.length > 0 || ugcScenes.length > 0;
+        // Reference-driven photoshoot: matched folders with images count as valid work.
+        const matchedRefFolders = referenceFolders.filter(
+          (f) => f.matchedFolderId && f.referenceImages.length > 0
+        );
+        const hasReferences = matchedRefFolders.length > 0;
+        const hasPoses =
+          selectedPoses.length > 0 || customPoses.length > 0 || ugcScenes.length > 0 || hasReferences;
+        // Variation/Pose-Lock require a chosen background per product; Replication does not.
+        const referenceBgReady =
+          !hasReferences ||
+          referencePhotoshootMode === "replication" ||
+          matchedRefFolders.every((f) => !!f.selectedBackgroundId);
         switch (step) {
           case 1:
             return true;
@@ -2010,9 +2124,9 @@ export function useVTONStore() {
           case 3:
             return hasPG && hasModels;
           case 4:
-            return hasPG && hasModels && hasPoses;
+            return hasPG && hasModels && hasPoses && referenceBgReady;
           case 5:
-            return hasPG && hasModels && hasPoses;
+            return hasPG && hasModels && hasPoses && referenceBgReady;
           default:
             return false;
         }
@@ -2035,10 +2149,20 @@ export function useVTONStore() {
         }
       }
 
+      // Reference-driven photoshoot outputs are model shots → require a model.
+      const hasReferences = singleReferenceImages.length > 0;
       const anyPresetPoseNeedsModel = selectedPoses.some((p) => p.requiresModel !== false);
       const anyCustomPoseNeedsModel = customPoses.some((cp) => cp.isModelShot);
-      const anyPoseNeedsModel = anyPresetPoseNeedsModel || anyCustomPoseNeedsModel;
-      const hasPoses = selectedPoses.length > 0 || customPoses.length > 0 || ugcScenes.length > 0;
+      const anyPoseNeedsModel = anyPresetPoseNeedsModel || anyCustomPoseNeedsModel || hasReferences;
+      const hasPoses =
+        selectedPoses.length > 0 || customPoses.length > 0 || ugcScenes.length > 0 || hasReferences;
+      // Variation/Pose-Lock require the Styling background to be configured (image or text);
+      // Replication reproduces the reference's own scene, so no background is needed.
+      const hasStylingBackground =
+        (background.mode === "inspiration" && !!background.inspirationImage) ||
+        background.textDescription.trim().length > 0;
+      const referenceBgReady =
+        !hasReferences || referencePhotoshootMode === "replication" || hasStylingBackground;
 
       switch (step) {
         case 1:
@@ -2051,12 +2175,14 @@ export function useVTONStore() {
           return (
             garmentImages.length > 0 &&
             hasPoses &&
+            referenceBgReady &&
             (!anyPoseNeedsModel || hasModelSelection)
           );
         case 5:
           return (
             garmentImages.length > 0 &&
             hasPoses &&
+            referenceBgReady &&
             (!anyPoseNeedsModel || hasModelSelection) &&
             apiKey.length > 0
           );
@@ -2064,7 +2190,7 @@ export function useVTONStore() {
           return false;
       }
     },
-    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts, modelBoxes, modelCreationMode, modelEditSources, modelEditDirective]
+    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts, modelBoxes, modelCreationMode, modelEditSources, modelEditDirective, referencePhotoshootMode, singleReferenceImages, referenceFolders, background]
   );
 
   return {
@@ -2156,6 +2282,22 @@ export function useVTONStore() {
     updateCustomPose,
     addCustomPoseImage,
     removeCustomPoseImage,
+    // Reference-driven photoshoot (evolved custom pose)
+    referencePhotoshootMode,
+    setReferencePhotoshootMode,
+    singleReferenceImages,
+    addSingleReferenceImages,
+    removeSingleReferenceImage,
+    referenceFolders,
+    setReferenceFolders,
+    addReferenceFolders,
+    removeReferenceFolder,
+    clearReferenceFolders,
+    assignReferenceFolderMatch,
+    addReferenceImageToFolder,
+    removeReferenceImageFromFolder,
+    selectReferenceFolderBackground,
+    unmatchedReferenceFolders,
     additionalInfo,
     setAdditionalInfo,
     productInfo,

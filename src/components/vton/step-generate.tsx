@@ -37,7 +37,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn, buildDynamicPoseSeed, pickBucketImage } from "@/lib/utils";
-import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene } from "@/lib/gemini";
+import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene, analyzeReferenceScene } from "@/lib/gemini";
 import { generateVTONImageAzure } from "@/lib/azure-image";
 import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS } from "@/lib/constants";
 import { ModelComboPicker } from "./model-combo-picker";
@@ -71,6 +71,11 @@ import { useState } from "react";
 
 function getFramingShortLabel(framing: PoseFraming): string {
   return FRAMING_OPTIONS.find((f) => f.value === framing)?.shortLabel ?? framing;
+}
+
+/** The inspiration-image File of a background config, or undefined (text/default backgrounds). */
+function inspirationFileOf(bg: BackgroundConfig | undefined | null): File | undefined {
+  return bg && bg.mode === "inspiration" && bg.inspirationImage ? bg.inspirationImage.file : undefined;
 }
 
 function getBgShortLabel(bg: BackgroundConfig): string {
@@ -475,6 +480,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
     skipNamingIndicesText,
     // Validation / cost
     skipValidation,
+    // Reference-driven photoshoot (evolved custom pose)
+    referencePhotoshootMode,
+    singleReferenceImages,
+    referenceFolders,
   } = store;
   // Mirrored in a ref so the many async generation closures read the live value
   // without each having to thread `skipValidation` through its dependency array.
@@ -723,9 +732,18 @@ export function StepGenerate({ store }: StepGenerateProps) {
   const handleGenerate = useCallback(async () => {
     const anyPresetNeedsModel = selectedPoses.some((p) => p.requiresModel !== false);
     const anyCustomNeedsModel = customPoses.some((cp) => cp.isModelShot);
-    const anyPoseNeedsModel = anyPresetNeedsModel || anyCustomNeedsModel;
+    // Reference-driven photoshoot outputs are model shots by default → need a model.
+    const anyReferenceNeedsModel = singleReferenceImages.length > 0;
+    const anyPoseNeedsModel = anyPresetNeedsModel || anyCustomNeedsModel || anyReferenceNeedsModel;
     if (anyPoseNeedsModel && !selectedModel && !modelImage) return;
-    if ((selectedPoses.length === 0 && customPoses.length === 0 && ugcScenes.length === 0) || !apiKey) return;
+    if (
+      (selectedPoses.length === 0 &&
+        customPoses.length === 0 &&
+        ugcScenes.length === 0 &&
+        singleReferenceImages.length === 0) ||
+      !apiKey
+    )
+      return;
 
     // Clear any leftover cancelled / errored results from a previous batch
     // before kicking off a fresh run.
@@ -803,7 +821,102 @@ export function StepGenerate({ store }: StepGenerateProps) {
       status: "pending",
     }));
 
-    const initialResults = [...presetResults, ...customResults];
+    // Reference-driven photoshoot results (single mode). Each uploaded reference
+    // image produces exactly one output under the batch-level composition mode.
+    const referenceResults: GeneratedResult[] = [];
+    if (singleReferenceImages.length > 0) {
+      // Variation / Pose-Lock draw their background from the Styling-page `background`
+      // (image → analyzed once; text → passed through). Replication reproduces each
+      // reference's OWN scene, so it is analyzed per reference image below.
+      let productSceneDesc: string | undefined;
+      let productBackgroundText: string | undefined;
+      if (referencePhotoshootMode !== "replication") {
+        if (background.mode === "inspiration" && background.inspirationImage) {
+          setIsIngestingScene(true);
+          try {
+            const r = await analyzeBackgroundScene({
+              apiKey,
+              textGenModel,
+              inspirationImage: background.inspirationImage,
+              abortSignal: signal,
+            });
+            productSceneDesc = r.sceneDescription;
+          } catch (err) {
+            if (signal.aborted) {
+              setIsIngestingScene(false);
+              return;
+            }
+            console.warn("Reference-photoshoot background analysis failed; using text/default:", err);
+          } finally {
+            setIsIngestingScene(false);
+          }
+        } else if (background.textDescription.trim()) {
+          productBackgroundText = background.textDescription.trim();
+        }
+      }
+
+      for (const refImg of singleReferenceImages) {
+        if (signal.aborted) return;
+        let frozenScene = productSceneDesc;
+        if (referencePhotoshootMode === "replication") {
+          setIsIngestingScene(true);
+          try {
+            const r = await analyzeReferenceScene({
+              apiKey,
+              textGenModel,
+              referenceImage: { file: refImg.file },
+              abortSignal: signal,
+            });
+            frozenScene = r.sceneDescription;
+          } catch (err) {
+            if (signal.aborted) {
+              setIsIngestingScene(false);
+              return;
+            }
+            console.warn("Reference scene analysis (replication) failed; falling back to text-only:", err);
+          } finally {
+            setIsIngestingScene(false);
+          }
+        }
+        const cp: CustomPose = {
+          id: `refcp-${refImg.id}`,
+          name: "Reference",
+          description: "",
+          isModelShot: true,
+          referenceImages: [{ id: refImg.id, file: refImg.file, preview: refImg.preview }],
+        };
+        referenceResults.push({
+          id: `refresult-${refImg.id}-${Date.now()}`,
+          prompt: "",
+          imageData: "",
+          pose: {
+            id: cp.id,
+            name: "Reference",
+            description: "",
+            icon: "🎞️",
+            viewAngle: "front" as const,
+            framing: "full-body" as const,
+            garmentRelevance: [],
+          },
+          customPose: cp,
+          referencePhotoshoot: {
+            mode: referencePhotoshootMode,
+            frozenScene,
+            backgroundText: referencePhotoshootMode === "replication" ? undefined : productBackgroundText,
+          },
+          // Scene image attached to the generator: the reference itself (replication) or the
+          // selected Styling background image (variation/pose-lock, image background only).
+          sceneReferenceFile:
+            referencePhotoshootMode === "replication"
+              ? refImg.file
+              : inspirationFileOf(background),
+          frozenSceneUsed: frozenScene,
+          status: "pending",
+        });
+      }
+    }
+
+    const initialResults = [...presetResults, ...customResults, ...referenceResults];
     setResults(initialResults);
 
     // Create UGC results
@@ -841,6 +954,20 @@ export function StepGenerate({ store }: StepGenerateProps) {
         collectedCosts.length = 0;
         updateResult(result.id, { status: "generating-prompt", error: undefined });
 
+        // Reference-driven photoshoot: the background is carried by the pre-analyzed
+        // frozenScene (image bg / replication) or as text (text bg); never attach an
+        // image to the image model.
+        const refCtx = result.referencePhotoshoot;
+        const effBackground: BackgroundConfig = refCtx
+          ? { mode: "text", textDescription: refCtx.backgroundText ?? "" }
+          : background;
+        const effFrozenScene = refCtx ? refCtx.frozenScene : frozenSceneDescription;
+        // Scene image attached to the generator for cross-output consistency. Reference
+        // results store it at creation; standard results derive it from the background.
+        const sceneRefFile = result.sceneReferenceFile ?? (refCtx ? undefined : inspirationFileOf(background));
+        // Persist the exact frozen scene + scene image so a HARD retry reproduces them.
+        updateResult(result.id, { frozenSceneUsed: effFrozenScene, sceneReferenceFile: sceneRefFile });
+
         const promptResult = await generateVTONPrompt({
           apiKey,
           textGenModel,
@@ -855,7 +982,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           bottomwearLength,
           complementaryImages,
           accessories,
-          background,
+          background: effBackground,
           model: poseIsProductOnly ? null : selectedModel,
           modelImage: poseIsProductOnly ? null : modelImage,
           pose: result.pose,
@@ -865,7 +992,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           productInfo,
           applyAccessoriesToAllPoses,
           targetImageModel: imageGenModel,
-          frozenSceneDescription,
+          frozenSceneDescription: effFrozenScene,
+          photoshootMode: refCtx?.mode,
           // Fresh per-generation seed for Dynamic poses so the posture re-varies
           // on every call; undefined (ignored) for standard poses.
           dynamicSeed:
@@ -885,7 +1013,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages,
           accessories,
           modelImage: poseIsProductOnly ? null : modelImage,
-          background,
+          background: effBackground,
+          sceneReferenceImage: sceneRefFile ? { file: sceneRefFile } : undefined,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
@@ -1131,6 +1260,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
     setIsGenerating,
     setIsIngestingScene,
     beginGeneration,
+    referencePhotoshootMode,
+    singleReferenceImages,
   ]);
 
   // ======================================================================
@@ -1139,7 +1270,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
   const handleBulkGenerate = useCallback(async () => {
     const hasAnyPoses = selectedPoses.length > 0 || customPoses.length > 0;
     const hasUgc = ugcScenes.length > 0;
-    if (bulkCombinations.length === 0 || (!hasAnyPoses && !hasUgc) || !apiKey) return;
+    const hasReferences = referenceFolders.some((f) => f.matchedFolderId && f.referenceImages.length > 0);
+    if (bulkCombinations.length === 0 || (!hasAnyPoses && !hasUgc && !hasReferences) || !apiKey) return;
 
     // Clear any leftover cancelled / errored results before kicking off a fresh batch.
     setBulkResults([]);
@@ -1252,6 +1384,110 @@ export function StepGenerate({ store }: StepGenerateProps) {
         });
       }
     }
+
+    // Reference-driven photoshoot results (bulk): one output per reference image,
+    // per matched product. The product's selected background applies to all its
+    // images; Replication reproduces each reference's OWN scene.
+    const matchedRefFolders = referenceFolders.filter(
+      (f) => f.matchedFolderId && f.referenceImages.length > 0
+    );
+    if (matchedRefFolders.length > 0) {
+      setIsIngestingScene(true);
+      try {
+        for (const rf of matchedRefFolders) {
+          if (signal.aborted) return;
+          const combo = bulkCombinations.find((c) => c.primaryFolder.id === rf.matchedFolderId);
+          if (!combo) continue;
+          const comboLabel = [combo.primaryFolder.name, combo.modelImage.name]
+            .filter(Boolean)
+            .join(" + ");
+
+          // Variation / Pose-Lock: use the Styling-page background the user picked for
+          // this product (image → analyzed once; text → passed through).
+          let productSceneDesc: string | undefined;
+          let productBackgroundText: string | undefined;
+          const selBgConfig = bulkBackgrounds.find((b) => b.id === rf.selectedBackgroundId)?.config;
+          if (referencePhotoshootMode !== "replication" && selBgConfig) {
+            if (selBgConfig.mode === "inspiration" && selBgConfig.inspirationImage) {
+              try {
+                const r = await analyzeBackgroundScene({
+                  apiKey,
+                  textGenModel,
+                  inspirationImage: selBgConfig.inspirationImage,
+                  abortSignal: signal,
+                });
+                productSceneDesc = r.sceneDescription;
+              } catch (err) {
+                if (signal.aborted) return;
+                console.warn("Bulk reference-photoshoot background analysis failed:", err);
+              }
+            } else if (selBgConfig.textDescription.trim()) {
+              productBackgroundText = selBgConfig.textDescription.trim();
+            }
+          }
+
+          for (const refImg of rf.referenceImages) {
+            if (signal.aborted) return;
+            let frozenScene = productSceneDesc;
+            if (referencePhotoshootMode === "replication") {
+              try {
+                const r = await analyzeReferenceScene({
+                  apiKey,
+                  textGenModel,
+                  referenceImage: { file: refImg.file },
+                  abortSignal: signal,
+                });
+                frozenScene = r.sceneDescription;
+              } catch (err) {
+                if (signal.aborted) return;
+                console.warn("Bulk reference scene analysis (replication) failed:", err);
+              }
+            }
+            const cp: CustomPose = {
+              id: `refcp-${rf.id}-${refImg.id}`,
+              name: "Reference",
+              description: "",
+              isModelShot: true,
+              referenceImages: [{ id: refImg.id, file: refImg.file, preview: refImg.preview }],
+            };
+            allResults.push({
+              id: `bulk-ref-${combo.id}-${refImg.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              combinationId: combo.id,
+              combinationLabel: comboLabel,
+              prompt: "",
+              imageData: "",
+              pose: {
+                id: cp.id,
+                name: "Reference",
+                description: "",
+                icon: "🎞️",
+                viewAngle: "front" as const,
+                framing: "full-body" as const,
+                garmentRelevance: [],
+              },
+              customPose: cp,
+              referencePhotoshoot: {
+                mode: referencePhotoshootMode,
+                frozenScene,
+                backgroundText: referencePhotoshootMode === "replication" ? undefined : productBackgroundText,
+              },
+              // Scene image attached to the generator: the reference itself (replication) or the
+              // product's selected Styling background image (variation/pose-lock, image bg only).
+              sceneReferenceFile:
+                referencePhotoshootMode === "replication"
+                  ? refImg.file
+                  : inspirationFileOf(selBgConfig),
+              frozenSceneUsed: frozenScene,
+              status: "pending",
+            });
+          }
+        }
+      } finally {
+        setIsIngestingScene(false);
+      }
+    }
+
+    if (signal.aborted) return;
     setBulkResults(allResults);
 
     // Process a single bulk result
@@ -1302,6 +1538,20 @@ export function StepGenerate({ store }: StepGenerateProps) {
         collectedCosts.length = 0;
         updateBulkResult(result.id, { status: "generating-prompt", error: undefined });
 
+        // Reference-driven photoshoot: background carried by frozenScene (image/replication)
+        // or as text (text bg). The background IMAGE is attached separately for scene
+        // consistency (see sceneRefFile); it is not fed as a BackgroundConfig here.
+        const refCtx = result.referencePhotoshoot;
+        const effBackground: BackgroundConfig = refCtx
+          ? { mode: "text", textDescription: refCtx.backgroundText ?? "" }
+          : effectiveBg;
+        const effFrozenScene = refCtx ? refCtx.frozenScene : frozenSceneDescription;
+        // Scene image attached to the generator for cross-output consistency. Reference
+        // results store it at creation; standard results derive it from the combo background.
+        const sceneRefFile = result.sceneReferenceFile ?? (refCtx ? undefined : inspirationFileOf(effectiveBg));
+        // Persist the exact frozen scene + scene image so a HARD retry reproduces them.
+        updateBulkResult(result.id, { frozenSceneUsed: effFrozenScene, sceneReferenceFile: sceneRefFile });
+
         // Materialize bucket-backed accessories with a per-product draw keyed on
         // the product folder id, so each folder gets its own consistent pick.
         const accessories = materializeAccessories(
@@ -1332,7 +1582,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
               : bottomwearLength,
           complementaryImages: cgImages,
           accessories,
-          background: effectiveBg,
+          background: effBackground,
           model: null,
           modelImage: poseIsProductOnly ? null : bulkModelImg,
           pose: result.pose,
@@ -1342,7 +1592,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           productInfo: combo.primaryFolder.productInfo || "",
           applyAccessoriesToAllPoses,
           targetImageModel: imageGenModel,
-          frozenSceneDescription,
+          frozenSceneDescription: effFrozenScene,
+          photoshootMode: refCtx?.mode,
           // Fresh per-generation seed for Dynamic poses; undefined for standard poses.
           dynamicSeed:
             result.pose.poseType === "dynamic"
@@ -1361,7 +1612,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages: cgImages,
           accessories,
           modelImage: poseIsProductOnly ? null : bulkModelImg,
-          background: effectiveBg,
+          background: effBackground,
+          sceneReferenceImage: sceneRefFile ? { file: sceneRefFile } : undefined,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
@@ -1633,6 +1885,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
     beginGeneration,
     bulkPoseOverrides,
     bulkBackgrounds,
+    referencePhotoshootMode,
+    referenceFolders,
   ]);
 
   // Retry/regenerate a single result (single mode) — works for both errored and completed results
@@ -1655,6 +1909,16 @@ export function StepGenerate({ store }: StepGenerateProps) {
         // (single product → "single"), so retries keep the same prop image.
         const accessories = materializeAccessories(poseAccessories[result.pose.id] || [], "single");
 
+        // HARD RETRY reproduces the EXACT original inputs: same reference-photoshoot mode,
+        // the frozen scene stored at generation, the same background config, and the same
+        // attached scene image — only the image generation itself is re-rolled.
+        const refCtx = result.referencePhotoshoot;
+        const effBackground: BackgroundConfig = refCtx
+          ? { mode: "text", textDescription: refCtx.backgroundText ?? "" }
+          : background;
+        const effFrozenScene = refCtx ? refCtx.frozenScene : result.frozenSceneUsed;
+        const sceneRefFile = result.sceneReferenceFile;
+
         const promptResult = await generateVTONPrompt({
           apiKey,
           textGenModel,
@@ -1669,7 +1933,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           bottomwearLength,
           complementaryImages,
           accessories,
-          background,
+          background: effBackground,
           model: poseIsProductOnly ? null : selectedModel,
           modelImage: poseIsProductOnly ? null : modelImage,
           pose: result.pose,
@@ -1679,6 +1943,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           productInfo,
           applyAccessoriesToAllPoses,
           targetImageModel: imageGenModel,
+          frozenSceneDescription: effFrozenScene,
+          photoshootMode: refCtx?.mode,
           // Fresh per-retry seed for Dynamic poses so every retry re-varies the
           // posture; undefined for standard poses.
           dynamicSeed:
@@ -1696,7 +1962,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages,
           accessories,
           modelImage: poseIsProductOnly ? null : modelImage,
-          background,
+          background: effBackground,
+          sceneReferenceImage: sceneRefFile ? { file: sceneRefFile } : undefined,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
@@ -1830,6 +2097,16 @@ export function StepGenerate({ store }: StepGenerateProps) {
           combo.primaryFolder.id
         );
 
+        // HARD RETRY reproduces the EXACT original inputs: same reference-photoshoot mode,
+        // the frozen scene stored at generation, the same background config, and the same
+        // attached scene image — only the image generation itself is re-rolled.
+        const refCtx = result.referencePhotoshoot;
+        const effBackground: BackgroundConfig = refCtx
+          ? { mode: "text", textDescription: refCtx.backgroundText ?? "" }
+          : effectiveBg;
+        const effFrozenScene = refCtx ? refCtx.frozenScene : result.frozenSceneUsed;
+        const sceneRefFile = result.sceneReferenceFile;
+
         const promptResult = await generateVTONPrompt({
           apiKey,
           textGenModel,
@@ -1853,7 +2130,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
               : bottomwearLength,
           complementaryImages: cgImages,
           accessories,
-          background: effectiveBg,
+          background: effBackground,
           model: null,
           modelImage: poseIsProductOnly ? null : bulkModelImg,
           pose: result.pose,
@@ -1863,6 +2140,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           productInfo: combo.primaryFolder.productInfo || "",
           applyAccessoriesToAllPoses,
           targetImageModel: imageGenModel,
+          frozenSceneDescription: effFrozenScene,
+          photoshootMode: refCtx?.mode,
           // Fresh per-retry seed for Dynamic poses; undefined for standard poses.
           dynamicSeed:
             result.pose.poseType === "dynamic"
@@ -1879,7 +2158,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages: cgImages,
           accessories,
           modelImage: poseIsProductOnly ? null : bulkModelImg,
-          background: effectiveBg,
+          background: effBackground,
+          sceneReferenceImage: sceneRefFile ? { file: sceneRefFile } : undefined,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
@@ -4665,7 +4945,11 @@ export function StepGenerate({ store }: StepGenerateProps) {
     const pgCount = primaryFolders.filter((f) => f.images.length > 0).length;
     const totalPoses = selectedPoses.length + customPoses.length;
     const totalUgcImages = pgCount * ugcScenes.length;
-    const totalImages = pgCount * totalPoses + totalUgcImages;
+    // Reference-driven photoshoot: one output per reference image on matched products.
+    const totalReferenceImages = referenceFolders
+      .filter((f) => f.matchedFolderId)
+      .reduce((sum, f) => sum + f.referenceImages.length, 0);
+    const totalImages = pgCount * totalPoses + totalUgcImages + totalReferenceImages;
 
     // Group results by combination
     const resultsByCombo = new Map<string, BulkGeneratedResult[]>();
@@ -5036,7 +5320,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         {bulkResults.length === 0 && ugcResults.length === 0 && !isIngestingScene && (
           <Button
             onClick={handleBulkGenerate}
-            disabled={isGenerating || !apiKey || (totalPoses === 0 && ugcScenes.length === 0) || bulkCombinations.length === 0}
+            disabled={isGenerating || !apiKey || (totalPoses === 0 && ugcScenes.length === 0 && totalReferenceImages === 0) || bulkCombinations.length === 0}
             className="w-full h-14 text-base font-semibold rounded-xl gap-2 bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground shadow-sm transition-colors duration-200"
             size="lg"
           >
@@ -5601,7 +5885,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
             <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">
               Output Images
             </p>
-            <p className="text-sm font-semibold">{selectedPoses.length + customPoses.length + ugcScenes.length}</p>
+            <p className="text-sm font-semibold">{selectedPoses.length + customPoses.length + ugcScenes.length + singleReferenceImages.length}</p>
           </div>
         </div>
         {/* Image Quality Selection */}
@@ -5672,14 +5956,14 @@ export function StepGenerate({ store }: StepGenerateProps) {
           disabled={
             isGenerating ||
             !apiKey ||
-            (selectedPoses.length === 0 && customPoses.length === 0 && ugcScenes.length === 0) ||
-            ((selectedPoses.some((p) => p.requiresModel !== false) || customPoses.some((cp) => cp.isModelShot)) && !hasModel)
+            (selectedPoses.length === 0 && customPoses.length === 0 && ugcScenes.length === 0 && singleReferenceImages.length === 0) ||
+            ((selectedPoses.some((p) => p.requiresModel !== false) || customPoses.some((cp) => cp.isModelShot) || singleReferenceImages.length > 0) && !hasModel)
           }
           className="w-full h-14 text-base font-semibold rounded-xl gap-2 bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground shadow-sm transition-colors duration-200"
           size="lg"
         >
           <Sparkles className="w-5 h-5" />
-          Generate {selectedPoses.length + customPoses.length + ugcScenes.length} {isFootwear ? "Footwear" : "VTON"} Image{(selectedPoses.length + customPoses.length + ugcScenes.length) !== 1 ? "s" : ""}
+          Generate {selectedPoses.length + customPoses.length + ugcScenes.length + singleReferenceImages.length} {isFootwear ? "Footwear" : "VTON"} Image{(selectedPoses.length + customPoses.length + ugcScenes.length + singleReferenceImages.length) !== 1 ? "s" : ""}
         </Button>
       )}
 
