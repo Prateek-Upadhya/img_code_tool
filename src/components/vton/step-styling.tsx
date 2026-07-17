@@ -6,6 +6,14 @@ import { loadSavedModels } from "@/lib/model-library";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { AI_MODELS } from "@/lib/constants";
 import type { VTONStore } from "@/store/vton-store";
@@ -348,9 +356,8 @@ export function StepStyling({ store }: StepStylingProps) {
     modelImage,
     setModelImage,
     modelReferenceViews,
+    setModelReferenceView,
     clearModelReferenceViews,
-    enabledModelViewKinds,
-    toggleModelViewKind,
     attachSavedModelToVTON,
     bulkModelImages,
     addBulkModelImage,
@@ -375,6 +382,8 @@ export function StepStyling({ store }: StepStylingProps) {
   const modelImageRef = useRef<HTMLInputElement>(null);
   const bulkModelInputRef = useRef<HTMLInputElement>(null);
 
+  // Model reference views modal (single-VTON): manage up to 3 labelled images.
+  const [modelModalOpen, setModelModalOpen] = useState(false);
   // Model Library picker (single-VTON): lazily loaded when opened.
   const [libraryModels, setLibraryModels] = useState<SavedModel[]>([]);
   const [showLibrary, setShowLibrary] = useState(false);
@@ -1272,202 +1281,220 @@ export function StepStyling({ store }: StepStylingProps) {
           </p>
         </div>
 
-        {/* Attached multi-view reference set (from the Model Library) */}
-        {modelReferenceViews.length > 1 && (
-          <div className="rounded-xl border border-primary bg-primary/5 p-6 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-primary text-primary-foreground">
-                  <Library className="w-4 h-4" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-foreground">Model reference views</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    All checked views are sent as labelled references for a consistent likeness
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={removeModelImage}
-                className="p-1.5 rounded-lg text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
-                title="Clear model"
-              >
-                <X className="w-4 h-4" />
-              </button>
+        {/* Option A: model image — one tile; click to manage up to 3 labelled views */}
+        <div className="rounded-xl border border-border bg-card p-6 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className={cn(
+              "w-8 h-8 rounded-lg flex items-center justify-center",
+              modelReferenceViews.length > 0 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+            )}>
+              <Camera className="w-4 h-4" />
             </div>
-            <div className="flex flex-wrap gap-3">
-              {modelReferenceViews.map((v) => {
-                const enabled = enabledModelViewKinds.includes(v.kind);
-                return (
-                  <button
-                    key={v.kind}
-                    onClick={() => toggleModelViewKind(v.kind)}
-                    className={cn(
-                      "relative rounded-lg overflow-hidden border-2 transition-all w-24",
-                      enabled ? "border-primary" : "border-border opacity-50"
-                    )}
-                    title={`${enabled ? "Exclude" : "Include"} ${VIEW_LABELS[v.kind]}`}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={v.preview} alt={VIEW_LABELS[v.kind]} className="w-24 h-28 object-cover" />
-                    <span className="absolute left-1 top-1 rounded bg-black/60 px-1 py-0.5 text-[9px] font-medium text-white">
-                      {VIEW_LABELS[v.kind]}
-                    </span>
-                    <span
-                      className={cn(
-                        "absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded",
-                        enabled ? "bg-primary text-primary-foreground" : "bg-black/40 text-white"
-                      )}
-                    >
-                      {enabled && <Check className="h-3 w-3" />}
-                    </span>
-                  </button>
-                );
-              })}
+            <div>
+              <p className="text-sm font-semibold text-foreground">Model image</p>
+              <p className="text-[11px] text-muted-foreground">
+                Upload a model photo — click it to add face &amp; back-of-head views for stronger consistency
+              </p>
             </div>
           </div>
-        )}
 
-        {/* Choose from the saved Model Library */}
-        {modelReferenceViews.length <= 1 && (
-          <div className="rounded-xl border border-border bg-card p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-muted text-muted-foreground">
-                  <Library className="w-4 h-4" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-foreground">Model Library</p>
-                  <p className="text-[11px] text-muted-foreground">Use a saved model with all its reference views</p>
-                </div>
-              </div>
-              <button
-                onClick={openLibrary}
-                className="text-xs font-medium text-primary hover:underline underline-offset-2"
-              >
-                {showLibrary ? "Hide" : "Browse"}
-              </button>
-            </div>
-            {showLibrary && (
-              libraryLoading ? (
-                <p className="text-xs text-muted-foreground">Loading…</p>
-              ) : libraryModels.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No saved models yet. Create and save models in the AI Models feature.
-                </p>
-              ) : (
-                <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
-                  {libraryModels.map((m) => {
-                    const viewCount = 1 + (m.faceCloseUp?.imageData ? 1 : 0) + (m.backHead?.imageData ? 1 : 0);
-                    return (
-                      <button
-                        key={m.id}
-                        onClick={() => attachSavedModelToVTON(m)}
-                        className="group relative overflow-hidden rounded-lg border border-border hover:border-primary transition-colors"
-                        title={`Use ${m.name} (${viewCount} view${viewCount !== 1 ? "s" : ""})`}
-                      >
-                        <div className="aspect-[3/4]">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={m.imageData} alt={m.name} className="h-full w-full object-cover" />
-                        </div>
-                        <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/50 to-transparent p-1">
-                          <p className="truncate text-[10px] font-medium text-white">{m.name}</p>
-                        </div>
-                        {viewCount > 1 && (
-                          <span className="absolute bottom-1 right-1 rounded bg-primary px-1 py-0.5 text-[9px] font-medium text-primary-foreground">
-                            {viewCount} views
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              )
-            )}
-          </div>
-        )}
-
-        {/* Option A: Upload Custom Model Image */}
-        <div className={cn(
-          "rounded-xl border p-6 space-y-3 transition-colors",
-          modelImage
-            ? "border-primary bg-primary/5"
-            : "border-border bg-card"
-        )}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className={cn(
-                "w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold",
-                modelImage
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-muted-foreground"
-              )}>
-                <Camera className="w-4 h-4" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-foreground">Upload Model Photo</p>
-                <p className="text-[11px] text-muted-foreground">Best for exact likeness</p>
-              </div>
-            </div>
-            {modelImage && (
-              <Badge variant="default" className="text-[11px]">Active</Badge>
-            )}
-          </div>
-
-          {modelImage ? (
+          {modelReferenceViews.length > 0 || modelImage ? (
             <div className="flex items-start gap-4">
-              <div className="relative group rounded-lg overflow-hidden border border-border shrink-0">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={modelImage.preview}
-                  alt="Model reference"
-                  className="w-28 h-36 object-cover"
-                />
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors" />
+              <div className="relative group rounded-lg overflow-hidden border border-primary shrink-0">
+                <button
+                  onClick={() => setModelModalOpen(true)}
+                  className="block"
+                  title="Manage model images"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={modelReferenceViews.find((v) => v.kind === "full-body")?.preview ?? modelImage!.preview}
+                    alt="Model reference"
+                    className="w-28 h-36 object-cover"
+                  />
+                  <span className="absolute left-1.5 bottom-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                    {modelReferenceViews.length}/3 views
+                  </span>
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+                    <span className="text-[11px] font-medium text-white">Manage images</span>
+                  </div>
+                </button>
                 <button
                   onClick={removeModelImage}
-                  className="absolute top-1.5 right-1.5 p-1 rounded-lg bg-black/50 backdrop-blur-sm text-white opacity-0 group-hover:opacity-100 transition-all duration-200 hover:bg-red-500/90"
+                  className="absolute top-1.5 right-1.5 p-1 rounded-lg bg-black/50 backdrop-blur-sm text-white transition-colors hover:bg-red-500/90"
+                  title="Remove model"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
               </div>
               <div className="flex flex-col gap-2 pt-1">
                 <p className="text-xs text-muted-foreground">
-                  This photo will be sent to the image generator to preserve the model&apos;s exact face, skin tone, hair, and body proportions.
+                  {modelReferenceViews.length > 1
+                    ? "All views are sent as labelled references ([Full body] / [Face close-up] / [Back of head])."
+                    : "With only the full body, a single-image generation is used. Click the image to add face & back-of-head views."}
                 </p>
                 <button
-                  onClick={() => modelImageRef.current?.click()}
+                  onClick={() => setModelModalOpen(true)}
                   className="text-xs text-primary font-medium hover:underline underline-offset-2 w-fit"
                 >
-                  Replace image
+                  Manage images
                 </button>
               </div>
             </div>
           ) : (
-            <button
-              onClick={() => modelImageRef.current?.click()}
-              className="border border-dashed border-border rounded-lg p-4 flex items-center gap-3 w-full cursor-pointer transition-colors duration-200 hover:border-primary/50 hover:bg-muted/50 group"
-            >
+            <label className="border border-dashed border-border rounded-lg p-4 flex items-center gap-3 w-full cursor-pointer transition-colors duration-200 hover:border-primary/50 hover:bg-muted/50 group">
               <div className="w-10 h-10 rounded-lg bg-muted/50 flex items-center justify-center group-hover:bg-primary/10 transition-colors shrink-0">
                 <Upload className="w-5 h-5 text-muted-foreground group-hover:text-primary transition-colors" />
               </div>
               <div className="text-left">
-                <p className="text-sm font-medium text-foreground">
-                  Upload a reference photo
-                </p>
-                <p className="text-[11px] text-muted-foreground">
-                  Full-body or portrait for best results
-                </p>
+                <p className="text-sm font-medium text-foreground">Upload a model photo</p>
+                <p className="text-[11px] text-muted-foreground">Full body — add face &amp; back-of-head views after</p>
               </div>
-            </button>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) setModelReferenceView("full-body", file);
+                  e.target.value = "";
+                }}
+              />
+            </label>
           )}
-          <input
-            ref={modelImageRef}
-            type="file"
-            accept="image/*"
-            onChange={handleModelImageUpload}
-            className="hidden"
-          />
+        </div>
+
+        {/* Modal: manage up to 3 labelled model views */}
+        <Dialog open={modelModalOpen} onOpenChange={setModelModalOpen}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Model images</DialogTitle>
+              <DialogDescription>
+                Upload up to 3 labelled images of the same person. Full body is required; add a
+                face close-up and back of head for more consistent results across angles.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid grid-cols-3 gap-3">
+              {([
+                { kind: "full-body", label: VIEW_LABELS["full-body"] },
+                { kind: "face-closeup", label: VIEW_LABELS["face-closeup"] },
+                { kind: "back-head", label: VIEW_LABELS["back-head"] },
+              ] as { kind: ModelReferenceViewKind; label: string }[]).map((slot) => {
+                const view = modelReferenceViews.find((v) => v.kind === slot.kind);
+                const hasFullBody = modelReferenceViews.some((v) => v.kind === "full-body");
+                const locked = slot.kind !== "full-body" && !hasFullBody;
+                return (
+                  <div key={slot.kind} className="space-y-1.5">
+                    <span className="text-[11px] font-medium text-foreground">{slot.label}</span>
+                    {view ? (
+                      <div className="relative rounded-lg overflow-hidden border border-primary aspect-[3/4]">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={view.preview} alt={slot.label} className="h-full w-full object-cover" />
+                        <button
+                          onClick={() => setModelReferenceView(slot.kind, null)}
+                          className="absolute top-1 right-1 p-1 rounded-lg bg-black/50 backdrop-blur-sm text-white transition-colors hover:bg-red-500/90"
+                          title={`Remove ${slot.label}`}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <label
+                        className={cn(
+                          "flex aspect-[3/4] flex-col items-center justify-center gap-1 rounded-lg border border-dashed p-2 text-center transition-colors",
+                          locked
+                            ? "border-border/50 opacity-50 pointer-events-none"
+                            : "cursor-pointer border-border hover:border-primary/50 hover:bg-muted/40"
+                        )}
+                        title={locked ? "Add a full body shot first" : `Upload ${slot.label}`}
+                      >
+                        <Upload className="w-4 h-4 text-muted-foreground" />
+                        <span className="text-[10px] text-muted-foreground">
+                          {locked ? "Full body first" : "Upload"}
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          disabled={locked}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) setModelReferenceView(slot.kind, file);
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <DialogFooter>
+              <button
+                onClick={() => setModelModalOpen(false)}
+                className="btn-gradient inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium text-white"
+              >
+                Done
+              </button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Or use a saved model from the Model Library (fills the slots above) */}
+        <div className="rounded-xl border border-border bg-card p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-muted text-muted-foreground">
+                <Library className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-foreground">Model Library</p>
+                <p className="text-[11px] text-muted-foreground">Use a saved model with all its reference views</p>
+              </div>
+            </div>
+            <button
+              onClick={openLibrary}
+              className="text-xs font-medium text-primary hover:underline underline-offset-2"
+            >
+              {showLibrary ? "Hide" : "Browse"}
+            </button>
+          </div>
+          {showLibrary && (
+            libraryLoading ? (
+              <p className="text-xs text-muted-foreground">Loading…</p>
+            ) : libraryModels.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No saved models yet. Create and save models in the AI Models feature.
+              </p>
+            ) : (
+              <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+                {libraryModels.map((m) => {
+                  const viewCount = 1 + (m.faceCloseUp?.imageData ? 1 : 0) + (m.backHead?.imageData ? 1 : 0);
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => attachSavedModelToVTON(m)}
+                      className="group relative overflow-hidden rounded-lg border border-border hover:border-primary transition-colors"
+                      title={`Use ${m.name} (${viewCount} view${viewCount !== 1 ? "s" : ""})`}
+                    >
+                      <div className="aspect-[3/4]">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={m.imageData} alt={m.name} className="h-full w-full object-cover" />
+                      </div>
+                      <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/50 to-transparent p-1">
+                        <p className="truncate text-[10px] font-medium text-white">{m.name}</p>
+                      </div>
+                      {viewCount > 1 && (
+                        <span className="absolute bottom-1 right-1 rounded bg-primary px-1 py-0.5 text-[9px] font-medium text-primary-foreground">
+                          {viewCount} views
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )
+          )}
         </div>
 
         {/* OR Divider */}

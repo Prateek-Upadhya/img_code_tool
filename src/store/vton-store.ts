@@ -176,6 +176,57 @@ export function useVTONStore() {
   }, []);
 
   /**
+   * Set or clear a single labelled model reference slot from a directly-uploaded
+   * file (the styling-page analogue of {@link attachSavedModelToVTON}). Keeps the
+   * views ordered full-body → face → back for deterministic labelling, mirrors the
+   * full-body slot into `modelImage` (the single-image fallback), and keeps the
+   * per-view enable set in sync. Pass `file: null` to remove the slot.
+   */
+  const setModelReferenceView = useCallback(
+    (kind: ModelReferenceViewKind, file: File | null) => {
+      const order: Record<ModelReferenceViewKind, number> = {
+        "full-body": 0,
+        "face-closeup": 1,
+        "back-head": 2,
+      };
+      // Full body is the primary/required view: removing it clears the whole set
+      // (face/back alone are never sent). Equivalent to clearing the model.
+      if (kind === "full-body" && !file) {
+        setModelReferenceViewsRaw((prev) => {
+          for (const v of prev) if (v.preview.startsWith("blob:")) URL.revokeObjectURL(v.preview);
+          return [];
+        });
+        setModelImage((prevImg) => {
+          if (prevImg?.preview.startsWith("blob:")) URL.revokeObjectURL(prevImg.preview);
+          return null;
+        });
+        setEnabledModelViewKinds(["full-body", "face-closeup", "back-head"]);
+        return;
+      }
+      const preview = file ? URL.createObjectURL(file) : null;
+      setModelReferenceViewsRaw((prev) => {
+        const old = prev.find((v) => v.kind === kind);
+        if (old?.preview.startsWith("blob:")) URL.revokeObjectURL(old.preview);
+        const next = prev.filter((v) => v.kind !== kind);
+        if (file && preview) next.push({ kind, file, preview });
+        next.sort((a, b) => order[a.kind] - order[b.kind]);
+        return next;
+      });
+      // The full-body slot mirrors the single-image `modelImage` fallback.
+      if (kind === "full-body") {
+        setModelImage((prevImg) => {
+          if (prevImg?.preview.startsWith("blob:")) URL.revokeObjectURL(prevImg.preview);
+          return file && preview ? { file, preview } : null;
+        });
+      }
+      setEnabledModelViewKinds((prev) =>
+        file ? (prev.includes(kind) ? prev : [...prev, kind]) : prev.filter((k) => k !== kind)
+      );
+    },
+    []
+  );
+
+  /**
    * Attach a model (+ its face/back views) as the VTON model, clear any preset
    * selection, and jump to the VTON flow. The full-body image is also mirrored
    * into `modelImage` so single-image code paths keep working. Accepts anything
@@ -2345,6 +2396,7 @@ export function useVTONStore() {
     setModelImage,
     modelReferenceViews,
     setModelReferenceViews,
+    setModelReferenceView,
     clearModelReferenceViews,
     enabledModelViewKinds,
     toggleModelViewKind,
