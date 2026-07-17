@@ -1,14 +1,15 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { ImageIcon, Type, Upload, X, Check, Camera, Pencil, Trash2, Users, Plus, Palette, FolderOpen } from "lucide-react";
+import { ImageIcon, Type, Upload, X, Check, Camera, Pencil, Trash2, Users, Plus, Palette, FolderOpen, Library } from "lucide-react";
+import { loadSavedModels } from "@/lib/model-library";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { AI_MODELS } from "@/lib/constants";
 import type { VTONStore } from "@/store/vton-store";
-import type { BackgroundConfig, BackgroundImageMode, BackgroundMode, BulkBackground, BulkModelImage, ModelSwapBackgroundMode } from "@/lib/types";
+import type { BackgroundConfig, BackgroundImageMode, BackgroundMode, BulkBackground, BulkModelImage, ModelSwapBackgroundMode, SavedModel, ModelReferenceViewKind } from "@/lib/types";
 import { MODEL_SWAP_BG_OPTIONS } from "@/lib/constants";
 
 /* ------------------------------------------------------------------ */
@@ -346,6 +347,11 @@ export function StepStyling({ store }: StepStylingProps) {
     setSelectedModel,
     modelImage,
     setModelImage,
+    modelReferenceViews,
+    clearModelReferenceViews,
+    enabledModelViewKinds,
+    toggleModelViewKind,
+    attachSavedModelToVTON,
     bulkModelImages,
     addBulkModelImage,
     removeBulkModelImage,
@@ -368,6 +374,27 @@ export function StepStyling({ store }: StepStylingProps) {
   const bgInputRef = useRef<HTMLInputElement>(null);
   const modelImageRef = useRef<HTMLInputElement>(null);
   const bulkModelInputRef = useRef<HTMLInputElement>(null);
+
+  // Model Library picker (single-VTON): lazily loaded when opened.
+  const [libraryModels, setLibraryModels] = useState<SavedModel[]>([]);
+  const [showLibrary, setShowLibrary] = useState(false);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const openLibrary = useCallback(() => {
+    setShowLibrary((prev) => !prev);
+    if (libraryModels.length === 0) {
+      setLibraryLoading(true);
+      loadSavedModels()
+        .then(setLibraryModels)
+        .catch(() => {})
+        .finally(() => setLibraryLoading(false));
+    }
+  }, [libraryModels.length]);
+
+  const VIEW_LABELS: Record<ModelReferenceViewKind, string> = {
+    "full-body": "Full body",
+    "face-closeup": "Face close-up",
+    "back-head": "Back of head",
+  };
 
   const handleBgModeChange = useCallback(
     (bgMode: BackgroundMode) => {
@@ -408,6 +435,8 @@ export function StepStyling({ store }: StepStylingProps) {
       const file = e.target.files?.[0];
       if (file) {
         if (modelImage) URL.revokeObjectURL(modelImage.preview);
+        // A single manually-uploaded photo replaces any attached multi-view set.
+        clearModelReferenceViews();
         setModelImage({
           file,
           preview: URL.createObjectURL(file),
@@ -415,7 +444,7 @@ export function StepStyling({ store }: StepStylingProps) {
       }
       if (modelImageRef.current) modelImageRef.current.value = "";
     },
-    [modelImage, setModelImage]
+    [modelImage, setModelImage, clearModelReferenceViews]
   );
 
   const removeModelImage = useCallback(() => {
@@ -423,7 +452,8 @@ export function StepStyling({ store }: StepStylingProps) {
       URL.revokeObjectURL(modelImage.preview);
       setModelImage(null);
     }
-  }, [modelImage, setModelImage]);
+    clearModelReferenceViews();
+  }, [modelImage, setModelImage, clearModelReferenceViews]);
 
   // Bulk model upload handler
   const handleBulkModelUpload = useCallback(
@@ -1238,9 +1268,124 @@ export function StepStyling({ store }: StepStylingProps) {
           <p className="text-sm text-muted-foreground mt-0.5">
             {isFootwear
               ? "Optional — needed only for on-model poses. Product-only shots don't require a model."
-              : "Choose a preset model, upload your own reference photo, or both"}
+              : "Pick a saved model with its reference views, upload your own photo, or choose a preset"}
           </p>
         </div>
+
+        {/* Attached multi-view reference set (from the Model Library) */}
+        {modelReferenceViews.length > 1 && (
+          <div className="rounded-xl border border-primary bg-primary/5 p-6 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-primary text-primary-foreground">
+                  <Library className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Model reference views</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    All checked views are sent as labelled references for a consistent likeness
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={removeModelImage}
+                className="p-1.5 rounded-lg text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
+                title="Clear model"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              {modelReferenceViews.map((v) => {
+                const enabled = enabledModelViewKinds.includes(v.kind);
+                return (
+                  <button
+                    key={v.kind}
+                    onClick={() => toggleModelViewKind(v.kind)}
+                    className={cn(
+                      "relative rounded-lg overflow-hidden border-2 transition-all w-24",
+                      enabled ? "border-primary" : "border-border opacity-50"
+                    )}
+                    title={`${enabled ? "Exclude" : "Include"} ${VIEW_LABELS[v.kind]}`}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={v.preview} alt={VIEW_LABELS[v.kind]} className="w-24 h-28 object-cover" />
+                    <span className="absolute left-1 top-1 rounded bg-black/60 px-1 py-0.5 text-[9px] font-medium text-white">
+                      {VIEW_LABELS[v.kind]}
+                    </span>
+                    <span
+                      className={cn(
+                        "absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded",
+                        enabled ? "bg-primary text-primary-foreground" : "bg-black/40 text-white"
+                      )}
+                    >
+                      {enabled && <Check className="h-3 w-3" />}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Choose from the saved Model Library */}
+        {modelReferenceViews.length <= 1 && (
+          <div className="rounded-xl border border-border bg-card p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-muted text-muted-foreground">
+                  <Library className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Model Library</p>
+                  <p className="text-[11px] text-muted-foreground">Use a saved model with all its reference views</p>
+                </div>
+              </div>
+              <button
+                onClick={openLibrary}
+                className="text-xs font-medium text-primary hover:underline underline-offset-2"
+              >
+                {showLibrary ? "Hide" : "Browse"}
+              </button>
+            </div>
+            {showLibrary && (
+              libraryLoading ? (
+                <p className="text-xs text-muted-foreground">Loading…</p>
+              ) : libraryModels.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No saved models yet. Create and save models in the AI Models feature.
+                </p>
+              ) : (
+                <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+                  {libraryModels.map((m) => {
+                    const viewCount = 1 + (m.faceCloseUp?.imageData ? 1 : 0) + (m.backHead?.imageData ? 1 : 0);
+                    return (
+                      <button
+                        key={m.id}
+                        onClick={() => attachSavedModelToVTON(m)}
+                        className="group relative overflow-hidden rounded-lg border border-border hover:border-primary transition-colors"
+                        title={`Use ${m.name} (${viewCount} view${viewCount !== 1 ? "s" : ""})`}
+                      >
+                        <div className="aspect-[3/4]">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={m.imageData} alt={m.name} className="h-full w-full object-cover" />
+                        </div>
+                        <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/50 to-transparent p-1">
+                          <p className="truncate text-[10px] font-medium text-white">{m.name}</p>
+                        </div>
+                        {viewCount > 1 && (
+                          <span className="absolute bottom-1 right-1 rounded bg-primary px-1 py-0.5 text-[9px] font-medium text-primary-foreground">
+                            {viewCount} views
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )
+            )}
+          </div>
+        )}
 
         {/* Option A: Upload Custom Model Image */}
         <div className={cn(

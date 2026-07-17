@@ -19,7 +19,6 @@ import { ModelComboPicker } from "./model-combo-picker";
 import { generateModelPrompt, generateModelImage } from "@/lib/gemini";
 import { generateModelImageAzure } from "@/lib/azure-image";
 import { loadSavedModels, saveModel, deleteSavedModel } from "@/lib/model-library";
-import { dataUrlToFile } from "@/lib/model-creation-client";
 import type { VTONStore } from "@/store/vton-store";
 import type {
   AspectRatio,
@@ -92,9 +91,7 @@ export function StepModelGenerate({ store }: Props) {
     setIsModelCreationGenerating,
     savedModels,
     setSavedModels,
-    setModelImage,
-    setSelectedModel,
-    setFeatureMode,
+    attachSavedModelToVTON,
     setCurrentStep,
   } = store;
 
@@ -328,16 +325,8 @@ export function StepModelGenerate({ store }: Props) {
     [savedModels, setSavedModels]
   );
 
-  const sendToTryOn = useCallback(
-    (imageData: string, name: string) => {
-      const file = dataUrlToFile(imageData, `${name.replace(/\s+/g, "-") || "model"}.png`);
-      setSelectedModel(null);
-      setModelImage({ file, preview: imageData });
-      setFeatureMode("vton");
-      setCurrentStep(1);
-    },
-    [setModelImage, setSelectedModel, setFeatureMode, setCurrentStep]
-  );
+  // Hand a model (+ any face/back reference views) to the VTON flow.
+  const sendToTryOn = attachSavedModelToVTON;
 
   const download = (imageData: string, name: string) => {
     const a = document.createElement("a");
@@ -494,7 +483,7 @@ export function StepModelGenerate({ store }: Props) {
                       {r.saved ? <Check className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
                     </button>
                     <button
-                      onClick={() => sendToTryOn(r.imageData!, r.boxName)}
+                      onClick={() => sendToTryOn({ ...r, imageData: r.imageData! })}
                       className="rounded-md bg-white/15 p-1.5 text-white backdrop-blur-sm hover:bg-white/25"
                       title="Use in Virtual Try-On"
                     >
@@ -561,7 +550,7 @@ export function StepModelGenerate({ store }: Props) {
                     <Download className="h-3.5 w-3.5" />
                   </button>
                   <button
-                    onClick={() => sendToTryOn(m.imageData, m.name)}
+                    onClick={() => sendToTryOn(m)}
                     className="rounded-md bg-white/15 p-1.5 text-white backdrop-blur-sm hover:bg-white/25"
                     title="Use in Virtual Try-On"
                   >

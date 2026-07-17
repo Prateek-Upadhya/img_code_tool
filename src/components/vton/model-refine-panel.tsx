@@ -10,8 +10,10 @@ import {
   RefreshCw,
   ThumbsUp,
   Undo2,
+  Upload,
   X,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import {
   generateModelViewImage,
   generateModelEditInstruction,
@@ -301,15 +303,33 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
     });
   }, [data]);
 
+  /** Upload an image into a slot as an alternative to generating it. */
+  const handleUpload = useCallback(
+    (slotKind: "full-body" | ModelViewKind, file: File) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        if (slotKind === "full-body") {
+          onChange({ imageData: dataUrl });
+        } else {
+          const view: ModelViewResult = { status: "completed", imageData: dataUrl, approved: true };
+          onChange(slotKind === "face-closeup" ? { faceCloseUp: view } : { backHead: view });
+        }
+      };
+      reader.readAsDataURL(file);
+    },
+    [onChange]
+  );
+
   const hasAnyView = !!data.faceCloseUp || !!data.backHead;
   const canEdit = data.faceCloseUp?.status === "completed" && !!data.faceCloseUp.imageData;
 
   const slots = useMemo(
     () =>
       [
-        { title: "Full body", imageData: data.imageData, view: undefined as ModelViewKind | undefined, state: undefined as ModelViewResult | undefined },
-        { title: VIEW_META["face-closeup"].title, imageData: data.faceCloseUp?.imageData, view: "face-closeup" as ModelViewKind, state: data.faceCloseUp },
-        { title: VIEW_META["back-head"].title, imageData: data.backHead?.imageData, view: "back-head" as ModelViewKind, state: data.backHead },
+        { title: "Full body", kind: "full-body" as const, imageData: data.imageData, view: undefined as ModelViewKind | undefined, state: undefined as ModelViewResult | undefined },
+        { title: VIEW_META["face-closeup"].title, kind: "face-closeup" as const, imageData: data.faceCloseUp?.imageData, view: "face-closeup" as ModelViewKind, state: data.faceCloseUp },
+        { title: VIEW_META["back-head"].title, kind: "back-head" as const, imageData: data.backHead?.imageData, view: "back-head" as ModelViewKind, state: data.backHead },
       ] as const,
     [data]
   );
@@ -370,9 +390,9 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
                 </div>
               )}
             </div>
-            {slot.view && slot.state && slot.state.status !== "generating" && (
+            {slot.state?.status !== "generating" && (
               <div className="flex gap-1.5">
-                {slot.state.status === "completed" && !slot.state.approved && (
+                {slot.view && slot.state?.status === "completed" && !slot.state.approved && (
                   <button
                     onClick={() => approveView(slot.view!)}
                     disabled={busy}
@@ -382,14 +402,37 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
                     Approve
                   </button>
                 )}
-                <button
-                  onClick={() => void runView(slot.view!, data.imageData)}
-                  disabled={busy}
-                  className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-border bg-card px-2 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted/40 disabled:opacity-50"
+                {slot.view && slot.state && (
+                  <button
+                    onClick={() => void runView(slot.view!, data.imageData)}
+                    disabled={busy}
+                    className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-border bg-card px-2 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted/40 disabled:opacity-50"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    {slot.state.status === "error" ? "Retry" : "Regenerate"}
+                  </button>
+                )}
+                <label
+                  className={cn(
+                    "inline-flex flex-1 cursor-pointer items-center justify-center gap-1 rounded-lg border border-border bg-card px-2 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted/40",
+                    busy && "pointer-events-none opacity-50"
+                  )}
+                  title={`Upload ${slot.title.toLowerCase()}`}
                 >
-                  <RefreshCw className="h-3 w-3" />
-                  {slot.state.status === "error" ? "Retry" : "Regenerate"}
-                </button>
+                  <Upload className="h-3 w-3" />
+                  Upload
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={busy}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleUpload(slot.kind, file);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
               </div>
             )}
           </div>

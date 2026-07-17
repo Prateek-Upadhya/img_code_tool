@@ -95,10 +95,14 @@ import {
   ModelReferenceImage,
   ModelEditSource,
   ModelEditResult,
+  ModelRefineFields,
   SavedModel,
+  LabeledModelView,
+  ModelReferenceViewKind,
 } from "@/lib/types";
 import { MAX_CAMERA_MOVEMENTS, MAX_MODEL_MOVEMENTS } from "@/lib/constants";
 import { saveModel } from "@/lib/model-library";
+import { dataUrlToFile } from "@/lib/model-creation-client";
 
 const defaultBackground: BackgroundConfig = {
   mode: "text",
@@ -137,6 +141,72 @@ export function useVTONStore() {
   const [background, setBackground] = useState<BackgroundConfig>(defaultBackground);
   const [selectedModel, setSelectedModel] = useState<AIModel | null>(null);
   const [modelImage, setModelImage] = useState<ModelImage | null>(null);
+  // Labelled multi-angle model reference views (full body / face / back) attached
+  // from the Model Library. When ≥2 and enabled, VTON generation sends them as
+  // labelled references instead of the single `modelImage`. Empty = single-image.
+  const [modelReferenceViews, setModelReferenceViewsRaw] = useState<LabeledModelView[]>([]);
+  const [enabledModelViewKinds, setEnabledModelViewKinds] = useState<ModelReferenceViewKind[]>([
+    "full-body",
+    "face-closeup",
+    "back-head",
+  ]);
+
+  const setModelReferenceViews = useCallback((views: LabeledModelView[]) => {
+    setModelReferenceViewsRaw((prev) => {
+      for (const v of prev) if (v.preview.startsWith("blob:")) URL.revokeObjectURL(v.preview);
+      return views;
+    });
+    setEnabledModelViewKinds(views.map((v) => v.kind));
+  }, []);
+
+  const clearModelReferenceViews = useCallback(() => {
+    setModelReferenceViewsRaw((prev) => {
+      for (const v of prev) if (v.preview.startsWith("blob:")) URL.revokeObjectURL(v.preview);
+      return [];
+    });
+  }, []);
+
+  const toggleModelViewKind = useCallback((kind: ModelReferenceViewKind) => {
+    setEnabledModelViewKinds((prev) =>
+      prev.includes(kind) ? prev.filter((k) => k !== kind) : [...prev, kind]
+    );
+  }, []);
+
+  /**
+   * Attach a model (+ its face/back views) as the VTON model, clear any preset
+   * selection, and jump to the VTON flow. The full-body image is also mirrored
+   * into `modelImage` so single-image code paths keep working. Accepts anything
+   * carrying a full-body `imageData` plus the optional refine views — a
+   * {@link SavedModel} or an in-progress {@link ModelCreationResult}.
+   */
+  const attachSavedModelToVTON = useCallback(
+    (model: ModelRefineFields & { imageData: string }) => {
+      const fullFile = dataUrlToFile(model.imageData, "full-body.png");
+      const views: LabeledModelView[] = [
+        { kind: "full-body", file: fullFile, preview: model.imageData },
+      ];
+      if (model.faceCloseUp?.imageData) {
+        views.push({
+          kind: "face-closeup",
+          file: dataUrlToFile(model.faceCloseUp.imageData, "face-closeup.png"),
+          preview: model.faceCloseUp.imageData,
+        });
+      }
+      if (model.backHead?.imageData) {
+        views.push({
+          kind: "back-head",
+          file: dataUrlToFile(model.backHead.imageData, "back-of-head.png"),
+          preview: model.backHead.imageData,
+        });
+      }
+      setSelectedModel(null);
+      setModelImage({ file: fullFile, preview: model.imageData });
+      setModelReferenceViews(views);
+      setFeatureMode("vton");
+      setCurrentStep(1);
+    },
+    [setModelReferenceViews]
+  );
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("3:4");
   const [imageQuality, setImageQuality] = useState<"1K" | "2K" | "4K">("2K");
   const [imageGenModel, setImageGenModel] = useState<ImageGenModel>("gemini");
@@ -2147,6 +2217,12 @@ export function useVTONStore() {
     setSelectedModel,
     modelImage,
     setModelImage,
+    modelReferenceViews,
+    setModelReferenceViews,
+    clearModelReferenceViews,
+    enabledModelViewKinds,
+    toggleModelViewKind,
+    attachSavedModelToVTON,
     aspectRatio,
     setAspectRatio,
     imageQuality,

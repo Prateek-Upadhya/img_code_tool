@@ -218,6 +218,22 @@ export interface ModelImage {
   preview: string;
 }
 
+/** Which of a model's reference views a {@link LabeledModelView} depicts. */
+export type ModelReferenceViewKind = "full-body" | "face-closeup" | "back-head";
+
+/**
+ * One labelled model reference image passed into VTON generation. When two or
+ * more are supplied, they are attached to the image request as explicitly
+ * labelled parts (Full body / Face close-up / Back of head) so the generator
+ * has a deterministic, all-angle likeness of the same person.
+ */
+export interface LabeledModelView {
+  kind: ModelReferenceViewKind;
+  file: File;
+  /** Object URL or data URL for UI display. */
+  preview: string;
+}
+
 export type AspectRatio = "1:1" | "2:3" | "3:2" | "3:4" | "4:3" | "4:5" | "5:4" | "9:16" | "16:9";
 
 export type PoseViewAngle = "front" | "side" | "back" | "three-quarter-front" | "three-quarter-back" | "top-down" | "bottom" | "ghost";

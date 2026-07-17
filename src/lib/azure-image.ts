@@ -21,6 +21,7 @@ import type {
   AspectRatio,
   ComplementaryImage,
   GarmentImage,
+  LabeledModelView,
   ModelImage,
   ModelViewKind,
   StepCost,
@@ -128,10 +129,23 @@ export interface AzureVTONImageArgs {
   complementaryImages: ComplementaryImage[];
   accessories: AccessoryItem[];
   modelImage: ModelImage | null;
+  /**
+   * Optional labelled model views. gpt-image-2 has no per-image slots, so when
+   * ≥2 are supplied they are appended as `image[]` references and described by
+   * order in the prompt prose (in place of the single `modelImage`).
+   */
+  modelViews?: LabeledModelView[];
   aspectRatio: AspectRatio;
   imageSize: "1K" | "2K" | "4K";
   isProductOnlyShot?: boolean;
 }
+
+/** Prose sentence naming the model views by their `image[]` order. */
+const AZURE_VIEW_LABEL: Record<LabeledModelView["kind"], string> = {
+  "full-body": "the full body",
+  "face-closeup": "a face close-up",
+  "back-head": "the back of the head",
+};
 
 interface AzureImageResponse {
   data?: Array<{ b64_json?: string }>;
@@ -156,14 +170,25 @@ export async function generateVTONImageAzure({
   complementaryImages,
   accessories,
   modelImage,
+  modelViews,
   aspectRatio,
   imageSize,
   isProductOnlyShot = false,
 }: AzureVTONImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
   const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
 
+  const useMultiView = !isProductOnlyShot && !!modelViews && modelViews.length >= 2;
+
+  // gpt-image-2 has no per-image labels, so name the model views by order in
+  // the prompt prose. Product images come first, then the model view(s).
+  const promptText = useMultiView
+    ? `${prompt}\n\nMODEL REFERENCE IMAGES: after the product image(s), ${modelViews!.length} images depict the SAME person from multiple angles — ${modelViews!
+        .map((v, i) => `image ${i + 1} is ${AZURE_VIEW_LABEL[v.kind]}`)
+        .join(", ")}. Reproduce this exact person (face, skin tone, hair front and back, body type) and do not copy any clothing or background from them.`
+    : prompt;
+
   const form = new FormData();
-  form.append("prompt", prompt);
+  form.append("prompt", promptText);
   form.append("model", "gpt-image-2");
   form.append("n", "1");
   form.append("size", size);
@@ -171,7 +196,11 @@ export async function generateVTONImageAzure({
 
   const imageFiles: File[] = [];
   for (const img of garmentImages) imageFiles.push(img.file);
-  if (!isProductOnlyShot && modelImage) imageFiles.push(modelImage.file);
+  if (useMultiView) {
+    for (const view of modelViews!) imageFiles.push(view.file);
+  } else if (!isProductOnlyShot && modelImage) {
+    imageFiles.push(modelImage.file);
+  }
   for (const img of complementaryImages) imageFiles.push(img.file);
   for (const acc of accessories) {
     if (acc.image?.file) imageFiles.push(acc.image.file);
