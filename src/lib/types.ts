@@ -393,8 +393,42 @@ export interface ModelBox {
   lockToReferenceFace: boolean;
 }
 
+/** The two identity reference shots generated per model on the Refine step. */
+export type ModelViewKind = "face-closeup" | "back-head";
+
+/** State of one reference-shot view (face close-up or back of head). */
+export interface ModelViewResult {
+  status: "generating" | "completed" | "error";
+  /** Generated view as a data URL. */
+  imageData?: string;
+  /** True once the user has accepted this view (approve/regenerate loop). */
+  approved?: boolean;
+  error?: string;
+  costBreakdown?: GenerationCostBreakdown;
+}
+
+/** One snapshot in a model's linear edit history (full body + both views). */
+export interface ModelVersion {
+  id: string;
+  /** Human label, e.g. "Original" or the edit that produced the NEXT state. */
+  label: string;
+  createdAt: number;
+  /** Full-body image as a data URL. */
+  imageData: string;
+  faceCloseUp?: string;
+  backHead?: string;
+}
+
+/** Refine-step fields shared by {@link ModelCreationResult} and {@link SavedModel}. */
+export interface ModelRefineFields {
+  faceCloseUp?: ModelViewResult;
+  backHead?: ModelViewResult;
+  /** Linear edit history, oldest first. */
+  versions?: ModelVersion[];
+}
+
 /** One generated result image — one variant of one {@link ModelBox}. */
-export interface ModelCreationResult {
+export interface ModelCreationResult extends ModelRefineFields {
   id: string;
   boxId: string;
   boxName: string;
@@ -419,7 +453,7 @@ export interface ModelCreationResult {
 }
 
 /** A model persisted to the IndexedDB-backed Model Library. */
-export interface SavedModel {
+export interface SavedModel extends ModelRefineFields {
   id: string;
   name: string;
   /** Base64 data URL of the model image. */

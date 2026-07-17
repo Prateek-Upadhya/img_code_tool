@@ -22,9 +22,11 @@ import type {
   ComplementaryImage,
   GarmentImage,
   ModelImage,
+  ModelViewKind,
   StepCost,
   TokenUsage,
 } from "./types";
+import { buildModelViewPrompt } from "./gemini";
 
 // --- Size resolver -------------------------------------------------------
 
@@ -289,6 +291,80 @@ export async function generateModelImageAzure({
     outputTokens: json.usage?.output_tokens ?? 0,
   };
   const cost = computeAzureImageGenCost("Model Image (gpt-image-2)", tokens, quality);
+
+  return {
+    imageData: `data:image/png;base64,${b64}`,
+    cost,
+    responseContent: json,
+  };
+}
+
+export interface AzureModelViewImageArgs {
+  sourceImage: { file: File };
+  view: ModelViewKind;
+  aspectRatio: AspectRatio;
+  imageSize: "1K" | "2K" | "4K";
+}
+
+/**
+ * Model Refine — renders one identity reference shot (face close-up or back of
+ * head) from a full-body model image with Azure gpt-image-2. The source is
+ * always attached, so the route hits `/images/edits`. Return shape matches the
+ * Gemini `generateModelViewImage` so callers can swap them freely.
+ */
+export async function generateModelViewImageAzure({
+  sourceImage,
+  view,
+  aspectRatio,
+  imageSize,
+}: AzureModelViewImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
+  const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
+
+  const prompt = `The attached image is a full-body studio photograph of a fashion model — the definitive reference for this person's identity, hair, skin tone, background and lighting. ${buildModelViewPrompt(view)} Output a single photorealistic photograph.`;
+
+  const form = new FormData();
+  form.append("prompt", prompt);
+  form.append("model", "gpt-image-2");
+  form.append("n", "1");
+  form.append("size", size);
+  form.append("quality", quality);
+  form.append("image[]", sourceImage.file, sourceImage.file.name);
+
+  const response = await fetch("/api/azure-image/generate", {
+    method: "POST",
+    body: form,
+  });
+
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const errJson = (await response.json()) as AzureImageResponse;
+      if (errJson.error?.message) detail = `${detail}: ${errJson.error.message}`;
+    } catch {
+      try {
+        detail = `${detail}: ${await response.text()}`;
+      } catch {
+        // noop
+      }
+    }
+    throw new Error(`Azure gpt-image-2 request failed — ${detail}`);
+  }
+
+  const json = (await response.json()) as AzureImageResponse;
+  const b64 = json.data?.[0]?.b64_json;
+  if (!b64) {
+    throw new Error("No image returned from Azure gpt-image-2");
+  }
+
+  const tokens: TokenUsage = {
+    inputTokens: json.usage?.input_tokens ?? 0,
+    outputTokens: json.usage?.output_tokens ?? 0,
+  };
+  const cost = computeAzureImageGenCost(
+    view === "face-closeup" ? "Face Close-up (gpt-image-2)" : "Back of Head (gpt-image-2)",
+    tokens,
+    quality
+  );
 
   return {
     imageData: `data:image/png;base64,${b64}`,

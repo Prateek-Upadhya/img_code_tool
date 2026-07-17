@@ -98,6 +98,7 @@ import {
   SavedModel,
 } from "@/lib/types";
 import { MAX_CAMERA_MOVEMENTS, MAX_MODEL_MOVEMENTS } from "@/lib/constants";
+import { saveModel } from "@/lib/model-library";
 
 const defaultBackground: BackgroundConfig = {
   mode: "text",
@@ -402,6 +403,19 @@ export function useVTONStore() {
 
   const resetModelCreationResults = useCallback(() => {
     setModelCreationResults([]);
+  }, []);
+
+  // --- Model Refine (reference shots + facial edits, step 4) ---
+  const [isModelRefineGenerating, setIsModelRefineGenerating] = useState(false);
+
+  /** Patch a saved model in state AND persist the merged record to IndexedDB. */
+  const updateSavedModel = useCallback((id: string, update: Partial<SavedModel>) => {
+    setSavedModels((prev) => {
+      const next = prev.map((m) => (m.id === id ? { ...m, ...update } : m));
+      const merged = next.find((m) => m.id === id);
+      if (merged) void saveModel(merged).catch(() => {});
+      return next;
+    });
   }, []);
 
   // --- AI Model Editing (sub-mode of model-creation) ---
@@ -1871,10 +1885,14 @@ export function useVTONStore() {
         const hasReadyBoxes = modelBoxes.some(
           (b) => b.name.trim() !== "" || b.description.trim() !== "" || !!b.referenceImage
         );
+        const hasRefinables =
+          modelCreationResults.some((r) => r.status === "completed" && !!r.imageData) ||
+          savedModels.length > 0;
         switch (step) {
           case 1: return true;          // Casting
           case 2: return true;          // Models (boxes are added on this step)
           case 3: return hasReadyBoxes; // Generate
+          case 4: return hasRefinables; // Refine (reference shots, edits, export)
           default: return false;
         }
       }
@@ -2064,7 +2082,7 @@ export function useVTONStore() {
           return false;
       }
     },
-    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts, modelBoxes, modelCreationMode, modelEditSources, modelEditDirective]
+    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts, modelBoxes, modelCreationMode, modelEditSources, modelEditDirective, modelCreationResults, savedModels]
   );
 
   return {
@@ -2439,8 +2457,9 @@ export function useVTONStore() {
     modelGuidelines, setModelGuidelines,
     modelBoxes, addModelBox, updateModelBox, removeModelBox, setModelBoxReferenceImage,
     modelCreationResults, setModelCreationResults, updateModelCreationResult, resetModelCreationResults,
-    savedModels, setSavedModels,
+    savedModels, setSavedModels, updateSavedModel,
     isModelCreationGenerating, setIsModelCreationGenerating,
+    isModelRefineGenerating, setIsModelRefineGenerating,
     // AI Model Editing (sub-mode)
     modelCreationMode, setModelCreationMode,
     modelEditSources, addModelEditSources, removeModelEditSource,

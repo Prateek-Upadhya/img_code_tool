@@ -12,6 +12,7 @@ import {
   Trash2,
   AlertCircle,
   Library,
+  Wand2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ModelComboPicker } from "./model-combo-picker";
@@ -500,6 +501,13 @@ export function StepModelGenerate({ store }: Props) {
                       <Shirt className="h-3.5 w-3.5" />
                     </button>
                     <button
+                      onClick={() => setCurrentStep(4)}
+                      className="rounded-md bg-white/15 p-1.5 text-white backdrop-blur-sm hover:bg-white/25"
+                      title="Refine (reference shots & facial edits)"
+                    >
+                      <Wand2 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
                       onClick={() => handleRegenerate(r)}
                       className="rounded-md bg-white/15 p-1.5 text-white backdrop-blur-sm hover:bg-white/25"
                       title="Regenerate"
@@ -558,6 +566,13 @@ export function StepModelGenerate({ store }: Props) {
                     title="Use in Virtual Try-On"
                   >
                     <Shirt className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => setCurrentStep(4)}
+                    className="rounded-md bg-white/15 p-1.5 text-white backdrop-blur-sm hover:bg-white/25"
+                    title="Refine (reference shots & facial edits)"
+                  >
+                    <Wand2 className="h-3.5 w-3.5" />
                   </button>
                   <button
                     onClick={() => handleDeleteSaved(m.id)}

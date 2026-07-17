@@ -41,6 +41,7 @@ import { StepInfographicGenerate } from "./step-infographic-generate";
 import { StepModelCasting } from "./step-model-casting";
 import { StepModelBoxes } from "./step-model-boxes";
 import { StepModelGenerate } from "./step-model-generate";
+import { StepModelRefine } from "./step-model-refine";
 import { StepModelEditUpload } from "./step-model-edit-upload";
 import { StepModelEditDirective } from "./step-model-edit-directive";
 import { StepModelEditGenerate } from "./step-model-edit-generate";
@@ -182,6 +183,7 @@ export function VTONWizard() {
     modelCreationMode,
     setModelCreationMode,
     isModelEditGenerating,
+    isModelRefineGenerating,
   } = store;
 
   // Mirror the selected Google backend into the gemini-client module so every
@@ -217,7 +219,7 @@ export function VTONWizard() {
     ? MODEL_SWAP_WIZARD_STEPS
     : WIZARD_STEPS;
   const maxStep = activeWizardSteps.length;
-  const anyGenerating = isGenerating || isSwatchGenerating || isReplicateGenerating || isVideoGenerating || isRoomStagingGenerating || isInfographicGenerating || isModelCreationGenerating || isModelEditGenerating;
+  const anyGenerating = isGenerating || isSwatchGenerating || isReplicateGenerating || isVideoGenerating || isRoomStagingGenerating || isInfographicGenerating || isModelCreationGenerating || isModelEditGenerating || isModelRefineGenerating;
 
   const goNext = () => {
     const nextStep = (currentStep + 1) as WizardStep;
@@ -523,6 +525,7 @@ export function VTONWizard() {
                     {currentStep === 1 && <StepModelCasting store={store} />}
                     {currentStep === 2 && <StepModelBoxes store={store} />}
                     {currentStep === 3 && <StepModelGenerate store={store} />}
+                    {currentStep === 4 && <StepModelRefine store={store} />}
                   </>
                 )
               ) : isInfographic ? (

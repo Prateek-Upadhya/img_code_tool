@@ -27,6 +27,7 @@ import {
   ModelBodyType,
   ModelImage,
   ModelSwapBackgroundMode,
+  ModelViewKind,
   Pose,
   PoseViewAngle,
   ProductCategory,
@@ -5917,6 +5918,91 @@ export async function generateModelImage({
   }
 
   throw new Error("No model image generated from Nano Banana 2");
+}
+
+/** View-specific rendering blocks for {@link generateModelViewImage}. */
+export function buildModelViewPrompt(view: ModelViewKind): string {
+  if (view === "face-closeup") {
+    return `Render a close-up beauty portrait of the SAME person shown in the source photograph, facing the camera directly. Reproduce the person's facial features, face shape, eye color, eyebrows, hairstyle, hair color and texture, skin tone, complexion and makeup EXACTLY as they appear in the source — this is the same individual, photographed closer.
+
+FRAMING: head-and-shoulders close-up — upper boundary just above the top of the head (including hair volume), lower boundary at the collarbone. The face is sharp, centered and fills most of the frame.
+
+SETTING: the identical neutral studio background, lighting direction and color temperature as the source photograph, so the two images read as frames from the same photoshoot.`;
+  }
+  return `Render the SAME person shown in the source photograph, photographed from DIRECTLY BEHIND — a back-of-the-head shot. Reproduce the person's hairstyle, hair color, hair texture, hair length, skin tone at the neck and ears, and overall head shape EXACTLY as they appear in the source — this is the same individual, viewed from behind.
+
+FRAMING: upper boundary slightly above the top of the head (including hair volume), lower boundary near the shoulders. The back of the head is centered and fills most of the frame. No part of the face is visible.
+
+SETTING: the identical neutral studio background, lighting direction and color temperature as the source photograph, so the two images read as frames from the same photoshoot.`;
+}
+
+/**
+ * Model Refine — renders one identity reference shot (face close-up or back of
+ * head) from an approved full-body model image, with Nano Banana 2. The source
+ * full-body shot is the sole reference; the output matches its background,
+ * lighting and aspect ratio so the set reads as one photoshoot.
+ */
+export async function generateModelViewImage({
+  apiKey,
+  sourceImage,
+  view,
+  aspectRatio,
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  sourceImage: { file: File };
+  view: ModelViewKind;
+  aspectRatio: AspectRatio;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
+  const ai = getGeminiClient(apiKey);
+
+  const contents: ContentPart[] = [];
+  contents.push({
+    text: `═══ SOURCE — IDENTITY REFERENCE (ABSOLUTE SOURCE OF TRUTH) ═══\nThe image below is a full-body studio photograph of a fashion model. It is the definitive reference for this person's identity, hair, skin tone, background and lighting.`,
+  });
+  const base64 = await fileToBase64(sourceImage.file);
+  contents.push({ inlineData: { mimeType: sourceImage.file.type, data: base64 } });
+
+  contents.push({
+    text: `═══ SHOT TO RENDER ═══\n${buildModelViewPrompt(view)}\n\nOutput a single photorealistic photograph in a ${aspectRatio} canvas.`,
+  });
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image-preview",
+    contents,
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio, imageSize },
+      abortSignal,
+    },
+  });
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeImageGenCost(
+    view === "face-closeup"
+      ? "Face Close-up (Nano Banana 2)"
+      : "Back of Head (Nano Banana 2)",
+    tokens,
+    imageSize
+  );
+  const responseContent = response.candidates?.[0]?.content;
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return {
+          imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+          cost,
+          responseContent,
+        };
+      }
+    }
+  }
+
+  throw new Error("No model view image generated from Nano Banana 2");
 }
 
 /**
