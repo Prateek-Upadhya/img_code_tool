@@ -95,12 +95,17 @@ import {
   ModelReferenceImage,
   ModelEditSource,
   ModelEditResult,
+  ModelRefineFields,
   SavedModel,
   ReferencePhotoshootMode,
   ReferenceImageItem,
   ProductReferenceFolder,
+  LabeledModelView,
+  ModelReferenceViewKind,
 } from "@/lib/types";
 import { MAX_CAMERA_MOVEMENTS, MAX_MODEL_MOVEMENTS } from "@/lib/constants";
+import { saveModel } from "@/lib/model-library";
+import { dataUrlToFile } from "@/lib/model-creation-client";
 
 const defaultBackground: BackgroundConfig = {
   mode: "text",
@@ -139,6 +144,72 @@ export function useVTONStore() {
   const [background, setBackground] = useState<BackgroundConfig>(defaultBackground);
   const [selectedModel, setSelectedModel] = useState<AIModel | null>(null);
   const [modelImage, setModelImage] = useState<ModelImage | null>(null);
+  // Labelled multi-angle model reference views (full body / face / back) attached
+  // from the Model Library. When ≥2 and enabled, VTON generation sends them as
+  // labelled references instead of the single `modelImage`. Empty = single-image.
+  const [modelReferenceViews, setModelReferenceViewsRaw] = useState<LabeledModelView[]>([]);
+  const [enabledModelViewKinds, setEnabledModelViewKinds] = useState<ModelReferenceViewKind[]>([
+    "full-body",
+    "face-closeup",
+    "back-head",
+  ]);
+
+  const setModelReferenceViews = useCallback((views: LabeledModelView[]) => {
+    setModelReferenceViewsRaw((prev) => {
+      for (const v of prev) if (v.preview.startsWith("blob:")) URL.revokeObjectURL(v.preview);
+      return views;
+    });
+    setEnabledModelViewKinds(views.map((v) => v.kind));
+  }, []);
+
+  const clearModelReferenceViews = useCallback(() => {
+    setModelReferenceViewsRaw((prev) => {
+      for (const v of prev) if (v.preview.startsWith("blob:")) URL.revokeObjectURL(v.preview);
+      return [];
+    });
+  }, []);
+
+  const toggleModelViewKind = useCallback((kind: ModelReferenceViewKind) => {
+    setEnabledModelViewKinds((prev) =>
+      prev.includes(kind) ? prev.filter((k) => k !== kind) : [...prev, kind]
+    );
+  }, []);
+
+  /**
+   * Attach a model (+ its face/back views) as the VTON model, clear any preset
+   * selection, and jump to the VTON flow. The full-body image is also mirrored
+   * into `modelImage` so single-image code paths keep working. Accepts anything
+   * carrying a full-body `imageData` plus the optional refine views — a
+   * {@link SavedModel} or an in-progress {@link ModelCreationResult}.
+   */
+  const attachSavedModelToVTON = useCallback(
+    (model: ModelRefineFields & { imageData: string }) => {
+      const fullFile = dataUrlToFile(model.imageData, "full-body.png");
+      const views: LabeledModelView[] = [
+        { kind: "full-body", file: fullFile, preview: model.imageData },
+      ];
+      if (model.faceCloseUp?.imageData) {
+        views.push({
+          kind: "face-closeup",
+          file: dataUrlToFile(model.faceCloseUp.imageData, "face-closeup.png"),
+          preview: model.faceCloseUp.imageData,
+        });
+      }
+      if (model.backHead?.imageData) {
+        views.push({
+          kind: "back-head",
+          file: dataUrlToFile(model.backHead.imageData, "back-of-head.png"),
+          preview: model.backHead.imageData,
+        });
+      }
+      setSelectedModel(null);
+      setModelImage({ file: fullFile, preview: model.imageData });
+      setModelReferenceViews(views);
+      setFeatureMode("vton");
+      setCurrentStep(1);
+    },
+    [setModelReferenceViews]
+  );
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("3:4");
   const [imageQuality, setImageQuality] = useState<"1K" | "2K" | "4K">("2K");
   const [imageGenModel, setImageGenModel] = useState<ImageGenModel>("gemini");
@@ -415,6 +486,19 @@ export function useVTONStore() {
 
   const resetModelCreationResults = useCallback(() => {
     setModelCreationResults([]);
+  }, []);
+
+  // --- Model Refine (reference shots + facial edits, step 4) ---
+  const [isModelRefineGenerating, setIsModelRefineGenerating] = useState(false);
+
+  /** Patch a saved model in state AND persist the merged record to IndexedDB. */
+  const updateSavedModel = useCallback((id: string, update: Partial<SavedModel>) => {
+    setSavedModels((prev) => {
+      const next = prev.map((m) => (m.id === id ? { ...m, ...update } : m));
+      const merged = next.find((m) => m.id === id);
+      if (merged) void saveModel(merged).catch(() => {});
+      return next;
+    });
   }, []);
 
   // --- AI Model Editing (sub-mode of model-creation) ---
@@ -1974,10 +2058,14 @@ export function useVTONStore() {
         const hasReadyBoxes = modelBoxes.some(
           (b) => b.name.trim() !== "" || b.description.trim() !== "" || !!b.referenceImage
         );
+        const hasRefinables =
+          modelCreationResults.some((r) => r.status === "completed" && !!r.imageData) ||
+          savedModels.length > 0;
         switch (step) {
           case 1: return true;          // Casting
           case 2: return true;          // Models (boxes are added on this step)
           case 3: return hasReadyBoxes; // Generate
+          case 4: return hasRefinables; // Refine (reference shots, edits, export)
           default: return false;
         }
       }
@@ -2190,7 +2278,7 @@ export function useVTONStore() {
           return false;
       }
     },
-    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts, modelBoxes, modelCreationMode, modelEditSources, modelEditDirective, referencePhotoshootMode, singleReferenceImages, referenceFolders, background]
+    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts, modelBoxes, modelCreationMode, modelEditSources, modelEditDirective, referencePhotoshootMode, singleReferenceImages, referenceFolders, background, modelCreationResults, savedModels]
   );
 
   return {
@@ -2255,6 +2343,12 @@ export function useVTONStore() {
     setSelectedModel,
     modelImage,
     setModelImage,
+    modelReferenceViews,
+    setModelReferenceViews,
+    clearModelReferenceViews,
+    enabledModelViewKinds,
+    toggleModelViewKind,
+    attachSavedModelToVTON,
     aspectRatio,
     setAspectRatio,
     imageQuality,
@@ -2581,8 +2675,9 @@ export function useVTONStore() {
     modelGuidelines, setModelGuidelines,
     modelBoxes, addModelBox, updateModelBox, removeModelBox, setModelBoxReferenceImage,
     modelCreationResults, setModelCreationResults, updateModelCreationResult, resetModelCreationResults,
-    savedModels, setSavedModels,
+    savedModels, setSavedModels, updateSavedModel,
     isModelCreationGenerating, setIsModelCreationGenerating,
+    isModelRefineGenerating, setIsModelRefineGenerating,
     // AI Model Editing (sub-mode)
     modelCreationMode, setModelCreationMode,
     modelEditSources, addModelEditSources, removeModelEditSource,

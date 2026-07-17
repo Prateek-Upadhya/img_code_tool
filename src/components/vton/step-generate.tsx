@@ -418,6 +418,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
     background,
     selectedModel,
     modelImage,
+    modelReferenceViews,
+    enabledModelViewKinds,
     aspectRatio,
     selectedPoses,
     customPoses,
@@ -495,6 +497,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
   // gpt-image-2 is selectable for ALL VTON flows (clothing + footwear), so we
   // route to Azure purely on the selected image model, not the category.
   const useAzure = imageGenModel === "gpt-image-2";
+  // Labelled model reference views the user left enabled. Passed to generation
+  // when ≥2 are present; fewer falls back to the single `modelImage` path.
+  const activeModelViews = useMemo(
+    () => modelReferenceViews.filter((v) => enabledModelViewKinds.includes(v.kind)),
+    [modelReferenceViews, enabledModelViewKinds]
+  );
 
   // Parse the comma-separated user input into a deduped array of non-negative
   // integers. Any non-integer / negative tokens are silently dropped.
@@ -527,6 +535,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages: args.complementaryImages,
           accessories: args.accessories,
           modelImage: args.modelImage,
+          modelViews: args.modelViews,
           aspectRatio: args.aspectRatio,
           imageSize: args.imageSize ?? "2K",
           isProductOnlyShot: args.isProductOnlyShot,
@@ -1013,6 +1022,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages,
           accessories,
           modelImage: poseIsProductOnly ? null : modelImage,
+          modelViews: poseIsProductOnly ? undefined : activeModelViews,
           background: effBackground,
           sceneReferenceImage: sceneRefFile ? { file: sceneRefFile } : undefined,
           aspectRatio,
@@ -1962,6 +1972,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages,
           accessories,
           modelImage: poseIsProductOnly ? null : modelImage,
+          modelViews: poseIsProductOnly ? undefined : activeModelViews,
           background: effBackground,
           sceneReferenceImage: sceneRefFile ? { file: sceneRefFile } : undefined,
           aspectRatio,
@@ -2295,6 +2306,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages,
           accessories,
           modelImage: poseIsProductOnly ? null : modelImage,
+          modelViews: poseIsProductOnly ? undefined : activeModelViews,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
           isGhostMannequin: poseIsGhostMannequin,
@@ -2311,6 +2323,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages,
           accessories,
           modelImage: poseIsProductOnly ? null : modelImage,
+          modelViews: poseIsProductOnly ? undefined : activeModelViews,
           background,
           productInfo,
           userChangeRequest: editInstruction,

@@ -2863,7 +2863,141 @@ export const MODEL_CREATION_WIZARD_STEPS = [
   { step: 1, title: "Casting", description: "Define the global look & brand direction" },
   { step: 2, title: "Models", description: "Add model briefs & reference images" },
   { step: 3, title: "Generate", description: "Choose engines, generate & save your models" },
+  { step: 4, title: "Refine", description: "Reference shots, facial edits & export" },
 ] as const;
+
+// --- Model Refine: structured facial-edit presets ---
+// Each option's `value` is a prose fragment composed into a single change
+// directive for generateModelEditInstruction (see model-edit-controls.tsx).
+
+export interface ModelEditPresetOption {
+  value: string;
+  label: string;
+}
+
+export interface ModelEditCategory {
+  key: string;
+  label: string;
+  /** Sentence template — `{v}` is replaced by the selected option's value. */
+  template: string;
+  options: ModelEditPresetOption[];
+}
+
+export const MODEL_EDIT_CATEGORIES: ModelEditCategory[] = [
+  {
+    key: "eye-color",
+    label: "Eye color",
+    template: "Change the eye color to {v}.",
+    options: [
+      { value: "deep brown", label: "Brown" },
+      { value: "hazel", label: "Hazel" },
+      { value: "emerald green", label: "Green" },
+      { value: "ice blue", label: "Blue" },
+      { value: "steel gray", label: "Gray" },
+      { value: "warm amber", label: "Amber" },
+    ],
+  },
+  {
+    key: "nose",
+    label: "Nose shape",
+    template: "Reshape the nose to a {v} nose.",
+    options: [
+      { value: "straight, refined", label: "Straight" },
+      { value: "small button", label: "Button" },
+      { value: "gently aquiline", label: "Aquiline" },
+      { value: "soft rounded", label: "Soft rounded" },
+      { value: "slightly upturned", label: "Upturned" },
+    ],
+  },
+  {
+    key: "lips",
+    label: "Lips",
+    template: "Adjust the lips to be {v}.",
+    options: [
+      { value: "naturally full", label: "Full" },
+      { value: "thin and defined", label: "Thin" },
+      { value: "heart-shaped with a pronounced cupid's bow", label: "Heart-shaped" },
+      { value: "wide and balanced", label: "Wide" },
+    ],
+  },
+  {
+    key: "face-shape",
+    label: "Face shape",
+    template: "Subtly adjust the face shape to be {v}.",
+    options: [
+      { value: "oval", label: "Oval" },
+      { value: "heart-shaped", label: "Heart" },
+      { value: "square with a defined jawline", label: "Square" },
+      { value: "softly round", label: "Round" },
+      { value: "angular with high cheekbones", label: "Angular" },
+    ],
+  },
+  {
+    key: "eyebrows",
+    label: "Eyebrows",
+    template: "Restyle the eyebrows to be {v}.",
+    options: [
+      { value: "naturally full and softly arched", label: "Full arch" },
+      { value: "straight and understated", label: "Straight" },
+      { value: "thin and sculpted", label: "Thin" },
+      { value: "bold and feathered", label: "Feathered" },
+    ],
+  },
+  {
+    key: "hairstyle",
+    label: "Hairstyle",
+    template: "Change the hairstyle to {v}.",
+    options: [
+      { value: "a sleek chin-length bob", label: "Bob" },
+      { value: "a short pixie cut", label: "Pixie" },
+      { value: "long loose waves", label: "Long waves" },
+      { value: "long box braids", label: "Braids" },
+      { value: "a slick pulled-back bun", label: "Slick bun" },
+      { value: "a natural curly afro", label: "Curly afro" },
+      { value: "a shoulder-length layered cut", label: "Layered" },
+      { value: "a buzz cut", label: "Buzz cut" },
+    ],
+  },
+  {
+    key: "hair-color",
+    label: "Hair color",
+    template: "Change the hair color to {v}.",
+    options: [
+      { value: "jet black", label: "Black" },
+      { value: "dark chocolate brown", label: "Dark brown" },
+      { value: "warm chestnut brown", label: "Chestnut" },
+      { value: "golden blonde", label: "Blonde" },
+      { value: "platinum blonde", label: "Platinum" },
+      { value: "copper red", label: "Copper" },
+      { value: "auburn", label: "Auburn" },
+      { value: "silver gray", label: "Silver" },
+    ],
+  },
+  {
+    key: "skin",
+    label: "Skin finish",
+    template: "Give the skin a {v} finish.",
+    options: [
+      { value: "matte, even-toned", label: "Matte" },
+      { value: "dewy, luminous", label: "Dewy" },
+      { value: "natural with light freckles", label: "Freckled" },
+      { value: "softly sun-kissed", label: "Sun-kissed" },
+    ],
+  },
+  {
+    key: "makeup",
+    label: "Makeup",
+    template: "Apply {v}.",
+    options: [
+      { value: "no makeup — a clean bare-faced look", label: "None" },
+      { value: "a natural no-makeup makeup look", label: "Natural" },
+      { value: "a soft glam look with muted rose lips", label: "Soft glam" },
+      { value: "a high-fashion editorial makeup look", label: "Editorial" },
+      { value: "a bold red lip with minimal eye makeup", label: "Bold lip" },
+      { value: "a smokey eye with nude lips", label: "Smokey eye" },
+    ],
+  },
+];
 
 export const MODEL_EDIT_WIZARD_STEPS = [
   { step: 1, title: "Upload", description: "Upload the set of model images to edit" },

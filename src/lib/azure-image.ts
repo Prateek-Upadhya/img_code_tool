@@ -21,10 +21,13 @@ import type {
   AspectRatio,
   ComplementaryImage,
   GarmentImage,
+  LabeledModelView,
   ModelImage,
+  ModelViewKind,
   StepCost,
   TokenUsage,
 } from "./types";
+import { buildModelViewPrompt } from "./gemini";
 
 // --- Size resolver -------------------------------------------------------
 
@@ -126,10 +129,23 @@ export interface AzureVTONImageArgs {
   complementaryImages: ComplementaryImage[];
   accessories: AccessoryItem[];
   modelImage: ModelImage | null;
+  /**
+   * Optional labelled model views. gpt-image-2 has no per-image slots, so when
+   * ≥2 are supplied they are appended as `image[]` references and described by
+   * order in the prompt prose (in place of the single `modelImage`).
+   */
+  modelViews?: LabeledModelView[];
   aspectRatio: AspectRatio;
   imageSize: "1K" | "2K" | "4K";
   isProductOnlyShot?: boolean;
 }
+
+/** Prose sentence naming the model views by their `image[]` order. */
+const AZURE_VIEW_LABEL: Record<LabeledModelView["kind"], string> = {
+  "full-body": "the full body",
+  "face-closeup": "a face close-up",
+  "back-head": "the back of the head",
+};
 
 interface AzureImageResponse {
   data?: Array<{ b64_json?: string }>;
@@ -154,14 +170,25 @@ export async function generateVTONImageAzure({
   complementaryImages,
   accessories,
   modelImage,
+  modelViews,
   aspectRatio,
   imageSize,
   isProductOnlyShot = false,
 }: AzureVTONImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
   const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
 
+  const useMultiView = !isProductOnlyShot && !!modelViews && modelViews.length >= 2;
+
+  // gpt-image-2 has no per-image labels, so name the model views by order in
+  // the prompt prose. Product images come first, then the model view(s).
+  const promptText = useMultiView
+    ? `${prompt}\n\nMODEL REFERENCE IMAGES: after the product image(s), ${modelViews!.length} images depict the SAME person from multiple angles — ${modelViews!
+        .map((v, i) => `image ${i + 1} is ${AZURE_VIEW_LABEL[v.kind]}`)
+        .join(", ")}. Reproduce this exact person (face, skin tone, hair front and back, body type) and do not copy any clothing or background from them.`
+    : prompt;
+
   const form = new FormData();
-  form.append("prompt", prompt);
+  form.append("prompt", promptText);
   form.append("model", "gpt-image-2");
   form.append("n", "1");
   form.append("size", size);
@@ -169,7 +196,11 @@ export async function generateVTONImageAzure({
 
   const imageFiles: File[] = [];
   for (const img of garmentImages) imageFiles.push(img.file);
-  if (!isProductOnlyShot && modelImage) imageFiles.push(modelImage.file);
+  if (useMultiView) {
+    for (const view of modelViews!) imageFiles.push(view.file);
+  } else if (!isProductOnlyShot && modelImage) {
+    imageFiles.push(modelImage.file);
+  }
   for (const img of complementaryImages) imageFiles.push(img.file);
   for (const acc of accessories) {
     if (acc.image?.file) imageFiles.push(acc.image.file);
@@ -289,6 +320,80 @@ export async function generateModelImageAzure({
     outputTokens: json.usage?.output_tokens ?? 0,
   };
   const cost = computeAzureImageGenCost("Model Image (gpt-image-2)", tokens, quality);
+
+  return {
+    imageData: `data:image/png;base64,${b64}`,
+    cost,
+    responseContent: json,
+  };
+}
+
+export interface AzureModelViewImageArgs {
+  sourceImage: { file: File };
+  view: ModelViewKind;
+  aspectRatio: AspectRatio;
+  imageSize: "1K" | "2K" | "4K";
+}
+
+/**
+ * Model Refine — renders one identity reference shot (face close-up or back of
+ * head) from a full-body model image with Azure gpt-image-2. The source is
+ * always attached, so the route hits `/images/edits`. Return shape matches the
+ * Gemini `generateModelViewImage` so callers can swap them freely.
+ */
+export async function generateModelViewImageAzure({
+  sourceImage,
+  view,
+  aspectRatio,
+  imageSize,
+}: AzureModelViewImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
+  const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
+
+  const prompt = `The attached image is a full-body studio photograph of a fashion model — the definitive reference for this person's identity, hair, skin tone, background and lighting. ${buildModelViewPrompt(view)} Output a single photorealistic photograph.`;
+
+  const form = new FormData();
+  form.append("prompt", prompt);
+  form.append("model", "gpt-image-2");
+  form.append("n", "1");
+  form.append("size", size);
+  form.append("quality", quality);
+  form.append("image[]", sourceImage.file, sourceImage.file.name);
+
+  const response = await fetch("/api/azure-image/generate", {
+    method: "POST",
+    body: form,
+  });
+
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const errJson = (await response.json()) as AzureImageResponse;
+      if (errJson.error?.message) detail = `${detail}: ${errJson.error.message}`;
+    } catch {
+      try {
+        detail = `${detail}: ${await response.text()}`;
+      } catch {
+        // noop
+      }
+    }
+    throw new Error(`Azure gpt-image-2 request failed — ${detail}`);
+  }
+
+  const json = (await response.json()) as AzureImageResponse;
+  const b64 = json.data?.[0]?.b64_json;
+  if (!b64) {
+    throw new Error("No image returned from Azure gpt-image-2");
+  }
+
+  const tokens: TokenUsage = {
+    inputTokens: json.usage?.input_tokens ?? 0,
+    outputTokens: json.usage?.output_tokens ?? 0,
+  };
+  const cost = computeAzureImageGenCost(
+    view === "face-closeup" ? "Face Close-up (gpt-image-2)" : "Back of Head (gpt-image-2)",
+    tokens,
+    quality
+  );
 
   return {
     imageData: `data:image/png;base64,${b64}`,

@@ -27,6 +27,8 @@ import {
   ModelBodyType,
   ModelImage,
   ModelSwapBackgroundMode,
+  ModelViewKind,
+  LabeledModelView,
   Pose,
   PoseViewAngle,
   ProductCategory,
@@ -2556,12 +2558,43 @@ Now write the ${isGhostMannequin ? "ghost mannequin" : isProductOnlyShot ? "prod
  */
 type ContentPart = { text: string } | { inlineData: { mimeType: string; data: string } };
 
+/** Human label for one model reference view, used in the prompt parts. */
+const MODEL_VIEW_LABEL: Record<LabeledModelView["kind"], string> = {
+  "full-body": "FULL BODY",
+  "face-closeup": "FACE CLOSE-UP",
+  "back-head": "BACK OF HEAD",
+};
+
+/**
+ * Emits the labelled multi-view MODEL REFERENCE block: a header stating every
+ * attached image is the SAME person from a different angle, then one
+ * `[FULL BODY]` / `[FACE CLOSE-UP]` / `[BACK OF HEAD]` label part immediately
+ * followed by its image part. Used in place of the single-image block when two
+ * or more views are supplied (see {@link buildVTONImageContentParts}).
+ */
+async function pushModelViewParts(parts: ContentPart[], views: LabeledModelView[]) {
+  parts.push({
+    text:
+      `\n═══ MODEL REFERENCE — PERSON IDENTITY (SOLE SOURCE OF TRUTH · MULTIPLE ANGLES) ═══\n` +
+      `The following ${views.length} images all depict the SAME person from different angles, each preceded by its label. ` +
+      `Use them TOGETHER to build one complete, consistent likeness — the same face, skin tone, hair color and style (front AND back of the head), body type and proportions. ` +
+      `These images are the ONLY source for WHO appears in the output. If the prompt's pose/scene was inspired by a different photograph, that other person is NOT used here. ` +
+      `They define ONLY the person's appearance: do NOT copy any garment, clothing, or background from them.`,
+  });
+  for (const view of views) {
+    parts.push({ text: `\n[${MODEL_VIEW_LABEL[view.kind]}]:` });
+    const base64 = await fileToBase64(view.file);
+    parts.push({ inlineData: { mimeType: view.file.type, data: base64 } });
+  }
+}
+
 export async function buildVTONImageContentParts({
   prompt,
   garmentImages,
   complementaryImages,
   accessories,
   modelImage,
+  modelViews,
   background,
   sceneReferenceImage,
   productCategory = "clothing",
@@ -2574,6 +2607,13 @@ export async function buildVTONImageContentParts({
   complementaryImages: ComplementaryImage[];
   accessories: AccessoryItem[];
   modelImage: ModelImage | null;
+  /**
+   * Optional set of labelled model reference views. When two or more are
+   * present (and not a product-only shot), they replace the single-image
+   * MODEL REFERENCE block with a labelled multi-angle block for stronger
+   * character consistency. Fewer than two falls back to `modelImage`.
+   */
+  modelViews?: LabeledModelView[];
   /**
    * Optional global background config. Only consulted to enable REPLICA MODE — when
    * `background.mode === "inspiration"` AND `background.imageReferenceMode === "replica"`
@@ -2596,6 +2636,9 @@ export async function buildVTONImageContentParts({
   isBackViewPose?: boolean;
 }): Promise<ContentPart[]> {
   const isFootwear = productCategory === "footwear";
+  // Use the labelled multi-angle block only when ≥2 views are supplied; a single
+  // view (or none) keeps the original single-image behaviour for backward compat.
+  const useMultiView = !!modelViews && modelViews.length >= 2;
   const isReplicaBg =
     !!background &&
     background.mode === "inspiration" &&
@@ -2678,7 +2721,9 @@ export async function buildVTONImageContentParts({
     });
 
     // ═══ MODEL REFERENCE (if on-model shot) ═══
-    if (modelImage && !isProductOnlyShot) {
+    if (!isProductOnlyShot && useMultiView) {
+      await pushModelViewParts(parts, modelViews!);
+    } else if (modelImage && !isProductOnlyShot) {
       parts.push({
         text: `\n═══ MODEL REFERENCE — PERSON IDENTITY (SOLE SOURCE OF TRUTH) ═══\n` +
           `Generate this EXACT person with pixel-level fidelity so the SAME individual appears identically across every pose and framing in this batch. FACE LOCK — copy exactly, do NOT drift or beautify: face shape and proportions, hairline, eyebrow shape, eye shape/size/spacing and iris colour, nose shape, lip shape, cheekbones, jawline and chin, skin tone and undertone, and every distinguishing mark (freckles, moles, scars). Match hair colour/texture/style and body type and proportions. ` +
@@ -2773,7 +2818,7 @@ export async function buildVTONImageContentParts({
         `• MEDIAL / LATERAL / SOLE ORIENTATION: When reference images are tagged with positional labels ([MEDIAL SIDE], [LATERAL SIDE], [SOLE]), the generated shoe MUST respect those labels exactly. Branding, stripes, logos, or panels shown on the MEDIAL image must appear ONLY on the medial (inner, facing the other foot) side of the rendered shoe; those on the LATERAL image ONLY on the lateral (outer) side; sole-only details ONLY on the outsole. Do NOT mirror, swap, flip, or hallucinate side placement across sides\n\n` +
         `Any deviation from the product reference images — even a subtle logo repositioning, color shift, added engraving, or side swap — is a CRITICAL FAILURE that invalidates the entire output.` +
         `${!isProductOnlyShot ? "\n\n═══ FOOTWEAR SCALE, FIT & PROPORTION LOCK (ON-MODEL — MANDATORY) ═══\nThis is the single most critical on-model failure mode for footwear. Read and enforce every clause.\n\nSCALE ANCHOR (size the shoe by the model's anatomy): Render the footwear at the exact real-world scale of a shoe worn by THIS specific model. The outsole length equals ONE foot length — from the back of the model's heel to the tip of their longest toe, and no further. The shoe width matches the width of the model's own foot. Render the shoe as it would truly appear in a candid commercial photograph of this model wearing this product, NOT as a detached hero product scaled up for drama.\n\nFIT ANCHOR (positive-framing): The collar/topline hugs the ankle with the heel seated flush against the heel counter; the upper wraps the forefoot smoothly and closely; the tongue sits naturally over the instep; the laces (if any) close the throat cleanly. The fit reads as clean, contoured, and true-to-size — with no gapping, no bulging, no tenting, no cavernous opening around the ankle, and no slippage. The sole makes flat, stable ground contact and the ankle line is anatomically correct.\n\nPROPORTION LOCK (copy these attributes PIXEL-FOR-PIXEL from the PRODUCT REFERENCE IMAGES above — never invent, exaggerate, or stylize them): SOLE THICKNESS, midsole stack height, toe-spring, heel height, toe-box volume and depth, collar height, upper-to-sole height ratio, and outsole length-to-width ratio are all identical to the reference product. Keep the sole slim when the reference sole is slim; keep the midsole flat when the reference midsole is flat; keep the toe box shallow when the reference toe box is shallow. Do NOT thicken the sole, inflate the midsole into a chunkier stack, enlarge the toe box, heighten the heel, or push the shoe toward a sportier/chunkier silhouette than the reference shows. The rendered shoe on the model's foot must look like the EXACT SAME product in the reference photos — just worn on a real foot." : ""}` +
-        `${!isProductOnlyShot && modelImage ? "\n\nMODEL IDENTITY: Generate the EXACT same person from the model reference image — same face, skin tone, hair color/style, and body type." : ""}` +
+        `${!isProductOnlyShot && (useMultiView || modelImage) ? `\n\nMODEL IDENTITY: Generate the EXACT same person from the model reference image${useMultiView ? "s (use the FULL BODY, FACE CLOSE-UP and BACK OF HEAD views together)" : ""} — same face, skin tone, hair color/style, and body type.` : ""}` +
         `${isProductOnlyShot ? "\n\nPRODUCT-ONLY SHOT: No human model, feet, legs, or any body parts should appear in the generated image. Show ONLY the footwear product." : ""}` +
         evenLightingClause,
     });
@@ -2784,9 +2829,11 @@ export async function buildVTONImageContentParts({
       backViewSuffix = ` ★★★ BACK-VIEW PRIORITY ★★★ The FIRST garment image provided below is the user-tagged BACK VIEW of the garment, and the current pose shows the back of the garment to the camera. For this output you MUST: (1) treat that first back-view image as the SOLE source of truth for the back panel — the back's color, print, graphic, text, embroidery, panel construction, yoke, vent, closure, hemline, and drape ALL come from that image only; (2) NEVER mirror, transfer, or extrapolate any front-side pattern, print, graphic, or design element onto the back — the back may be plain even if the front is patterned, may have a different print, or may have a different color; (3) reproduce every back-side detail visible in that first image with PIXEL-LEVEL fidelity — the back of this garment is the focal point of this shot.`;
     }
     parts.push({
-      text: `${prompt}\n\nIMPORTANT: The garment in the output must match the provided garment reference images EXACTLY - preserve the same sleeve length, neckline, hem length, color, pattern, fabric texture, and every construction detail. Do not modify any garment attributes.${isGhostMannequin ? " This is a ghost mannequin shot — the garment must appear three-dimensional and shaped as if worn by an invisible person. ZERO visible human body, skin, hands, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? " This is a product-only shot — no human model, mannequin body, or person should be visible. Show ONLY the garment product." : modelImage ? " Use the provided model reference photo to generate the EXACT same person - same face, skin tone, hair color, and body type." : ""}${backViewSuffix}${isReplicaBg ? "\n\nREPLICA MODE NOTE: A BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image is attached below (after the product and accessory images). The background of this output is replicated EXACTLY from that reference — see the BACKGROUND REPLICATION DIRECTIVE at the end of this message." : ""}${evenLightingClause}`,
+      text: `${prompt}\n\nIMPORTANT: The garment in the output must match the provided garment reference images EXACTLY - preserve the same sleeve length, neckline, hem length, color, pattern, fabric texture, and every construction detail. Do not modify any garment attributes.${isGhostMannequin ? " This is a ghost mannequin shot — the garment must appear three-dimensional and shaped as if worn by an invisible person. ZERO visible human body, skin, hands, mannequin structure, or person. The garment appears completely self-supporting." : isProductOnlyShot ? " This is a product-only shot — no human model, mannequin body, or person should be visible. Show ONLY the garment product." : useMultiView ? " Use the provided labelled model reference photos (FULL BODY, FACE CLOSE-UP and BACK OF HEAD of the same person) together to generate the EXACT same person - same face, skin tone, hair color/style front and back, and body type." : modelImage ? " Use the provided model reference photo to generate the EXACT same person - same face, skin tone, hair color, and body type." : ""}${backViewSuffix}${isReplicaBg ? "\n\nREPLICA MODE NOTE: A BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image is attached below (after the product and accessory images). The background of this output is replicated EXACTLY from that reference — see the BACKGROUND REPLICATION DIRECTIVE at the end of this message." : ""}${evenLightingClause}`,
     });
-    if (modelImage && !isProductOnlyShot) {
+    if (!isProductOnlyShot && useMultiView) {
+      await pushModelViewParts(parts, modelViews!);
+    } else if (modelImage && !isProductOnlyShot) {
       parts.push({
         text: `\n═══ MODEL REFERENCE — PERSON IDENTITY (SOLE SOURCE OF TRUTH) ═══\n` +
           `Generate this EXACT person. This image is the ONLY source for WHO appears in the output — reproduce their identity with pixel-level fidelity so the SAME person appears identically across every pose, framing, and camera angle in this batch (a viewer must recognise them as one individual photographed repeatedly).\n` +
@@ -2891,6 +2938,7 @@ export async function generateVTONImage({
   complementaryImages,
   accessories,
   modelImage,
+  modelViews,
   background,
   sceneReferenceImage,
   aspectRatio,
@@ -2907,6 +2955,8 @@ export async function generateVTONImage({
   complementaryImages: ComplementaryImage[];
   accessories: AccessoryItem[];
   modelImage: ModelImage | null;
+  /** Optional labelled multi-angle model views (see {@link buildVTONImageContentParts}). */
+  modelViews?: LabeledModelView[];
   /**
    * Optional global background config. Forwarded to {@link buildVTONImageContentParts}
    * to enable REPLICA MODE (when `imageReferenceMode === "replica"` and an inspiration
@@ -2932,6 +2982,7 @@ export async function generateVTONImage({
     complementaryImages,
     accessories,
     modelImage,
+    modelViews,
     background,
     sceneReferenceImage,
     productCategory,
@@ -3057,6 +3108,7 @@ export async function contextualRetryVTONImage({
   complementaryImages = [],
   accessories = [],
   modelImage,
+  modelViews,
   background,
   productInfo,
   userChangeRequest,
@@ -3075,6 +3127,8 @@ export async function contextualRetryVTONImage({
   complementaryImages?: ComplementaryImage[];
   accessories?: AccessoryItem[];
   modelImage: ModelImage | null;
+  /** Optional labelled multi-angle model views (attached to the Step-A context when ≥2). */
+  modelViews?: LabeledModelView[];
   background?: BackgroundConfig;
   productInfo?: string;
   userChangeRequest: string;
@@ -3137,7 +3191,12 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
   for (const img of complementaryImages) {
     enrichContents.push({ inlineData: { mimeType: img.file.type, data: await fileToBase64(img.file) } });
   }
-  if (modelImage) {
+  if (modelViews && modelViews.length >= 2) {
+    for (const view of modelViews) {
+      enrichContents.push({ text: `[${MODEL_VIEW_LABEL[view.kind]}]:` });
+      enrichContents.push({ inlineData: { mimeType: view.file.type, data: await fileToBase64(view.file) } });
+    }
+  } else if (modelImage) {
     enrichContents.push({ inlineData: { mimeType: modelImage.file.type, data: await fileToBase64(modelImage.file) } });
   }
 
@@ -6273,6 +6332,91 @@ export async function generateModelImage({
   }
 
   throw new Error("No model image generated from Nano Banana 2");
+}
+
+/** View-specific rendering blocks for {@link generateModelViewImage}. */
+export function buildModelViewPrompt(view: ModelViewKind): string {
+  if (view === "face-closeup") {
+    return `Render a close-up beauty portrait of the SAME person shown in the source photograph, facing the camera directly. Reproduce the person's facial features, face shape, eye color, eyebrows, hairstyle, hair color and texture, skin tone, complexion and makeup EXACTLY as they appear in the source — this is the same individual, photographed closer.
+
+FRAMING: head-and-shoulders close-up — upper boundary just above the top of the head (including hair volume), lower boundary at the collarbone. The face is sharp, centered and fills most of the frame.
+
+SETTING: the identical neutral studio background, lighting direction and color temperature as the source photograph, so the two images read as frames from the same photoshoot.`;
+  }
+  return `Render the SAME person shown in the source photograph, photographed from DIRECTLY BEHIND — a back-of-the-head shot. Reproduce the person's hairstyle, hair color, hair texture, hair length, skin tone at the neck and ears, and overall head shape EXACTLY as they appear in the source — this is the same individual, viewed from behind.
+
+FRAMING: upper boundary slightly above the top of the head (including hair volume), lower boundary near the shoulders. The back of the head is centered and fills most of the frame. No part of the face is visible.
+
+SETTING: the identical neutral studio background, lighting direction and color temperature as the source photograph, so the two images read as frames from the same photoshoot.`;
+}
+
+/**
+ * Model Refine — renders one identity reference shot (face close-up or back of
+ * head) from an approved full-body model image, with Nano Banana 2. The source
+ * full-body shot is the sole reference; the output matches its background,
+ * lighting and aspect ratio so the set reads as one photoshoot.
+ */
+export async function generateModelViewImage({
+  apiKey,
+  sourceImage,
+  view,
+  aspectRatio,
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  sourceImage: { file: File };
+  view: ModelViewKind;
+  aspectRatio: AspectRatio;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
+  const ai = getGeminiClient(apiKey);
+
+  const contents: ContentPart[] = [];
+  contents.push({
+    text: `═══ SOURCE — IDENTITY REFERENCE (ABSOLUTE SOURCE OF TRUTH) ═══\nThe image below is a full-body studio photograph of a fashion model. It is the definitive reference for this person's identity, hair, skin tone, background and lighting.`,
+  });
+  const base64 = await fileToBase64(sourceImage.file);
+  contents.push({ inlineData: { mimeType: sourceImage.file.type, data: base64 } });
+
+  contents.push({
+    text: `═══ SHOT TO RENDER ═══\n${buildModelViewPrompt(view)}\n\nOutput a single photorealistic photograph in a ${aspectRatio} canvas.`,
+  });
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image-preview",
+    contents,
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio, imageSize },
+      abortSignal,
+    },
+  });
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeImageGenCost(
+    view === "face-closeup"
+      ? "Face Close-up (Nano Banana 2)"
+      : "Back of Head (Nano Banana 2)",
+    tokens,
+    imageSize
+  );
+  const responseContent = response.candidates?.[0]?.content;
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return {
+          imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+          cost,
+          responseContent,
+        };
+      }
+    }
+  }
+
+  throw new Error("No model view image generated from Nano Banana 2");
 }
 
 /**
