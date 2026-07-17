@@ -56,6 +56,7 @@ import type {
   GarmentImage,
   GeneratedResult,
   GenerationCostBreakdown,
+  LabeledModelView,
   ModelImage,
   ModelSwapBulkResult,
   ModelSwapGeneratedResult,
@@ -1299,6 +1300,11 @@ export function StepGenerate({ store }: StepGenerateProps) {
         file: effectiveModel.file,
         preview: effectiveModel.preview,
       };
+      const bulkModelViews: LabeledModelView[] = [
+        { kind: "full-body", file: effectiveModel.file, preview: effectiveModel.preview },
+        ...(effectiveModel.faceCloseUp ? [{ kind: "face-closeup" as const, ...effectiveModel.faceCloseUp }] : []),
+        ...(effectiveModel.backHead ? [{ kind: "back-head" as const, ...effectiveModel.backHead }] : []),
+      ];
 
       const poseIsProductOnly = result.customPose
         ? !result.customPose.isModelShot
@@ -1371,6 +1377,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages: cgImages,
           accessories,
           modelImage: poseIsProductOnly ? null : bulkModelImg,
+          modelViews: poseIsProductOnly ? undefined : bulkModelViews,
           background: effectiveBg,
           aspectRatio,
           productCategory,
@@ -1822,6 +1829,11 @@ export function StepGenerate({ store }: StepGenerateProps) {
         file: effectiveModel.file,
         preview: effectiveModel.preview,
       };
+      const bulkModelViews: LabeledModelView[] = [
+        { kind: "full-body", file: effectiveModel.file, preview: effectiveModel.preview },
+        ...(effectiveModel.faceCloseUp ? [{ kind: "face-closeup" as const, ...effectiveModel.faceCloseUp }] : []),
+        ...(effectiveModel.backHead ? [{ kind: "back-head" as const, ...effectiveModel.backHead }] : []),
+      ];
 
       const poseIsProductOnly = result.customPose
         ? !result.customPose.isModelShot
@@ -1890,6 +1902,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages: cgImages,
           accessories,
           modelImage: poseIsProductOnly ? null : bulkModelImg,
+          modelViews: poseIsProductOnly ? undefined : bulkModelViews,
           background: effectiveBg,
           aspectRatio,
           productCategory,
@@ -2097,6 +2110,11 @@ export function StepGenerate({ store }: StepGenerateProps) {
         ? effectiveCg.images.map((img) => ({ id: img.id, file: img.file, preview: img.preview, label: effectiveCg!.name }))
         : [];
       const bulkModelImg: ModelImage = { file: effectiveModel.file, preview: effectiveModel.preview };
+      const bulkModelViews: LabeledModelView[] = [
+        { kind: "full-body", file: effectiveModel.file, preview: effectiveModel.preview },
+        ...(effectiveModel.faceCloseUp ? [{ kind: "face-closeup" as const, ...effectiveModel.faceCloseUp }] : []),
+        ...(effectiveModel.backHead ? [{ kind: "back-head" as const, ...effectiveModel.backHead }] : []),
+      ];
 
       const poseIsProductOnly = result.customPose ? !result.customPose.isModelShot : result.pose.requiresModel === false;
       const poseIsGhostMannequin = result.pose.framing === "ghost-mannequin";
@@ -2114,6 +2132,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages: cgImages,
           accessories,
           modelImage: poseIsProductOnly ? null : bulkModelImg,
+          modelViews: poseIsProductOnly ? undefined : bulkModelViews,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
           isGhostMannequin: poseIsGhostMannequin,
@@ -2130,6 +2149,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           complementaryImages: cgImages,
           accessories,
           modelImage: poseIsProductOnly ? null : bulkModelImg,
+          modelViews: poseIsProductOnly ? undefined : bulkModelViews,
           background: effectiveBg,
           productInfo: combo.primaryFolder.productInfo || "",
           userChangeRequest: editInstruction,

@@ -27,19 +27,31 @@ function BulkModelCard({
   model,
   onRemove,
   onRename,
+  enableViews = false,
+  onSetView,
 }: {
   model: BulkModelImage;
   onRemove: (id: string) => void;
   onRename: (id: string, name: string) => void;
+  /** VTON bulk: enable the per-model 3-view manager (badge + modal). */
+  enableViews?: boolean;
+  onSetView?: (id: string, kind: "face-closeup" | "back-head", file: File | null) => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(model.name);
+  const [viewsOpen, setViewsOpen] = useState(false);
 
   const saveName = () => {
     const trimmed = editName.trim();
     if (trimmed && trimmed !== model.name) onRename(model.id, trimmed);
     setIsEditing(false);
   };
+
+  const viewCount = 1 + (model.faceCloseUp ? 1 : 0) + (model.backHead ? 1 : 0);
+  const extraSlots: { kind: "face-closeup" | "back-head"; label: string; view?: { preview: string } }[] = [
+    { kind: "face-closeup", label: "Face close-up", view: model.faceCloseUp },
+    { kind: "back-head", label: "Back of head", view: model.backHead },
+  ];
 
   return (
     <div className="relative group rounded-lg overflow-hidden border border-border bg-card transition-colors duration-200 hover:shadow-md">
@@ -57,6 +69,22 @@ function BulkModelCard({
       >
         <X className="w-3.5 h-3.5" />
       </button>
+      {enableViews && (
+        <>
+          {/* Views badge */}
+          <span className="absolute top-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
+            {viewCount}/3 views
+          </span>
+          {/* Manage images */}
+          <button
+            onClick={() => setViewsOpen(true)}
+            className="absolute inset-x-1.5 top-8 mx-auto flex w-[calc(100%-0.75rem)] items-center justify-center gap-1 rounded-md bg-black/55 px-2 py-1 text-[10px] font-medium text-white opacity-0 backdrop-blur-sm transition-all duration-200 hover:bg-black/75 group-hover:opacity-100"
+          >
+            <Upload className="w-3 h-3" />
+            Manage images
+          </button>
+        </>
+      )}
       {/* Name bar */}
       <div className="absolute bottom-0 left-0 right-0 px-2 py-2 bg-gradient-to-t from-black/80 to-transparent">
         {isEditing ? (
@@ -84,6 +112,73 @@ function BulkModelCard({
           </div>
         )}
       </div>
+
+      {enableViews && onSetView && (
+        <Dialog open={viewsOpen} onOpenChange={setViewsOpen}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Model images — {model.name}</DialogTitle>
+              <DialogDescription>
+                Up to 3 labelled images of the same person. Full body is the uploaded model image;
+                add a face close-up and back of head for more consistent results across angles.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid grid-cols-3 gap-3">
+              {/* Full body (primary — the model card image) */}
+              <div className="space-y-1.5">
+                <span className="text-[11px] font-medium text-foreground">Full body</span>
+                <div className="relative rounded-lg overflow-hidden border border-primary aspect-[3/4]">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={model.preview} alt="Full body" className="h-full w-full object-cover" />
+                </div>
+                <p className="text-[9px] text-muted-foreground">Remove the model card to change this.</p>
+              </div>
+              {/* Face close-up + back of head */}
+              {extraSlots.map((slot) => (
+                <div key={slot.kind} className="space-y-1.5">
+                  <span className="text-[11px] font-medium text-foreground">{slot.label}</span>
+                  {slot.view ? (
+                    <div className="relative rounded-lg overflow-hidden border border-primary aspect-[3/4]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={slot.view.preview} alt={slot.label} className="h-full w-full object-cover" />
+                      <button
+                        onClick={() => onSetView(model.id, slot.kind, null)}
+                        className="absolute top-1 right-1 p-1 rounded-lg bg-black/50 backdrop-blur-sm text-white transition-colors hover:bg-red-500/90"
+                        title={`Remove ${slot.label}`}
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="flex aspect-[3/4] cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-2 text-center transition-colors hover:border-primary/50 hover:bg-muted/40">
+                      <Upload className="w-4 h-4 text-muted-foreground" />
+                      <span className="text-[10px] text-muted-foreground">Upload</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) onSetView(model.id, slot.kind, file);
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                  )}
+                </div>
+              ))}
+            </div>
+            <DialogFooter>
+              <button
+                onClick={() => setViewsOpen(false)}
+                className="btn-gradient inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium text-white"
+              >
+                Done
+              </button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }
@@ -363,6 +458,7 @@ export function StepStyling({ store }: StepStylingProps) {
     addBulkModelImage,
     removeBulkModelImage,
     renameBulkModelImage,
+    setBulkModelView,
     bulkBackgrounds,
     addBulkBackground,
     removeBulkBackground,
@@ -1202,6 +1298,8 @@ export function StepStyling({ store }: StepStylingProps) {
                   model={m}
                   onRemove={removeBulkModelImage}
                   onRename={renameBulkModelImage}
+                  enableViews
+                  onSetView={setBulkModelView}
                 />
               ))}
               {/* Add more card */}

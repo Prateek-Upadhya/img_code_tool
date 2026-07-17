@@ -1164,7 +1164,11 @@ export function useVTONStore() {
   const removeBulkModelImage = useCallback((id: string) => {
     setBulkModelImages((prev) => {
       const removed = prev.find((m) => m.id === id);
-      if (removed) URL.revokeObjectURL(removed.preview);
+      if (removed) {
+        URL.revokeObjectURL(removed.preview);
+        if (removed.faceCloseUp?.preview.startsWith("blob:")) URL.revokeObjectURL(removed.faceCloseUp.preview);
+        if (removed.backHead?.preview.startsWith("blob:")) URL.revokeObjectURL(removed.backHead.preview);
+      }
       return prev.filter((m) => m.id !== id);
     });
   }, []);
@@ -1174,6 +1178,27 @@ export function useVTONStore() {
       prev.map((m) => (m.id === id ? { ...m, name } : m))
     );
   }, []);
+
+  /**
+   * Set or clear an extra reference view (face close-up / back of head) on one
+   * bulk model, for the VTON bulk multi-view feature. The primary `file` is the
+   * full body; these are additional labelled views sent when ≥2 are present.
+   */
+  const setBulkModelView = useCallback(
+    (id: string, kind: "face-closeup" | "back-head", file: File | null) => {
+      const key = kind === "face-closeup" ? "faceCloseUp" : "backHead";
+      const preview = file ? URL.createObjectURL(file) : null;
+      setBulkModelImages((prev) =>
+        prev.map((m) => {
+          if (m.id !== id) return m;
+          const old = m[key];
+          if (old?.preview.startsWith("blob:")) URL.revokeObjectURL(old.preview);
+          return { ...m, [key]: file && preview ? { file, preview } : undefined };
+        })
+      );
+    },
+    []
+  );
 
   const addBulkBackground = useCallback((bg: BulkBackground) => {
     setBulkBackgrounds((prev) => [...prev, bg]);
@@ -2350,6 +2375,7 @@ export function useVTONStore() {
     addBulkModelImage,
     removeBulkModelImage,
     renameBulkModelImage,
+    setBulkModelView,
     bulkBackgrounds,
     addBulkBackground,
     removeBulkBackground,
