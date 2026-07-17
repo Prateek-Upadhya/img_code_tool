@@ -720,8 +720,12 @@ export interface BulkSpreadsheetSession {
 export interface BulkModelImage {
   id: string;
   name: string;
+  /** Full body (primary) image. */
   file: File;
   preview: string;
+  /** Optional extra reference views (VTON bulk). Sent as labelled references. */
+  faceCloseUp?: { file: File; preview: string };
+  backHead?: { file: File; preview: string };
 }
 
 export interface BulkBackground {
