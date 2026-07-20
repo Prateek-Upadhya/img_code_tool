@@ -68,7 +68,7 @@ import type {
   ValidationStatus,
 } from "@/lib/types";
 import { InfographicEditor } from "./infographic-editor";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 function getFramingShortLabel(framing: PoseFraming): string {
   return FRAMING_OPTIONS.find((f) => f.value === framing)?.shortLabel ?? framing;
@@ -87,6 +87,74 @@ function getBgShortLabel(bg: BackgroundConfig): string {
       : bg.textDescription;
   }
   return "Studio Default";
+}
+
+/**
+ * Determinate indicator for the once-per-batch ingestion pre-pass: a progress bar (done/total),
+ * the current step label, and a live elapsed timer, plus the Stop button. Only mounts while
+ * `isIngestingScene` is true, so the timer starts fresh per batch and stops on unmount.
+ */
+function IngestionProgress({
+  progress,
+  onStop,
+  caption,
+}: {
+  progress: { done: number; total: number; label: string } | null;
+  onStop: () => void;
+  caption: string;
+}) {
+  const [elapsedMs, setElapsedMs] = useState(0);
+  useEffect(() => {
+    // Component mounts fresh each batch (conditional render), so elapsed starts at 0.
+    const start = Date.now();
+    const id = setInterval(() => setElapsedMs(Date.now() - start), 500);
+    return () => clearInterval(id);
+  }, []);
+  const total = progress?.total ?? 0;
+  const done = progress?.done ?? 0;
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const secs = Math.floor(elapsedMs / 1000);
+  const mmss = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  const title =
+    progress?.label && progress.label !== "Preparing…"
+      ? progress.label
+      : "Ingesting configuration… preparing to generate";
+  return (
+    <div className="w-full rounded-xl border border-primary/30 bg-gradient-to-r from-primary/5 to-primary/10 px-5 py-4 flex items-center gap-4">
+      <div className="relative flex items-center justify-center w-10 h-10 rounded-full bg-primary/15 shrink-0">
+        <Loader2 className="w-6 h-6 text-primary animate-spin" />
+      </div>
+      <div className="flex flex-col gap-1.5 min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm font-semibold text-foreground truncate">{title}</p>
+          <span className="text-xs tabular-nums text-muted-foreground shrink-0">
+            {total > 0 ? `${done}/${total} · ` : ""}
+            {mmss}
+          </span>
+        </div>
+        <div className="h-1.5 w-full rounded-full bg-primary/15 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-primary transition-all duration-500 ease-out"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        <p className="text-xs text-muted-foreground truncate">{caption}</p>
+      </div>
+      <div className="shrink-0">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button onClick={onStop} size="sm" variant="destructive" className="rounded-xl gap-1.5">
+              <Square className="w-3.5 h-3.5 fill-current" />
+              Stop
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            Cancel before per-pose generation starts. May still incur a small charge for the in-flight analysis call.
+          </TooltipContent>
+        </Tooltip>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -435,6 +503,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
     setIsGenerating,
     isIngestingScene,
     setIsIngestingScene,
+    ingestProgress,
+    setIngestProgress,
     beginGeneration,
     cancelGeneration,
     // Bulk
@@ -782,8 +852,36 @@ export function StepGenerate({ store }: StepGenerateProps) {
       background.mode === "inspiration" &&
       !!background.inspirationImage &&
       background.imageReferenceMode !== "replica";
-    if (shouldAnalyzeScene && background.inspirationImage) {
+
+    // ── Ingestion progress: count the enrichment calls up-front so the indicator is
+    // determinate, and run the WHOLE pre-pass under one continuous isIngestingScene span
+    // (no per-section flicker). `bumpIngest` advances the bar; `setIngestLabel` names the step.
+    const willAnalyzeBg = shouldAnalyzeScene && !!background.inspirationImage;
+    const willIsolateGarment = onModelGarment && !isFootwear && garmentImages.length > 0;
+    const singleRefCount =
+      singleReferenceImages.length > 0
+        ? referencePhotoshootMode === "replication"
+          ? singleReferenceImages.length
+          : background.mode === "inspiration" && background.inspirationImage
+            ? 1
+            : 0
+        : 0;
+    const ingestTotal = (willAnalyzeBg ? 1 : 0) + (willIsolateGarment ? 1 : 0) + singleRefCount;
+    const bumpIngest = () =>
+      setIngestProgress((p) => (p ? { ...p, done: Math.min(p.done + 1, p.total) } : p));
+    const setIngestLabel = (label: string) =>
+      setIngestProgress((p) => (p ? { ...p, label } : p));
+    const clearIngest = () => {
+      setIsIngestingScene(false);
+      setIngestProgress(null);
+    };
+    if (ingestTotal > 0) {
       setIsIngestingScene(true);
+      setIngestProgress({ done: 0, total: ingestTotal, label: "Preparing…" });
+    }
+
+    if (shouldAnalyzeScene && background.inspirationImage) {
+      setIngestLabel("Analysing background scene");
       try {
         const r = await analyzeBackgroundScene({
           apiKey,
@@ -794,12 +892,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
         frozenSceneDescription = r.sceneDescription;
       } catch (err) {
         if (signal.aborted) {
-          setIsIngestingScene(false);
+          clearIngest();
           return;
         }
         console.warn("Background scene analysis failed; falling back to per-pose inspiration image:", err);
       } finally {
-        setIsIngestingScene(false);
+        bumpIngest();
       }
     }
 
@@ -807,7 +905,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     // configured AI model — not the person wearing the garment in the source images — appears.
     let garmentDescription: string | undefined;
     if (onModelGarment && !isFootwear && garmentImages.length > 0) {
-      setIsIngestingScene(true);
+      setIngestLabel("Isolating garment from the model");
       try {
         const r = await describeGarmentFromImages({
           apiKey,
@@ -820,16 +918,16 @@ export function StepGenerate({ store }: StepGenerateProps) {
         garmentDescription = r.garmentDescription;
       } catch (err) {
         if (signal.aborted) {
-          setIsIngestingScene(false);
+          clearIngest();
           return;
         }
         console.warn("On-model garment isolation failed; falling back to image + directive only:", err);
       } finally {
-        setIsIngestingScene(false);
+        bumpIngest();
       }
     }
 
-    if (signal.aborted) return;
+    if (signal.aborted) { clearIngest(); return; }
 
     // Create results for preset poses
     const presetResults: GeneratedResult[] = selectedPoses.map((pose) => ({
@@ -869,7 +967,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       let productBackgroundText: string | undefined;
       if (referencePhotoshootMode !== "replication") {
         if (background.mode === "inspiration" && background.inspirationImage) {
-          setIsIngestingScene(true);
+          setIngestLabel("Analysing background scene");
           try {
             const r = await analyzeBackgroundScene({
               apiKey,
@@ -880,12 +978,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
             productSceneDesc = r.sceneDescription;
           } catch (err) {
             if (signal.aborted) {
-              setIsIngestingScene(false);
+              clearIngest();
               return;
             }
             console.warn("Reference-photoshoot background analysis failed; using text/default:", err);
           } finally {
-            setIsIngestingScene(false);
+            bumpIngest();
           }
         } else if (background.textDescription.trim()) {
           productBackgroundText = background.textDescription.trim();
@@ -893,10 +991,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
 
       for (const refImg of singleReferenceImages) {
-        if (signal.aborted) return;
+        if (signal.aborted) { clearIngest(); return; }
         let frozenScene = productSceneDesc;
         if (referencePhotoshootMode === "replication") {
-          setIsIngestingScene(true);
+          setIngestLabel("Preparing reference scene");
           try {
             const r = await analyzeReferenceScene({
               apiKey,
@@ -907,12 +1005,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
             frozenScene = r.sceneDescription;
           } catch (err) {
             if (signal.aborted) {
-              setIsIngestingScene(false);
+              clearIngest();
               return;
             }
             console.warn("Reference scene analysis (replication) failed; falling back to text-only:", err);
           } finally {
-            setIsIngestingScene(false);
+            bumpIngest();
           }
         }
         const cp: CustomPose = {
@@ -953,6 +1051,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
         });
       }
     }
+
+    // Ingestion pre-pass complete — hide the indicator; per-pose results now stream in.
+    clearIngest();
 
     const initialResults = [...presetResults, ...customResults, ...referenceResults];
     setResults(initialResults);
@@ -1356,27 +1457,54 @@ export function StepGenerate({ store }: StepGenerateProps) {
       collectFile(bg);
     }
 
-    if (uniqueInspirationFiles.length > 0) {
-      setIsIngestingScene(true);
-    }
-    try {
-      for (const file of uniqueInspirationFiles) {
-        if (signal.aborted) return;
-        try {
-          const r = await analyzeBackgroundScene({
-            apiKey,
-            textGenModel,
-            inspirationImage: { file },
-            abortSignal: signal,
-          });
-          sceneCache.set(file, r.sceneDescription);
-        } catch (err) {
-          if (signal.aborted) return;
-          console.warn("Background scene analysis failed for an inspiration image; falling back per-pose:", err);
-        }
-      }
-    } finally {
+    // ── Ingestion progress (bulk): count all enrichment calls up-front for a determinate bar,
+    // and run the whole pre-pass under one continuous isIngestingScene span (no per-section flicker).
+    const bulkOnModelFolders = isFootwear
+      ? []
+      : bulkCombinations
+          .map((c) => c.primaryFolder)
+          .filter((f, i, arr) => f.onModelGarment && f.images.length > 0 && arr.findIndex((g) => g.id === f.id) === i);
+    const bulkMatchedRefs = referenceFolders.filter((f) => f.matchedFolderId && f.referenceImages.length > 0);
+    const bulkRefCount =
+      bulkMatchedRefs.length === 0
+        ? 0
+        : referencePhotoshootMode === "replication"
+          ? bulkMatchedRefs.reduce((s, f) => s + f.referenceImages.length, 0)
+          : bulkMatchedRefs.filter((f) => {
+              const cfg = bulkBackgrounds.find((b) => b.id === f.selectedBackgroundId)?.config;
+              return !!cfg && cfg.mode === "inspiration" && !!cfg.inspirationImage;
+            }).length;
+    const ingestTotal = uniqueInspirationFiles.length + bulkOnModelFolders.length + bulkRefCount;
+    const bumpIngest = () =>
+      setIngestProgress((p) => (p ? { ...p, done: Math.min(p.done + 1, p.total) } : p));
+    const setIngestLabel = (label: string) =>
+      setIngestProgress((p) => (p ? { ...p, label } : p));
+    const clearIngest = () => {
       setIsIngestingScene(false);
+      setIngestProgress(null);
+    };
+    if (ingestTotal > 0) {
+      setIsIngestingScene(true);
+      setIngestProgress({ done: 0, total: ingestTotal, label: "Preparing…" });
+    }
+
+    for (const file of uniqueInspirationFiles) {
+      if (signal.aborted) { clearIngest(); return; }
+      setIngestLabel("Analysing background scenes");
+      try {
+        const r = await analyzeBackgroundScene({
+          apiKey,
+          textGenModel,
+          inspirationImage: { file },
+          abortSignal: signal,
+        });
+        sceneCache.set(file, r.sceneDescription);
+      } catch (err) {
+        if (signal.aborted) { clearIngest(); return; }
+        console.warn("Background scene analysis failed for an inspiration image; falling back per-pose:", err);
+      } finally {
+        bumpIngest();
+      }
     }
 
     const lookupFrozenScene = (bg: BackgroundConfig): string | undefined => {
@@ -1390,35 +1518,28 @@ export function StepGenerate({ store }: StepGenerateProps) {
     // ON-MODEL garment: per-product wearer-free garment description, computed once per folder
     // flagged on-model, cached by folder id and reused across that product's outputs.
     const garmentDescCache = new Map<string, string>();
-    if (!isFootwear) {
-      const onModelFolders = bulkCombinations
-        .map((c) => c.primaryFolder)
-        .filter((f, i, arr) => f.onModelGarment && f.images.length > 0 && arr.findIndex((g) => g.id === f.id) === i);
-      if (onModelFolders.length > 0) setIsIngestingScene(true);
+    for (const folder of bulkOnModelFolders) {
+      if (signal.aborted) { clearIngest(); return; }
+      setIngestLabel(`Isolating garment · ${folder.name}`);
       try {
-        for (const folder of onModelFolders) {
-          if (signal.aborted) return;
-          try {
-            const r = await describeGarmentFromImages({
-              apiKey,
-              textGenModel,
-              garmentImages: folder.images.map((img) => ({ id: img.id, file: img.file, preview: img.preview, type: garmentType })),
-              gender,
-              garmentType,
-              abortSignal: signal,
-            });
-            garmentDescCache.set(folder.id, r.garmentDescription);
-          } catch (err) {
-            if (signal.aborted) return;
-            console.warn("Bulk on-model garment isolation failed for a folder; falling back to image + directive:", err);
-          }
-        }
+        const r = await describeGarmentFromImages({
+          apiKey,
+          textGenModel,
+          garmentImages: folder.images.map((img) => ({ id: img.id, file: img.file, preview: img.preview, type: garmentType })),
+          gender,
+          garmentType,
+          abortSignal: signal,
+        });
+        garmentDescCache.set(folder.id, r.garmentDescription);
+      } catch (err) {
+        if (signal.aborted) { clearIngest(); return; }
+        console.warn("Bulk on-model garment isolation failed for a folder; falling back to image + directive:", err);
       } finally {
-        setIsIngestingScene(false);
+        bumpIngest();
       }
     }
 
-    if (signal.aborted) return;
+    if (signal.aborted) { clearIngest(); return; }
 
     // Create result entries for every combination x pose (preset + custom)
     const allResults: BulkGeneratedResult[] = [];
@@ -1472,10 +1593,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
       (f) => f.matchedFolderId && f.referenceImages.length > 0
     );
     if (matchedRefFolders.length > 0) {
-      setIsIngestingScene(true);
-      try {
+      {
         for (const rf of matchedRefFolders) {
-          if (signal.aborted) return;
+          if (signal.aborted) { clearIngest(); return; }
           const combo = bulkCombinations.find((c) => c.primaryFolder.id === rf.matchedFolderId);
           if (!combo) continue;
           const comboLabel = [combo.primaryFolder.name, combo.modelImage.name]
@@ -1489,6 +1609,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           const selBgConfig = bulkBackgrounds.find((b) => b.id === rf.selectedBackgroundId)?.config;
           if (referencePhotoshootMode !== "replication" && selBgConfig) {
             if (selBgConfig.mode === "inspiration" && selBgConfig.inspirationImage) {
+              setIngestLabel(`Analysing background · ${rf.name}`);
               try {
                 const r = await analyzeBackgroundScene({
                   apiKey,
@@ -1498,8 +1619,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
                 });
                 productSceneDesc = r.sceneDescription;
               } catch (err) {
-                if (signal.aborted) return;
+                if (signal.aborted) { clearIngest(); return; }
                 console.warn("Bulk reference-photoshoot background analysis failed:", err);
+              } finally {
+                bumpIngest();
               }
             } else if (selBgConfig.textDescription.trim()) {
               productBackgroundText = selBgConfig.textDescription.trim();
@@ -1510,6 +1633,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
             if (signal.aborted) return;
             let frozenScene = productSceneDesc;
             if (referencePhotoshootMode === "replication") {
+              setIngestLabel(`Preparing reference scene · ${rf.name}`);
               try {
                 const r = await analyzeReferenceScene({
                   apiKey,
@@ -1519,8 +1643,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
                 });
                 frozenScene = r.sceneDescription;
               } catch (err) {
-                if (signal.aborted) return;
+                if (signal.aborted) { clearIngest(); return; }
                 console.warn("Bulk reference scene analysis (replication) failed:", err);
+              } finally {
+                bumpIngest();
               }
             }
             const cp: CustomPose = {
@@ -1563,10 +1689,11 @@ export function StepGenerate({ store }: StepGenerateProps) {
             });
           }
         }
-      } finally {
-        setIsIngestingScene(false);
       }
     }
+
+    // Ingestion pre-pass complete — hide the indicator; per-combination results now stream in.
+    clearIngest();
 
     if (signal.aborted) return;
     setBulkResults(allResults);
@@ -5460,40 +5587,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
           </Button>
         )}
 
-        {/* Scene-ingestion loader (bulk) — runs once per UNIQUE inspiration
-            image referenced by any combination's effective background. */}
+        {/* Scene-ingestion indicator (bulk) — determinate bar + step label + elapsed timer. */}
         {isIngestingScene && (
-          <div className="w-full rounded-xl border border-primary/30 bg-gradient-to-r from-primary/5 to-primary/10 px-5 py-4 flex items-center gap-4">
-            <div className="relative flex items-center justify-center w-10 h-10 rounded-full bg-primary/15 shrink-0">
-              <Loader2 className="w-6 h-6 text-primary animate-spin" />
-            </div>
-            <div className="flex flex-col gap-1 min-w-0">
-              <p className="text-sm font-semibold text-foreground">
-                Ingesting configuration… preparing to generate
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Analysing each unique background scene once so every pose stays in the same location.
-              </p>
-            </div>
-            <div className="ml-auto">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    onClick={cancelGeneration}
-                    size="sm"
-                    variant="destructive"
-                    className="rounded-xl gap-1.5"
-                  >
-                    <Square className="w-3.5 h-3.5 fill-current" />
-                    Stop
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Cancel before per-pose generation starts. May still incur a small charge for the in-flight analysis call.
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
+          <IngestionProgress
+            progress={ingestProgress}
+            onStop={cancelGeneration}
+            caption="Analysing each unique background scene once so every output stays in the same location."
+          />
         )}
         {/* Image Quality Selection */}
         <div className="mt-3 flex items-center gap-3">
@@ -6098,42 +6198,14 @@ export function StepGenerate({ store }: StepGenerateProps) {
         </Button>
       )}
 
-      {/* Scene-ingestion loader — shown ONCE per Generate batch while
-          analyzeBackgroundScene is running its single Gemini 3.1 Pro pre-pass.
-          Replaces the Generate button visually so the user knows why per-pose
-          results haven't started appearing yet. */}
+      {/* Scene-ingestion indicator (single) — determinate bar + step label + elapsed timer,
+          shown while the batch pre-pass runs and replacing the Generate button. */}
       {isIngestingScene && (
-        <div className="w-full rounded-xl border border-primary/30 bg-gradient-to-r from-primary/5 to-primary/10 px-5 py-4 flex items-center gap-4">
-          <div className="relative flex items-center justify-center w-10 h-10 rounded-full bg-primary/15 shrink-0">
-            <Loader2 className="w-6 h-6 text-primary animate-spin" />
-          </div>
-          <div className="flex flex-col gap-1 min-w-0">
-            <p className="text-sm font-semibold text-foreground">
-              Ingesting configuration… preparing to generate
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Analysing the background scene once so every pose stays in the same location.
-            </p>
-          </div>
-          <div className="ml-auto">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  onClick={cancelGeneration}
-                  size="sm"
-                  variant="destructive"
-                  className="rounded-xl gap-1.5"
-                >
-                  <Square className="w-3.5 h-3.5 fill-current" />
-                  Stop
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                Cancel before per-pose generation starts. May still incur a small charge for the in-flight analysis call.
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        </div>
+        <IngestionProgress
+          progress={ingestProgress}
+          onStop={cancelGeneration}
+          caption="Analysing your configuration so every output stays consistent."
+        />
       )}
 
       {/* Progress */}

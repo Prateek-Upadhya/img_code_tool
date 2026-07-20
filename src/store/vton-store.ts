@@ -297,6 +297,10 @@ export function useVTONStore() {
   // appearing yet. Reset to false as soon as the analysis finishes (or
   // fails) and per-pose generation begins.
   const [isIngestingScene, setIsIngestingScene] = useState(false);
+  // Determinate progress for the ingestion pre-pass: how many enrichment calls are done out
+  // of the up-front total, plus a human label for the current step. Drives the hybrid
+  // progress-bar + step-label indicator (elapsed time is tracked in the component). Null when idle.
+  const [ingestProgress, setIngestProgress] = useState<{ done: number; total: number; label: string } | null>(null);
 
   // ----------------------------------------------------------------------
   // Generation cancellation
@@ -2494,6 +2498,8 @@ export function useVTONStore() {
     setIsGenerating,
     isIngestingScene,
     setIsIngestingScene,
+    ingestProgress,
+    setIngestProgress,
     beginGeneration,
     cancelGeneration,
     generationAbortControllerRef,
