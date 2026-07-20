@@ -538,6 +538,7 @@ function buildReferencePhotoshootExtractionBlock({
   referenceImageCount,
   productLabel,
   productNoun,
+  replicateWornExtras = false,
   imageModelName = "Nano Banana / gemini-3.1-flash-image-preview",
 }: {
   photoshootMode: ReferencePhotoshootMode;
@@ -545,6 +546,11 @@ function buildReferencePhotoshootExtractionBlock({
   referenceImageCount: number;
   productLabel: string;
   productNoun: string;
+  /**
+   * Complete-Outfit mode: also extract & reproduce the footwear + accessories WORN in the
+   * reference (only those visible in the crop). The hero garment and person identity stay excluded.
+   */
+  replicateWornExtras?: boolean;
   imageModelName?: string;
 }): string {
   const plural = referenceImageCount > 1;
@@ -552,12 +558,24 @@ function buildReferencePhotoshootExtractionBlock({
   const isReplication = photoshootMode === "replication";
   const subjectWord = isProductOnlyShot ? "arrangement" : "pose";
 
-  // 1A — pose/subject geometry. Variation INVENTS a new pose; the other two COPY it.
+  // Seated / leaning poses need a real support drawn from the (new) background — applies to
+  // variation + pose-lock (non-replication) model shots. Replication reproduces the reference scene.
+  const seatingSupportLine = !isProductOnlyShot && !isReplication
+    ? `
+   - SUPPORT FOR SEATED / LEANING POSES: if the pose category is SEATED or LEANING/RESTING-ON-SUPPORT, the model MUST be genuinely supported by a structure that EXISTS in the user's background scene (bench, step, ledge, stool, low wall, planter edge, staircase). If the scene contains none, ADD one that is contextually consistent with the scene's style, materials, and lighting. NEVER reuse the reference's own furniture. The model must read as physically supported — never floating or perched on nothing.`
+    : "";
+
+  // 1A — pose/subject geometry. Variation VARIES the posture WITHIN the reference's pose category;
+  // pose-lock / replication COPY the pose exactly.
   const section1A = isVariation
-    ? `1A. ${isProductOnlyShot ? "PRODUCT ARRANGEMENT" : "POSE & SUBJECT"} — DO NOT COPY (VARIATION MODE):
-   - This is VARIATION mode: the reference's ${subjectWord} is NOT reproduced. ONLY its image framing (section 1B) is locked.
-   - INVENT a fresh, natural ${isProductOnlyShot ? "product arrangement" : "pose"} that fits inside the locked FRAMING & CROP CONTRACT below — it must occupy the same crop, subject fill, and placement, but the actual ${isProductOnlyShot ? "arrangement/orientation" : "posture, weight shift, gaze, limb placement"} should be a NEW, editorial-quality variation, not a copy of the reference.
-   - Do NOT describe or transfer the reference subject's specific ${isProductOnlyShot ? "orientation or arrangement" : "stance, limb angles, or gaze"}; you are free to choose them so long as they respect the framing contract.`
+    ? (isProductOnlyShot
+        ? `1A. PRODUCT ARRANGEMENT — VARY WITHIN THE SAME TYPE (VARIATION MODE):
+   - Only the image framing (section 1B) is locked. INVENT a fresh product arrangement/orientation that fits the locked FRAMING & CROP CONTRACT (same crop, fill, placement); do NOT copy the reference's exact arrangement.`
+        : `1A. POSE & SUBJECT — VARY WITHIN THE SAME CATEGORY (VARIATION MODE):
+   - FIRST identify the reference's POSE CATEGORY: standing, seated, walking / mid-stride, leaning or resting on a support, crouching, kneeling, or reclining. State it explicitly.
+   - KEEP that exact category in the output: a SEATED reference stays SEATED, a STANDING reference stays standing, a WALKING reference stays walking — NEVER switch category (e.g. do NOT turn a seated reference into a standing pose).
+   - Within that category, INVENT a fresh, natural, editorial posture — a different weight shift, gaze direction, head tilt, arm/hand placement, and gesture — that fits the locked FRAMING & CROP CONTRACT (same crop, subject fill, and placement). It is a NEW variation, not a copy of the reference's exact limb angles.
+   - IDENTITY-FREE: describe the body as anonymous geometry only; the person's face/hair/skin/build come SOLELY from the attached model reference image.${seatingSupportLine}`)
     : `1A. ${isProductOnlyShot ? "PRODUCT ARRANGEMENT & GEOMETRY" : "POSE & SUBJECT GEOMETRY"} — COPY EXACTLY:
 ${isProductOnlyShot
         ? `   - Product orientation and tilt expressed in degrees, arrangement (single, paired, stacked, leaning, suspended), surface contact behavior, relative spacing
@@ -565,7 +583,7 @@ ${isProductOnlyShot
         : `   - Body position, weight distribution, hip angle, torso tilt, shoulder line, head/gaze direction (as a geometric DIRECTION only), arm/hand placement, foot placement (feet directions in degrees relative to camera)
    - Limb joint angles, finger curl, gaze vector in degrees relative to the camera optical axis
    - Any contact with props, walls, floor, or anchors (which body part touches what, with what pressure)
-   - IDENTITY-FREE: describe the body purely as anonymous geometry. Do NOT record the stand-in's face, hair, skin tone, age, ethnicity, or any identifying trait — those come SOLELY from the user's attached model reference image.`}`;
+   - IDENTITY-FREE: describe the body purely as anonymous geometry. Do NOT record the stand-in's face, hair, skin tone, age, ethnicity, or any identifying trait — those come SOLELY from the user's attached model reference image.${seatingSupportLine}`}`;
 
   // Background handling differs per mode.
   const backgroundDirective = isReplication
@@ -575,19 +593,30 @@ ${isProductOnlyShot
    - Here in the extraction, focus on pose (1A) + framing (1B); the scene comes from the FROZEN REFERENCE SCENE.`
     : `2. SCENE & ENVIRONMENT — NOT EXTRACTED FROM THE REFERENCE:
    - In this mode the BACKGROUND comes from the user's SCENE PARAMETERS (the selected product background), NOT from the reference image.
-   - Do NOT extract, describe, or transfer the reference's background, environment, props, scene colors, or palette. Ignore the reference's surroundings entirely — only its framing (1B)${isVariation ? "" : " and pose (1A)"} are used.`;
+   - Do NOT extract, describe, or transfer the reference's own background, environment, scenery, furniture, or scene props (walls, floors, the specific chair/couch it was shot in, palette). Ignore the reference's SURROUNDINGS — only its framing (1B)${isVariation ? "" : " and pose (1A)"}${replicateWornExtras ? " and the items WORN/HELD by the subject (section 3)" : ""} are used.`;
+
+  // COMPLETE OUTFIT: keep the reference's worn footwear + accessories + HELD props (visible-only).
+  const wornExtrasSection = replicateWornExtras && !isProductOnlyShot
+    ? `\n3. WORN & HELD ITEMS — FOOTWEAR, ACCESSORIES & PROPS — EXTRACT & REPRODUCE (COMPLETE OUTFIT):
+   - The user wants the reference's WORN FOOTWEAR, ACCESSORIES, and HELD/CARRIED PROPS kept. EXTRACT and describe every such item VISIBLE in the reference's crop:
+     • FOOTWEAR: style, silhouette, material, colour, heel height, laces/straps.
+     • ACCESSORIES (worn on the body): earrings, necklace, rings, bracelet, watch, hat, belt, eyewear/sunglasses, scarf, tie, hair accessory — each item's type, material, colour, and placement.
+     • HELD / CARRIED PROPS (in the hands/arms): handbag, tote, clutch, book, cup, phone, bouquet, umbrella, shopping bag, or any small object — its type, material, colour, and how it is held.
+   - VISIBLE-ONLY (CRITICAL): describe ONLY items actually within the frame. If the crop is a tight/upper shot where only an accessory (e.g. earrings) is visible and no shoes or held props are in frame, describe ONLY that accessory — do NOT infer, add, or invent footwear / accessories / props that are cropped out or not shown.
+   - These worn & held items are KEPT from the reference; only the hero garment and the person's identity are replaced. (When a HELD prop is kept, the invented pose must keep a hand/arm engaged with it naturally.)`
+    : "";
 
   const doNotTransfer = `DO NOT TRANSFER from the reference (these come from elsewhere or are intentionally replaced):
-- The specific ${productLabel} or any other product visible in the reference — the user's actual product replaces it entirely
-- Any branding, logos, prints, cuts, or product-specific design details${isProductOnlyShot ? "" : `
+- The specific ${productLabel} or any other hero garment visible in the reference — the user's actual product replaces it entirely${replicateWornExtras ? " (this means the main clothing ONLY — the worn footwear and accessories in section 3 are KEPT)" : ""}
+- Any branding, logos, prints, cuts, or product-specific design details of the hero garment${isProductOnlyShot ? "" : `
 - The specific person's identity — face, hair, skin tone, age, ethnicity, build, and every identity-bearing trait. The reference subject is an anonymous posing mannequin; the user's attached model reference image is the SOLE source of the person.`}${isReplication ? "" : `
 - The reference's background/scene/palette — the background is supplied by the user's SCENE PARAMETERS in this mode`}`;
 
   return `═══ REFERENCE-DRIVEN PHOTOSHOOT — ${photoshootMode.toUpperCase()} MODE — EXTRACTION RULES ═══
 The user has chosen ${referenceImageCount > 0 ? `${referenceImageCount} reference image${plural ? "s" : ""}` : "a reference"} for this ${subjectWord}. Extract the following in a ${productNoun}-AGNOSTIC manner so the description works for ANY ${productLabel} the user provides.
 
-★★★ CRITICAL CHANNEL NOTICE ★★★
-The reference image${plural ? "s are" : " is"} visible to YOU ONLY. The downstream image generator will NOT receive ${plural ? "them" : "it"}. Your generated text prompt is the ONLY channel that carries this information. Translate every relevant detail into explicit, photographer-grade English. If a detail is not in your text, the image generator cannot know it.
+★★★ CHANNEL NOTICE ★★★
+The downstream image generator ALSO receives ${plural ? "these reference images" : "this reference image"} as a labelled COMPOSITION & FRAMING reference, so it can copy the exact framing${isVariation ? "" : ", pose"}${isReplication ? ", scene" : ""}${replicateWornExtras ? ", footwear and accessories" : ""} directly. Your text prompt REINFORCES this: translate every relevant detail into explicit, photographer-grade English so image and text agree. The person's identity and the hero garment are NOT taken from this reference — those come from their own attached references.
 ${isProductOnlyShot ? "" : `
 ═══ PERSON IDENTITY — NOT EXTRACTED FROM THE REFERENCE (READ FIRST) ═══
 The person shown in the reference is a THROWAWAY POSING STAND-IN — NOT the person who appears in the output. The user has separately attached a MODEL REFERENCE IMAGE; that is the SOLE source of truth for WHO appears (face, skin tone, hair, age, body identity). Treat the reference subject as a FACELESS, ANONYMOUS MANNEQUIN whose ONLY job is to define pose geometry and framing. You MUST NOT describe, transcribe, or hint at the reference person's face, hair, skin tone, complexion, age, ethnicity, tattoos, scars, or any distinguishing personal feature.
@@ -616,6 +645,7 @@ After extracting the above, EMIT the entire 1B block — verbatim, with these ex
 FRAMING LOCK — NON-NEGOTIABLE: The TOP/BOTTOM CROP anatomical anchors, SHOT TYPE NAME, FOCAL-LENGTH, CAMERA DISTANCE, CAMERA HEIGHT, DUTCH ANGLE, and SUBJECT FILL extracted above are the SOLE source of truth for the framing of EVERY generation of this reference. Do NOT re-derive, paraphrase, swap synonyms, or let the framing drift between images — two outputs of this reference with the same product and model MUST read as two takes from the same shutter burst.
 
 ${backgroundDirective}
+${wornExtrasSection}
 
 ${doNotTransfer}
 
@@ -675,6 +705,7 @@ The downstream pipeline will generate dozens of fashion-photography images using
 4. SCENE-INTEGRATED LIGHTING (WRAPS THE MODEL — SOFT SHADOWS ONLY): The model, their face, and their garment MUST be lit by the SAME light as the scene — the reference's key-light direction, quality, and colour temperature fall on the model so they look genuinely embedded in the location (not pasted in). Read the reference's real lighting and apply it to BOTH background and model. CRITICAL CONSTRAINT: shadows on the model and garment must stay SOFT, gentle, and low-contrast — NO harsh side-shadows, NO deep chiaroscuro, NO hard-edged cast shadows across the face/body, NO blown speculars. Even a hard-sun scene is rendered on the model as a softened, diffused version of that same directional light (same direction and colour temperature, but gentle shadow edges). The light direction, quality, and colour temperature are IDENTICAL across every framing (same shoot, same time of day).
 5. GARMENT IDENTITY WITH NATURAL LIGHT: The garment keeps its base hue, pattern, and material IDENTITY exactly as in the user's product photos — do NOT recolor or restyle it. It may receive the scene's soft directional light and gentle ambient colour temperature so it integrates naturally, but the tint must never be so strong that it changes the garment's recognisable colour identity.
 6. DETERMINISM: The description must be specific enough that two independent photographers reading it would set up identical scenes. Use exact hex codes for every color, normalized 0.0–1.0 coordinates for every object position, concrete material names, and named entity classes.
+7. REAL-WORLD SCALE (CRITICAL — this scene will be photographed with a real ~1.7 m adult human standing in it): treat this location as a real, three-dimensional physical place, NOT a flat backdrop to paste a person onto. Reason about the TRUE real-world size of every major surface and object relative to a 1.7 m human — use your world knowledge (and, where useful, look up typical real-world dimensions) so proportions are physically correct. A single-storey wall is ~2.5–3 m tall (taller than the person); a doorway ~2 m; a bench seat ~0.45 m; a step ~0.15 m; a car ~1.5 m; a market stall ~2 m. Establish the CAMERA (eye-level height, tilt) and the HORIZON LINE, and note how each object's apparent size follows from perspective. NEVER let an object render at an impossible size (e.g. a wall shorter than a standing person in a full-body shot); its size in frame is a consequence of its real height AND the camera framing.
 
 ═══ MANDATORY OUTPUT STRUCTURE ═══
 
@@ -683,9 +714,12 @@ Output the analysis using EXACTLY these section headers, in this order, and noth
 # WIDE-SHOT LAYOUT
 The reference image is treated as the FULL WIDE-SHOT (head-to-toe / full-body) framing. List EVERY salient background object as a bullet line in this exact format:
 
-  - <object_name>: entity_class=<specific class label>, signature=<2–4 word visual signature>, x_center=<0.00–1.00>, width=<0.00–1.00>, vertical_zone=<sky | upper-third | upper-two-thirds | middle | middle-and-floor | floor | full-height>, depth=<foreground | midground | background>, description=<10–25 words of product-agnostic visual detail>
+  - <object_name>: entity_class=<specific class label>, signature=<2–4 word visual signature>, x_center=<0.00–1.00>, width=<0.00–1.00>, vertical_zone=<sky | upper-third | upper-two-thirds | middle | middle-and-floor | floor | full-height>, depth=<foreground | midground | background>, real_height=<approx real-world height in metres, e.g. "≈3 m wall", "≈0.45 m bench seat">, description=<10–25 words of product-agnostic visual detail>
 
-Coordinate convention: x_center=0.0 is the LEFT edge of the wide-shot frame; x_center=1.0 is the RIGHT edge; x_center=0.5 is dead center. width is the fraction of horizontal frame the object occupies. The model will stand at approximately x_center=0.5 in the wide-shot.
+Coordinate convention: x_center=0.0 is the LEFT edge of the wide-shot frame; x_center=1.0 is the RIGHT edge; x_center=0.5 is dead center. width is the fraction of horizontal frame the object occupies. The model will stand at approximately x_center=0.5 in the wide-shot. The real_height field is the object's TRUE physical height (world knowledge) — this drives correct proportion vs the ~1.7 m human, independent of how much of it the crop shows.
+
+# SCALE & CAMERA
+2–4 sentences establishing the physical scale of the location: the CAMERA eye-level height (e.g. "camera at ~1.5 m chest height"), the HORIZON LINE position, and the true heights of the 2–3 dominant surfaces vs a 1.7 m person (e.g. "the rear wall is ~3 m — it rises well above the model's head in a grounded full-body shot"). State the ground plane the model stands on. This section makes the pipeline place the model as a real person in a real-scale space, never pasted at the wrong size.
 
 Examples (for shape only — do NOT copy literally):
   - tall_lattice_tower: entity_class=lattice-iron tower, signature=tapered crown + flared base, x_center=0.18, width=0.22, vertical_zone=upper-two-thirds, depth=midground, description=tapered iron-lattice structure rising from middle band, narrow silhouette, cool grey metalwork visible against pale sky
@@ -712,11 +746,17 @@ These hex codes are LOCKED for the entire batch — every per-pose prompt will c
 Describe in 2–4 sentences: ground texture (concrete / hardwood / sand / cobblestone / etc.), dominant wall / facade material, any reflective or matte qualities, atmospheric character (haze, dust motes, mist, clear air). Specify approximate depth-of-field behavior (deep focus / mild background blur / pronounced bokeh on far elements).
 
 # FRAMING-TIER BACKDROP PLAN
-This scene is ONE fixed 3D location. Describe how it reads at three camera distances so the downstream pipeline can pick a photographically sensible, CONSISTENT backdrop per shot. All three tiers are the SAME place, same objects, same PALETTE hex codes, same materials, and the SAME lighting — only the camera distance and angle change. Never introduce a new object, colour, or material in any tier; never alter one between tiers. Output exactly these three labelled paragraphs:
+This scene is ONE fixed 3D location. Describe how it reads at three camera distances so the downstream pipeline can pick a photographically sensible, CONSISTENT backdrop per shot. All three tiers are the SAME place, same objects, same PALETTE hex codes, same materials, and the SAME lighting — only the camera distance and angle change. Never introduce a new object, colour, or material in any tier; never alter one between tiers.
 
-- FULL BACKDROP: The whole scene as a wide/full-length shot — the model can stand anywhere on the visible ground plane. Describe the complete environment (all major WIDE-SHOT LAYOUT anchors at their x_center positions, ground, walls, sky/ceiling, depth) in 2–4 sentences, reusing the PALETTE hex codes.
-- MID BACKDROP: The coherent region directly behind and around the subject at MID distance (roughly three-quarter to waist-up). A gentle new camera angle on the SAME location: the near/mid anchors that sit behind the subject fill the frame; far/distant elements (ocean, distant skyline, sky) recede and may only peek through where geometrically plausible. Name the specific surfaces and objects that form this mid backdrop and their exact materials/colours (PALETTE hex). 2–4 sentences.
-- CLOSE-UP BACKDROP: Designate ONE single hero backdrop surface from this scene — the most photographically sensible solid surface to stand a subject against for a tight shot (e.g. a specific wall / panel / hedge / column face already present in the layout). Describe THAT exact surface in full: its material, its exact colour (PALETTE hex), its texture, any fixed detail on it, and how the scene's light falls across it. The subject stands directly against this hero surface; distant wide elements are out of frame (may faintly peek only if a window/opening in this surface makes it plausible). This SAME hero surface is used for EVERY close-up of this location. 2–4 sentences.
+Treat the reference image as ONE real 3D LOCATION (its identity, materials, palette, objects) — NOT a flat picture to crop. For each framing tier, REIMAGINE the CAMERA: a real photographer standing in this location at a ~1.7 m human's scale picks the most photographically flattering, scale-correct camera position/height/tilt for that shot length. Different framings therefore reveal DIFFERENT, aesthetically-chosen parts of the SAME location — a tighter shot is a genuinely new camera angle, not a zoom into the same pixels. Every tier keeps the same objects, PALETTE hex, materials and light; only the camera moves.
+
+FIRST, DESIGNATE ONE HERO BACKDROP SURFACE for this location: the single most photographically sensible solid surface to place a subject against for a tighter shot — a specific wall / panel / hedge / column face / staircase / balustrade from the WIDE-SHOT LAYOUT. This ONE hero surface anchors BOTH the MID and CLOSE-UP tiers so every tight-and-mid crop shares the SAME backdrop surface (two tight crops must never land on two different walls). State the hero surface (name + x_center + real_height + PALETTE hex) once, then output exactly these three labelled paragraphs — each stating the camera height/tilt and what fills the frame:
+
+- FULL BACKDROP (full-body / three-quarter): Camera at roughly eye/chest level, the model grounded with both feet on the floor plane. Show the whole location at TRUE scale — walls/structures rise to their real heights above the ~1.7 m model, the horizon sits correctly, depth reads naturally. Describe the complete environment (major anchors at their x_center + real_height) in 2–4 sentences, PALETTE hex reused.
+- MID BACKDROP (mid-thigh / hip-down / waist-up): A new, flattering camera on the HERO SURFACE plus the near/mid anchors flanking it; distant elements recede and may peek where plausible. The surface is shown at correct real-world scale for this framing. 2–4 sentences with materials/colours (PALETTE hex).
+- CLOSE-UP BACKDROP (bust-up / tight crops): Reimagine the most aesthetic tight backdrop for THIS location — usually the HERO SURFACE tightly framed behind the subject; but where the location makes it more beautiful, the photographer may tilt UP so open sky / a ceiling / the upper wall fills the frame instead (e.g. a seaside terrace waist-up shot pointing up into clear sky). Whatever is chosen must belong to THIS location at correct scale. Describe it fully (material, exact colour PALETTE hex, texture, light). 2–4 sentences.
+
+Because MID and CLOSE-UP both build on the ONE hero surface (or the ONE chosen tilt-up sky), all tight-and-mid crops of the same product read as the same coherent backdrop.
 
 # SKY & LIGHT DYNAMICS (defines the light that wraps BOTH background and model)
 Describe the SCENE'S natural light: sky type (clear / overcast / partly-cloudy / golden-hour / blue-hour / night-with-artificial-source / interior-overhead), apparent sun or main-light direction in the scene (e.g. "high overhead", "low and to the camera-left at ~30°", "absent — interior overhead diffuse"), color temperature in Kelvin (e.g. "~5500K daylight", "~3200K warm tungsten", "~6500K open shade"), and the resulting atmosphere on the background elements (e.g. "soft shadows on the colonnade pointing camera-right", "gentle bloom around the neon sign at twilight"). Be explicit and concrete in 2–4 sentences. This SAME light direction and colour temperature also wraps the model (see LIGHTING ON MODEL), softened so shadows on the model stay gentle.
@@ -739,22 +779,42 @@ Output exactly this sentence, verbatim:
 
 Do not output anything outside the sections above — no preface, no commentary, no conclusion, no markdown other than the section headers.`;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.1-pro-preview",
-    contents: [
-      { text: systemPrompt },
-      {
-        inlineData: {
-          mimeType: inspirationImage.file.type,
-          data: base64,
-        },
+  const sceneContents = [
+    { text: systemPrompt },
+    {
+      inlineData: {
+        mimeType: inspirationImage.file.type,
+        data: base64,
       },
-    ],
-    config: {
-      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
-      abortSignal,
     },
-  });
+  ];
+  // Enable Google Search grounding + HIGH thinking so the analyzer reasons about real-world
+  // object scale (heights, proportions) using world knowledge. Grounding is applied to THIS
+  // enrichment call ONLY. If the backend rejects the tool/thinking combo, fall back to
+  // thinking-only so scene analysis never hard-fails.
+  let response;
+  try {
+    response = await ai.models.generateContent({
+      model: "gemini-3.1-pro-preview",
+      contents: sceneContents,
+      config: {
+        tools: [{ googleSearch: {} }],
+        thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+        abortSignal,
+      },
+    });
+  } catch (err) {
+    if (abortSignal?.aborted) throw err;
+    console.warn("Background scene analysis with Google Search grounding failed; retrying without grounding:", err);
+    response = await ai.models.generateContent({
+      model: "gemini-3.1-pro-preview",
+      contents: sceneContents,
+      config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+        abortSignal,
+      },
+    });
+  }
 
   const text = response.text;
   if (!text) {
@@ -769,6 +829,82 @@ Do not output anything outside the sections above — no preface, no commentary,
   );
 
   return { sceneDescription: text.trim(), cost };
+}
+
+/**
+ * GARMENT-ISOLATION ANALYSIS — for ON-MODEL garment source images.
+ *
+ * When the user's garment images are worn by a stand-in person (on-model) rather than flat-lay,
+ * the image generator tends to reproduce THAT person instead of the configured AI model. This
+ * batch-level (once per product) vision call produces a dense, WEARER-FREE description of the
+ * garment(s) only — construction, fabric, colour, pattern, fit, hemlines — explicitly ignoring
+ * the person/background. It is injected into the meta-prompt and reinforced by an "ignore the
+ * wearer" directive at image-gen time, so identity comes SOLELY from the MODEL reference.
+ */
+export async function describeGarmentFromImages({
+  apiKey,
+  textGenModel = "gemini",
+  garmentImages,
+  gender,
+  garmentType,
+  abortSignal,
+}: {
+  apiKey: string;
+  textGenModel?: TextGenModel;
+  garmentImages: GarmentImage[];
+  gender: Gender;
+  garmentType: GarmentType;
+  abortSignal?: AbortSignal;
+}): Promise<{ garmentDescription: string; cost: StepCost }> {
+  const ai = getTextClient(textGenModel);
+
+  const genderLabel = gender === "male" ? "men's" : gender === "female" ? "women's" : "unisex";
+  const systemPrompt = `You are an expert fashion technical designer. The attached image(s) show a ${genderLabel} garment (type: ${garmentType}) that MAY be worn by a stand-in person (on-model), on a mannequin, or laid flat. Produce a precise, WEARER-AGNOSTIC description of the GARMENT ITSELF so it can be reproduced on a DIFFERENT model.
+
+★★★ CRITICAL — IGNORE THE PERSON ★★★
+If a person is wearing the garment, that person is a THROWAWAY STAND-IN and is NOT part of the output. Describe ONLY the garment — do NOT describe, transcribe, or reference the wearer's face, hair, skin tone, body, pose, hands, the background, or the lighting. Extract the garment as if it were isolated on an invisible mannequin.
+
+For ${garmentType === "complete-outfit" ? "EACH worn piece (upper, lower, one-piece — reproduce every piece worn on the body)" : "the garment"}, describe in dense, concrete terms:
+- SILHOUETTE & FIT: cut, volume, how it sits (slim/relaxed/oversized), drape.
+- NECKLINE / COLLAR / WAISTLINE / HEMLINE and their positions.
+- SLEEVE / LEG length and cuffs.
+- FABRIC & TEXTURE: material, weave/knit, weight, sheen (matte/satin), any transparency.
+- COLOUR & COLOURWAY: exact colours (hex if inferable), colour-blocking, gradients.
+- PATTERN & PRINT: motif, scale, placement, repeat; any logos/wordmarks reproduced character-for-character in the same place.
+- CONSTRUCTION: seams, darts, pleats, closures (zip/buttons/ties), pockets, hardware, stitching, trims, embellishments.
+
+Output 1–2 tight paragraphs of garment description ONLY — no preamble, no mention of any person, background, or scene.`;
+
+  const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
+    { text: systemPrompt },
+  ];
+  for (const img of garmentImages) {
+    const b64 = await fileToBase64(img.file);
+    parts.push({ inlineData: { mimeType: img.file.type, data: b64 } });
+  }
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents: parts,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+      abortSignal,
+    },
+  });
+
+  const text = response.text;
+  if (!text) {
+    throw new Error("No garment description returned from Gemini 3.1 Pro");
+  }
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeStepCost(
+    textCostModel(textGenModel),
+    "Garment Isolation (Gemini 3.1 Pro)",
+    tokens
+  );
+
+  return { garmentDescription: text.trim(), cost };
 }
 
 /**
@@ -901,6 +1037,8 @@ export async function generateVTONPrompt({
   targetImageModel = "gemini",
   frozenSceneDescription,
   photoshootMode,
+  isOnModelGarment = false,
+  garmentDescription,
   dynamicSeed,
   abortSignal,
 }: {
@@ -957,6 +1095,10 @@ export async function generateVTONPrompt({
    * Mutually exclusive with the legacy `customPose.referenceMode === "image"` path.
    */
   photoshootMode?: ReferencePhotoshootMode;
+  /** True when garment images are ON-MODEL — the meta-prompt must describe the garment only, ignoring the wearer. */
+  isOnModelGarment?: boolean;
+  /** Optional garment-only description (from describeGarmentFromImages) to use as the authoritative garment spec. */
+  garmentDescription?: string;
   /**
    * Per-generation VARIATION SEED for "Dynamic" poses (`pose.poseType ===
    * "dynamic"`), produced FRESH on every call by `buildDynamicPoseSeed`. When
@@ -1879,6 +2021,7 @@ ${isReferencePhotoshoot
       referenceImageCount: customPose.referenceImages.length,
       productLabel: `${garmentType || "topwear"} garment`,
       productNoun: "garment",
+      replicateWornExtras: garmentType === "complete-outfit",
       imageModelName: modelAudienceShort,
     })
   : isCustomPoseImageMode
@@ -2062,9 +2205,12 @@ Output ONLY the generation prompt text, nothing else. The prompt should be 3-5 p
 
   // Add custom pose reference images
   if (customPose && customPose.referenceImages.length > 0) {
-    parts.push({
-      text: `\n\nHere are the POSE REFERENCE images (${customPose.referenceImages.length} image${customPose.referenceImages.length > 1 ? "s" : ""}). The model must replicate this exact pose, body position, camera angle, and framing:`,
-    });
+    // Mode-aware caption: Variation keeps framing + pose CATEGORY but varies the posture;
+    // pose-lock / replication / legacy custom pose replicate the exact pose.
+    const poseRefCaption = isVariationMode
+      ? `\n\nHere are the POSE REFERENCE images (${customPose.referenceImages.length} image${customPose.referenceImages.length > 1 ? "s" : ""}). Replicate their exact IMAGE FRAMING and the subject's POSE CATEGORY (standing / seated / walking / leaning), but INVENT a fresh posture within that category — do NOT copy the exact stance/limbs/gaze:`
+      : `\n\nHere are the POSE REFERENCE images (${customPose.referenceImages.length} image${customPose.referenceImages.length > 1 ? "s" : ""}). The model must replicate this exact pose, body position, camera angle, and framing:`;
+    parts.push({ text: poseRefCaption });
     for (const img of customPose.referenceImages) {
       const base64 = await fileToBase64(img.file);
       parts.push({
@@ -2114,6 +2260,10 @@ NON-NEGOTIABLE BACK-VIEW RULES:
 4. FORBIDDEN INFERENCES: Do NOT invent a back graphic because the front has one. Do NOT assume the back has the same pattern as the front. Do NOT assume the back has a logo because the front does. Do NOT assume the back is a single solid color because the front is patterned. If the back-view image shows a plain back, write "plain back panel" — do NOT add anything that is not in that image.
 5. CITE THE LABEL: When you write the BACK section of your output prompt, reference "the back-view reference image" by name so the downstream image generator knows which image you are anchoring to.
 6. GENERATION-TIME PRIORITY: The back-view image will be ordered FIRST in the image array passed to the image generator. The image generator's first impression of this garment will be the back. Your prompt must reinforce this hierarchy by leading the BACK section with the back-view image's contents and only afterwards describing front/side features.`;
+    }
+    if (isOnModelGarment) {
+      garmentIntro += `\n\n★★★ ON-MODEL GARMENT SOURCE — IGNORE THE WEARER ★★★
+The garment images are ON-MODEL: worn by a THROWAWAY STAND-IN person. Describe ONLY the garment — never the wearer's face, hair, skin, body, pose, hands, background, or lighting. Your output prompt MUST instruct the image generator that WHO appears is defined SOLELY by the separately attached MODEL REFERENCE, and that the person wearing the garment in these source images is to be entirely ignored/replaced.${garmentDescription ? `\n\nAUTHORITATIVE GARMENT SPEC (wearer-free — use this as the source of truth for garment details):\n${garmentDescription}` : ""}`;
     }
     parts.push({ text: garmentIntro });
   }
@@ -2375,8 +2525,9 @@ ${frozenSceneDescription}
 ══════════ END FROZEN SCENE DESCRIPTION ══════════
 
 ═══ FRAMING-AWARE BACKDROP SELECTION (MANDATORY) ═══
-The FROZEN SCENE DESCRIPTION contains a "# FRAMING-TIER BACKDROP PLAN" with three sub-blocks — FULL BACKDROP, MID BACKDROP, and CLOSE-UP BACKDROP — which are the SAME physical location captured at three camera distances. The current pose has framing = "${framing}", which maps to the ${backdropTier} tier.
-→ Copy the ${backdropTier} BACKDROP sub-block from the FRAMING-TIER BACKDROP PLAN VERBATIM into the BACKGROUND section of your output prompt. It is the sole background for this pose. Every pose that maps to the ${backdropTier} tier MUST reuse this identical backdrop text, so all same-tier outputs share one pixel-consistent backdrop.
+The FROZEN SCENE DESCRIPTION contains a "# FRAMING-TIER BACKDROP PLAN" with three sub-blocks — FULL BACKDROP, MID BACKDROP, and CLOSE-UP BACKDROP — which are the SAME physical location captured at three camera distances.${isReferencePhotoshoot ? `
+→ The exact crop/framing for THIS output is dictated by the attached COMPOSITION & FRAMING REFERENCE image (the reference photoshoot image), NOT by a fixed tier. Reproduce this scene, but show ONLY the portion of it that is visible behind the subject at the COMPOSITION reference's crop: for a tight/close-up reference render just the HERO SURFACE directly behind the subject (do NOT force the whole scene into frame); for a mid crop render the HERO SURFACE plus its immediate neighbours; for a wide/full-length reference render the full scene. ALL tight-and-mid crops of this product MUST render against the SAME single HERO SURFACE named in the FRAMING-TIER BACKDROP PLAN, so different tight crops share one identical backdrop. Keep every object, colour (PALETTE hex), material and light identical.` : `The current pose has framing = "${framing}", which maps to the ${backdropTier} tier.
+→ Copy the ${backdropTier} BACKDROP sub-block from the FRAMING-TIER BACKDROP PLAN VERBATIM into the BACKGROUND section of your output prompt. It is the sole background for this pose. Every pose that maps to the ${backdropTier} tier MUST reuse this identical backdrop text, so all same-tier outputs share one pixel-consistent backdrop.`}
 
 FIXED 3D-LOCATION FIDELITY (NON-NEGOTIABLE):
 1. SAME PLACE, DIFFERENT CAMERA: The three tiers are ONE fixed 3D location viewed from different camera distances/angles — never a different background. Do NOT change, recolor, restyle, redesign, or "improve" ANY object, wall, surface, material, or texture between tiers. A white stucco wall stays the exact same white stucco wall; a wooden floor stays the exact same wood; a patterned tile stays the exact same pattern.
@@ -2597,6 +2748,9 @@ export async function buildVTONImageContentParts({
   modelViews,
   background,
   sceneReferenceImage,
+  compositionReference,
+  isOnModelGarment = false,
+  garmentDescription,
   productCategory = "clothing",
   isProductOnlyShot = false,
   isGhostMannequin = false,
@@ -2630,6 +2784,22 @@ export async function buildVTONImageContentParts({
    * image. See the SCENE / BACKGROUND REFERENCE directive below.
    */
   sceneReferenceImage?: { file: File };
+  /**
+   * Reference-photoshoot reference image attached as a COMPOSITION & FRAMING reference so the
+   * output strictly replicates the reference's crop / camera / subject placement (+ pose for
+   * pose-lock/replication, + scene for replication, + visible footwear/accessories when
+   * `replicateFootwearAccessories`). The person's identity and the hero garment are NOT taken
+   * from this image (they come from the model + garment references). See directive below.
+   */
+  compositionReference?: {
+    file: File;
+    mode: ReferencePhotoshootMode;
+    replicateFootwearAccessories: boolean;
+  };
+  /** True when the garment images are ON-MODEL (worn by a stand-in) — triggers the ignore-wearer directive. */
+  isOnModelGarment?: boolean;
+  /** Optional garment-only description (from describeGarmentFromImages) attached alongside on-model garment images. */
+  garmentDescription?: string;
   productCategory?: ProductCategory;
   isProductOnlyShot?: boolean;
   isGhostMannequin?: boolean;
@@ -2853,8 +3023,17 @@ export async function buildVTONImageContentParts({
     // DIRECTIVE). This is also the ONLY path that delivers the lock to product-only
     // / ghost-mannequin shots, since VTON_REALISM_DIRECTIVE (ANCHOR 0B) is gated
     // off for those.
+    // ON-MODEL garment source: the garment images below are worn by a throwaway stand-in.
+    // Instruct the generator to extract ONLY the garment and IGNORE the wearer, so the output
+    // person comes SOLELY from the MODEL REFERENCE (attached above), not the garment's model.
+    const onModelWearerDirective = (isOnModelGarment && !isProductOnlyShot && !isGhostMannequin)
+      ? `\n\n═══ GARMENT SOURCE — IGNORE THE WEARER (CRITICAL) ═══\n` +
+        `The garment reference image(s) below are worn by a THROWAWAY STAND-IN person. That person is NOT the output subject and MUST be completely ignored — do NOT copy their face, hair, skin tone, body, hands, pose, background, or lighting. Silently treat every non-garment pixel as forbidden. Extract ONLY the garment itself. WHO appears in the output is defined SOLELY by the MODEL REFERENCE image attached above — never by the person wearing the garment here.` +
+        (garmentDescription ? `\n\nGARMENT SPEC (wearer-free, use to reproduce the garment exactly):\n${garmentDescription}` : "")
+      : "";
     parts.push({
       text:
+        onModelWearerDirective +
         `\n\n═══ GARMENT REFERENCE — PIXEL-PERFECT IDENTITY LOCK (MANDATORY) ═══\n` +
         (isProductOnlyShot || isGhostMannequin
           ? GARMENT_IDENTITY_LOCK_PRODUCT_ONLY
@@ -2917,14 +3096,50 @@ export async function buildVTONImageContentParts({
   if (sceneReferenceImage && !isReplicaBg) {
     parts.push({
       text:
-        `\n\n═══ SCENE / BACKGROUND REFERENCE (gemini-3.1-flash-image-preview) ═══\n` +
-        `The image below is the SOLE source of truth for the BACKGROUND scene of this photo — the SAME physical location used across every output of this product. Reproduce its walls, floors, surfaces, objects, colour palette, materials, and light direction/temperature with pixel-level consistency so all outputs read as the same place.\n` +
-        `CRITICAL — FRAMING IS FROM THE TEXT, NOT THIS IMAGE: the crop/zoom is dictated ENTIRELY by the framing described in the prompt text above. Show ONLY the portion of this scene the prompt calls for — a full-length shot shows the wide scene; a close-up shows ONLY the immediate hero backdrop directly behind the subject (e.g. the single wall), NOT the whole scene. Cropped-out elements simply fall out of frame (they may faintly peek through a window/opening only where plausible).\n` +
-        `Use this image ONLY for the environment: copy NO person, model, product, or garment from it. Never default to a white studio backdrop or grey cyclorama. Harmonize the subject's lighting with this scene's light so they look naturally embedded, with soft (never harsh) shadows.`,
+        `\n\n═══ SCENE / BACKGROUND — LOCATION REFERENCE (gemini-3.1-flash-image-preview) ═══\n` +
+        `The image below is the LOCATION REFERENCE — the identity, materials, colour palette, objects, and light of the physical PLACE this photo is taken in (the SAME location across every output of this product). Do NOT paste the model onto this image as a flat backdrop. Instead, PHOTOGRAPH THE MODEL PHYSICALLY STANDING (or seated) IN this real, three-dimensional location, at true human scale.\n` +
+        `CAMERA & FRAMING FROM THE TEXT: the exact crop, camera height/angle and what fills the frame come from the prompt text above (which reimagines the most photographically sensible, scale-correct camera for this shot) — NOT from the flat composition of this image. A full-length shot shows the wide location grounded on the floor; a tighter shot is a NEW camera angle on the same location (e.g. the hero wall behind the subject, or a tilt up into the sky). Elements out of the reimagined frame simply fall away.\n` +
+        `═══ LIGHTING HARMONISE (de-composite — MANDATORY) ═══ Sequence: (1) build the location from this reference; (2) place the model as a real person in it at correct scale; (3) UNIFY the light. The model, face and garment are lit by the SAME key light as the scene (same direction + colour temperature). The model MUST cast a CONTACT SHADOW and ambient-occlusion where feet/body meet the ground or a wall, consistent with that key light — this is what proves they are really in the scene, not edited in. Allow SUBTLE environmental bounce/reflected colour from the scene onto skin, hair and garment for realism. Shadows stay soft and gentle (no harsh chiaroscuro). CRITICAL: the garment keeps its true base colour and pattern identity — the bounce is subtle and must never shift the garment's recognisable colour. Copy NO person, product, or garment from this image — only the environment; never default to a white studio backdrop or grey cyclorama.`,
     });
     const sceneBase64 = await fileToBase64(sceneReferenceImage.file);
     parts.push({
       inlineData: { mimeType: sceneReferenceImage.file.type, data: sceneBase64 },
+    });
+  }
+
+  // ═══ COMPOSITION & FRAMING REFERENCE (reference-photoshoot framing channel) ═══
+  // Attached LAST (recency anchor) so gemini-3.1-flash-image-preview reads it as the
+  // authoritative composition signal. Per Nano Banana guidance: role-label the image,
+  // positive framing ("replicate / match / preserve"), and sequence the operation
+  // (lock framing → keep footwear/accessories → swap in the configured model + garment).
+  if (compositionReference && !isProductOnlyShot) {
+    const m = compositionReference.mode;
+    const poseLine =
+      m === "variation"
+        ? `POSE: Identify the subject's POSE CATEGORY in this image (standing / seated / walking / leaning-or-resting / crouching / kneeling / reclining) and KEEP that category. Do NOT copy the exact posture — INVENT a fresh, natural, editorial variation WITHIN the same category (different weight shift, gaze, head tilt, arm/hand placement, gesture) that fits INSIDE this exact framing (same crop, same subject fill and placement). A seated reference stays seated; a standing reference stays standing — never switch category.`
+        : `POSE: Replicate the subject's EXACT pose and body position from this image — stance, weight distribution, limb angles, hand placement, and head/gaze direction.`;
+    // Seated/leaning support drawn from the (new) background — variation + pose-lock only.
+    const seatingClause =
+      m === "replication"
+        ? ""
+        : `\nSEATED / LEANING SUPPORT: if the pose is seated or leaning/resting on a support, the model MUST be genuinely supported by a structure that EXISTS in the attached SCENE / BACKGROUND reference (bench, step, ledge, stool, low wall, planter edge, staircase); if the scene has none, ADD one consistent with its style/materials/lighting. NEVER reuse the reference's own furniture, and the model must never float or perch on nothing.`;
+    const sceneLine =
+      m === "replication"
+        ? `\nSCENE: Also reproduce this image's background scene, its objects, palette, materials, and its lighting direction/quality/colour-temperature faithfully — the subject stays embedded in this same environment.`
+        : "";
+    const extrasLine = compositionReference.replicateFootwearAccessories
+      ? `\nWORN & HELD ITEMS: Reproduce the FOOTWEAR, ACCESSORIES, and HELD/CARRIED PROPS from THIS reference — shoes, jewelry (earrings, necklace, rings, bracelet, watch), hat, belt, eyewear/sunglasses, scarf, tie, hair accessory, AND anything held in the hands (handbag, tote, clutch, book, cup, phone, bouquet, umbrella, bag, small object) — EXACTLY as shown (same design, material, colour, placement, and how it is held). CRITICAL: reproduce ONLY the items actually VISIBLE within this crop. If the crop is a tight/upper shot where only an accessory (e.g. earrings) is visible and no shoes or held props are in frame, show ONLY that accessory — never add footwear/accessories/props not visible in this reference. When a held prop is kept, the invented pose keeps a hand naturally engaged with it.`
+      : "";
+    parts.push({
+      text:
+        `\n\n═══ COMPOSITION & FRAMING REFERENCE (gemini-3.1-flash-image-preview) ═══\n` +
+        `The image below is the AUTHORITATIVE COMPOSITION & FRAMING reference. Replicate its EXACT image framing with pixel-level fidelity: the SAME crop, the SAME camera distance and angle, the SAME lens compression, the SAME subject size and placement within the frame, the SAME headroom, and the SAME top/bottom/left/right edge crops. The output must read as the same shot, re-taken.\n` +
+        `${poseLine}${seatingClause}${sceneLine}${extrasLine}\n` +
+        `DO NOT COPY from this image: (1) the person's face or identity — the person comes SOLELY from the MODEL REFERENCE image; (2) the main clothing/garment — that comes SOLELY from the GARMENT SOURCE images; (3) the reference's own background/furniture (unless replication) — the scene comes from the SCENE / BACKGROUND reference. Swap in the configured model and garment while PRESERVING the framing, pose${m === "replication" ? ", scene" : ""}${compositionReference.replicateFootwearAccessories ? ", footwear, accessories and held props" : ""} from this reference.`,
+    });
+    const compBase64 = await fileToBase64(compositionReference.file);
+    parts.push({
+      inlineData: { mimeType: compositionReference.file.type, data: compBase64 },
     });
   }
 
@@ -2941,6 +3156,9 @@ export async function generateVTONImage({
   modelViews,
   background,
   sceneReferenceImage,
+  compositionReference,
+  isOnModelGarment = false,
+  garmentDescription,
   aspectRatio,
   productCategory = "clothing",
   isProductOnlyShot = false,
@@ -2965,6 +3183,16 @@ export async function generateVTONImage({
   background?: BackgroundConfig;
   /** Background/scene image attached for scene consistency (see buildVTONImageContentParts). */
   sceneReferenceImage?: { file: File };
+  /** Reference image attached as a COMPOSITION & FRAMING reference (see buildVTONImageContentParts). */
+  compositionReference?: {
+    file: File;
+    mode: ReferencePhotoshootMode;
+    replicateFootwearAccessories: boolean;
+  };
+  /** On-model garment source → triggers the ignore-wearer directive (see buildVTONImageContentParts). */
+  isOnModelGarment?: boolean;
+  /** Garment-only description attached alongside on-model garment images. */
+  garmentDescription?: string;
   aspectRatio: AspectRatio;
   productCategory?: ProductCategory;
   isProductOnlyShot?: boolean;
@@ -2985,6 +3213,9 @@ export async function generateVTONImage({
     modelViews,
     background,
     sceneReferenceImage,
+    compositionReference,
+    isOnModelGarment,
+    garmentDescription,
     productCategory,
     isProductOnlyShot,
     isGhostMannequin,

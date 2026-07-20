@@ -128,6 +128,8 @@ export function useVTONStore() {
   const [productCategory, setProductCategory] = useState<ProductCategory>("clothing");
   const [gender, setGender] = useState<Gender>("female");
   const [garmentImages, setGarmentImages] = useState<GarmentImage[]>([]);
+  // Single mode: garment images are ON-MODEL (worn by a stand-in) vs flat-lay. See ProductFolder.onModelGarment.
+  const [onModelGarment, setOnModelGarment] = useState(false);
   const [garmentType, setGarmentType] = useState<GarmentType>("topwear");
   const [footwearType, setFootwearType] = useState<FootwearType>("casual-shoes");
   const [fit, setFit] = useState<FitType | null>(null);
@@ -1195,6 +1197,12 @@ export function useVTONStore() {
   const setProductFolderPoseVariation = useCallback((id: string, value: boolean) => {
     setPrimaryFolders((prev) =>
       prev.map((f) => (f.id === id ? { ...f, poseVariation: value } : f))
+    );
+  }, []);
+
+  const setProductFolderOnModelGarment = useCallback((id: string, value: boolean) => {
+    setPrimaryFolders((prev) =>
+      prev.map((f) => (f.id === id ? { ...f, onModelGarment: value } : f))
     );
   }, []);
 
@@ -2373,6 +2381,8 @@ export function useVTONStore() {
     gender,
     setGender,
     garmentImages,
+    onModelGarment,
+    setOnModelGarment,
     garmentType,
     setGarmentType,
     footwearType,
@@ -2503,6 +2513,7 @@ export function useVTONStore() {
     updatePrimaryFolderTopwearLength,
     updatePrimaryFolderBottomwearLength,
     setProductFolderPoseVariation,
+    setProductFolderOnModelGarment,
     bulkSpreadsheetSession,
     setBulkSpreadsheetSession,
     bulkSpreadsheetFilter,

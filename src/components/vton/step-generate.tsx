@@ -37,7 +37,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn, buildDynamicPoseSeed, pickBucketImage } from "@/lib/utils";
-import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene, analyzeReferenceScene } from "@/lib/gemini";
+import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene, analyzeReferenceScene, describeGarmentFromImages } from "@/lib/gemini";
 import { generateVTONImageAzure } from "@/lib/azure-image";
 import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS } from "@/lib/constants";
 import { ModelComboPicker } from "./model-combo-picker";
@@ -406,6 +406,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     productCategory,
     gender,
     garmentImages,
+    onModelGarment,
     garmentType,
     footwearType,
     fit,
@@ -802,6 +803,32 @@ export function StepGenerate({ store }: StepGenerateProps) {
       }
     }
 
+    // ON-MODEL garment: derive a wearer-free garment description once for the batch, so the
+    // configured AI model — not the person wearing the garment in the source images — appears.
+    let garmentDescription: string | undefined;
+    if (onModelGarment && !isFootwear && garmentImages.length > 0) {
+      setIsIngestingScene(true);
+      try {
+        const r = await describeGarmentFromImages({
+          apiKey,
+          textGenModel,
+          garmentImages,
+          gender,
+          garmentType,
+          abortSignal: signal,
+        });
+        garmentDescription = r.garmentDescription;
+      } catch (err) {
+        if (signal.aborted) {
+          setIsIngestingScene(false);
+          return;
+        }
+        console.warn("On-model garment isolation failed; falling back to image + directive only:", err);
+      } finally {
+        setIsIngestingScene(false);
+      }
+    }
+
     if (signal.aborted) return;
 
     // Create results for preset poses
@@ -914,12 +941,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
             frozenScene,
             backgroundText: referencePhotoshootMode === "replication" ? undefined : productBackgroundText,
           },
-          // Scene image attached to the generator: the reference itself (replication) or the
-          // selected Styling background image (variation/pose-lock, image background only).
+          // Scene image attached to the generator. Replication uses the reference itself as the
+          // COMPOSITION reference (which also carries the scene), so no separate scene image;
+          // variation/pose-lock attach the selected Styling background image for the scene.
           sceneReferenceFile:
-            referencePhotoshootMode === "replication"
-              ? refImg.file
-              : inspirationFileOf(background),
+            referencePhotoshootMode === "replication" ? undefined : inspirationFileOf(background),
+          // The reference image, always attached as the COMPOSITION & FRAMING reference.
+          compositionReferenceFile: refImg.file,
           frozenSceneUsed: frozenScene,
           status: "pending",
         });
@@ -975,8 +1003,12 @@ export function StepGenerate({ store }: StepGenerateProps) {
         // Scene image attached to the generator for cross-output consistency. Reference
         // results store it at creation; standard results derive it from the background.
         const sceneRefFile = result.sceneReferenceFile ?? (refCtx ? undefined : inspirationFileOf(background));
+        // Reference image attached as the COMPOSITION & FRAMING reference (reference-photoshoot only).
+        const compRef = refCtx && result.compositionReferenceFile
+          ? { file: result.compositionReferenceFile, mode: refCtx.mode, replicateFootwearAccessories: garmentType === "complete-outfit" }
+          : undefined;
         // Persist the exact frozen scene + scene image so a HARD retry reproduces them.
-        updateResult(result.id, { frozenSceneUsed: effFrozenScene, sceneReferenceFile: sceneRefFile });
+        updateResult(result.id, { frozenSceneUsed: effFrozenScene, sceneReferenceFile: sceneRefFile, garmentDescriptionUsed: garmentDescription });
 
         const promptResult = await generateVTONPrompt({
           apiKey,
@@ -1004,6 +1036,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           targetImageModel: imageGenModel,
           frozenSceneDescription: effFrozenScene,
           photoshootMode: refCtx?.mode,
+          isOnModelGarment: onModelGarment,
+          garmentDescription,
           // Fresh per-generation seed for Dynamic poses so the posture re-varies
           // on every call; undefined (ignored) for standard poses.
           dynamicSeed:
@@ -1026,6 +1060,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
           modelViews: poseIsProductOnly ? undefined : activeModelViews,
           background: effBackground,
           sceneReferenceImage: sceneRefFile ? { file: sceneRefFile } : undefined,
+          compositionReference: compRef,
+          isOnModelGarment: onModelGarment,
+          garmentDescription,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
@@ -1245,6 +1282,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     apiKey,
     gender,
     garmentImages,
+    onModelGarment,
     garmentType,
     footwearType,
     fit,
@@ -1348,6 +1386,37 @@ export function StepGenerate({ store }: StepGenerateProps) {
       if (bg.imageReferenceMode === "replica") return undefined;
       return sceneCache.get(bg.inspirationImage.file);
     };
+
+    // ON-MODEL garment: per-product wearer-free garment description, computed once per folder
+    // flagged on-model, cached by folder id and reused across that product's outputs.
+    const garmentDescCache = new Map<string, string>();
+    if (!isFootwear) {
+      const onModelFolders = bulkCombinations
+        .map((c) => c.primaryFolder)
+        .filter((f, i, arr) => f.onModelGarment && f.images.length > 0 && arr.findIndex((g) => g.id === f.id) === i);
+      if (onModelFolders.length > 0) setIsIngestingScene(true);
+      try {
+        for (const folder of onModelFolders) {
+          if (signal.aborted) return;
+          try {
+            const r = await describeGarmentFromImages({
+              apiKey,
+              textGenModel,
+              garmentImages: folder.images.map((img) => ({ id: img.id, file: img.file, preview: img.preview, type: garmentType })),
+              gender,
+              garmentType,
+              abortSignal: signal,
+            });
+            garmentDescCache.set(folder.id, r.garmentDescription);
+          } catch (err) {
+            if (signal.aborted) return;
+            console.warn("Bulk on-model garment isolation failed for a folder; falling back to image + directive:", err);
+          }
+        }
+      } finally {
+        setIsIngestingScene(false);
+      }
+    }
 
     if (signal.aborted) return;
 
@@ -1482,12 +1551,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
                 frozenScene,
                 backgroundText: referencePhotoshootMode === "replication" ? undefined : productBackgroundText,
               },
-              // Scene image attached to the generator: the reference itself (replication) or the
-              // product's selected Styling background image (variation/pose-lock, image bg only).
+              // Scene image: replication uses the reference itself as the COMPOSITION reference
+              // (which also carries the scene) → no separate scene image; variation/pose-lock attach
+              // the product's selected Styling background image for the scene.
               sceneReferenceFile:
-                referencePhotoshootMode === "replication"
-                  ? refImg.file
-                  : inspirationFileOf(selBgConfig),
+                referencePhotoshootMode === "replication" ? undefined : inspirationFileOf(selBgConfig),
+              // The reference image, always attached as the COMPOSITION & FRAMING reference.
+              compositionReferenceFile: refImg.file,
               frozenSceneUsed: frozenScene,
               status: "pending",
             });
@@ -1565,8 +1635,15 @@ export function StepGenerate({ store }: StepGenerateProps) {
         // Scene image attached to the generator for cross-output consistency. Reference
         // results store it at creation; standard results derive it from the combo background.
         const sceneRefFile = result.sceneReferenceFile ?? (refCtx ? undefined : inspirationFileOf(effectiveBg));
-        // Persist the exact frozen scene + scene image so a HARD retry reproduces them.
-        updateBulkResult(result.id, { frozenSceneUsed: effFrozenScene, sceneReferenceFile: sceneRefFile });
+        // Reference image attached as the COMPOSITION & FRAMING reference (reference-photoshoot only).
+        const compRef = refCtx && result.compositionReferenceFile
+          ? { file: result.compositionReferenceFile, mode: refCtx.mode, replicateFootwearAccessories: garmentType === "complete-outfit" }
+          : undefined;
+        // On-model garment (per product): the wearer-free description + flag for this folder.
+        const folderOnModel = combo.primaryFolder.onModelGarment === true && !isFootwear;
+        const folderGarmentDesc = folderOnModel ? garmentDescCache.get(combo.primaryFolder.id) : undefined;
+        // Persist the exact frozen scene + scene image + garment desc so a HARD retry reproduces them.
+        updateBulkResult(result.id, { frozenSceneUsed: effFrozenScene, sceneReferenceFile: sceneRefFile, garmentDescriptionUsed: folderGarmentDesc });
 
         // Materialize bucket-backed accessories with a per-product draw keyed on
         // the product folder id, so each folder gets its own consistent pick.
@@ -1610,6 +1687,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           targetImageModel: imageGenModel,
           frozenSceneDescription: effFrozenScene,
           photoshootMode: refCtx?.mode,
+          isOnModelGarment: folderOnModel,
+          garmentDescription: folderGarmentDesc,
           // Fresh per-generation seed for Dynamic poses; undefined for standard poses.
           dynamicSeed:
             result.pose.poseType === "dynamic"
@@ -1631,6 +1710,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
           modelViews: poseIsProductOnly ? undefined : bulkModelViews,
           background: effBackground,
           sceneReferenceImage: sceneRefFile ? { file: sceneRefFile } : undefined,
+          compositionReference: compRef,
+          isOnModelGarment: folderOnModel,
+          garmentDescription: folderGarmentDesc,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
@@ -1935,6 +2017,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
           : background;
         const effFrozenScene = refCtx ? refCtx.frozenScene : result.frozenSceneUsed;
         const sceneRefFile = result.sceneReferenceFile;
+        const compRef = refCtx && result.compositionReferenceFile
+          ? { file: result.compositionReferenceFile, mode: refCtx.mode, replicateFootwearAccessories: garmentType === "complete-outfit" }
+          : undefined;
 
         const promptResult = await generateVTONPrompt({
           apiKey,
@@ -1962,6 +2047,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           targetImageModel: imageGenModel,
           frozenSceneDescription: effFrozenScene,
           photoshootMode: refCtx?.mode,
+          isOnModelGarment: onModelGarment,
+          garmentDescription: result.garmentDescriptionUsed,
           // Fresh per-retry seed for Dynamic poses so every retry re-varies the
           // posture; undefined for standard poses.
           dynamicSeed:
@@ -1982,6 +2069,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
           modelViews: poseIsProductOnly ? undefined : activeModelViews,
           background: effBackground,
           sceneReferenceImage: sceneRefFile ? { file: sceneRefFile } : undefined,
+          compositionReference: compRef,
+          isOnModelGarment: onModelGarment,
+          garmentDescription: result.garmentDescriptionUsed,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,
@@ -2129,6 +2219,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
           : effectiveBg;
         const effFrozenScene = refCtx ? refCtx.frozenScene : result.frozenSceneUsed;
         const sceneRefFile = result.sceneReferenceFile;
+        const compRef = refCtx && result.compositionReferenceFile
+          ? { file: result.compositionReferenceFile, mode: refCtx.mode, replicateFootwearAccessories: garmentType === "complete-outfit" }
+          : undefined;
 
         const promptResult = await generateVTONPrompt({
           apiKey,
@@ -2165,6 +2258,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
           targetImageModel: imageGenModel,
           frozenSceneDescription: effFrozenScene,
           photoshootMode: refCtx?.mode,
+          isOnModelGarment: combo.primaryFolder.onModelGarment === true && !isFootwear,
+          garmentDescription: result.garmentDescriptionUsed,
           // Fresh per-retry seed for Dynamic poses; undefined for standard poses.
           dynamicSeed:
             result.pose.poseType === "dynamic"
@@ -2184,6 +2279,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
           modelViews: poseIsProductOnly ? undefined : bulkModelViews,
           background: effBackground,
           sceneReferenceImage: sceneRefFile ? { file: sceneRefFile } : undefined,
+          compositionReference: compRef,
+          isOnModelGarment: combo.primaryFolder.onModelGarment === true && !isFootwear,
+          garmentDescription: result.garmentDescriptionUsed,
           aspectRatio,
           productCategory,
           isProductOnlyShot: poseIsProductOnly,

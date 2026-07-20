@@ -414,6 +414,14 @@ export interface GeneratedResult {
    * Persisted so a hard retry re-attaches the same image. Transient (in-memory) File handle.
    */
   sceneReferenceFile?: File;
+  /**
+   * The reference-photoshoot reference image attached to the image generator as a COMPOSITION &
+   * FRAMING reference (strict crop/pose replication, + footwear/accessories for Complete Outfit).
+   * Persisted so a hard retry re-attaches the same image. Transient (in-memory) File handle.
+   */
+  compositionReferenceFile?: File;
+  /** On-model garment-only description used at generation, persisted for hard-retry reproduction. */
+  garmentDescriptionUsed?: string;
   validationStatus?: ValidationStatus;
   validationMessage?: string;
   costBreakdown?: GenerationCostBreakdown;
@@ -684,6 +692,13 @@ export interface ProductFolder {
    * as each source image. Default: false.
    */
   poseVariation?: boolean;
+  /**
+   * When true, this product's garment images are ON-MODEL (worn by a stand-in person) rather
+   * than flat-lay/product shots. Triggers the garment-isolation enrichment (a garment-only
+   * description) and an "ignore the wearer" directive so the configured AI model — not the
+   * garment image's person — appears in the output. Default: false.
+   */
+  onModelGarment?: boolean;
 }
 
 /** Sentinel value for spreadsheet filter: include all rows */
@@ -773,6 +788,10 @@ export interface BulkGeneratedResult {
   frozenSceneUsed?: string;
   /** Background/scene image attached to the generator; re-attached verbatim on hard retry. */
   sceneReferenceFile?: File;
+  /** Reference image attached as a COMPOSITION & FRAMING reference; re-attached on hard retry. */
+  compositionReferenceFile?: File;
+  /** On-model garment-only description used at generation, persisted for hard-retry reproduction. */
+  garmentDescriptionUsed?: string;
   validationStatus?: ValidationStatus;
   validationMessage?: string;
   costBreakdown?: GenerationCostBreakdown;

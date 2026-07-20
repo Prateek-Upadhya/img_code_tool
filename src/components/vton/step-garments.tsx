@@ -212,6 +212,7 @@ function ProductFolderCard({
   onBottomwearLengthChange,
   isFootwear,
   onTogglePoseVariation,
+  onToggleOnModelGarment,
 }: {
   folder: ProductFolder;
   target: "primary" | "complementary";
@@ -238,6 +239,8 @@ function ProductFolderCard({
    * In VTON mode this prop is omitted and the control does not render.
    */
   onTogglePoseVariation?: (folderId: string, value: boolean) => void;
+  /** VTON clothing (bulk) only — per-folder "garment images are on-model" toggle. */
+  onToggleOnModelGarment?: (folderId: string, value: boolean) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -403,6 +406,23 @@ function ProductFolderCard({
             onChange={(v) => onTogglePoseVariation(folder.id, v)}
             size="sm"
           />
+        </div>
+      )}
+
+      {/* On-model garment (VTON clothing only) */}
+      {target === "primary" && !isFootwear && onToggleOnModelGarment && (
+        <div className="px-3 pb-3">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={folder.onModelGarment === true}
+              onChange={(e) => onToggleOnModelGarment(folder.id, e.target.checked)}
+            />
+            <span className="text-[11px] leading-snug text-muted-foreground">
+              <span className="font-medium text-foreground">Garment images are on-model</span> — worn by a person. Strips the wearer so your chosen AI model appears (not the input person).
+            </span>
+          </label>
         </div>
       )}
 
@@ -1609,6 +1629,8 @@ export function StepGarments({ store }: StepGarmentsProps) {
     gender,
     setGender,
     garmentImages,
+    onModelGarment,
+    setOnModelGarment,
     garmentType,
     setGarmentType,
     footwearType,
@@ -1646,6 +1668,7 @@ export function StepGarments({ store }: StepGarmentsProps) {
     updatePrimaryFolderTopwearLength,
     updatePrimaryFolderBottomwearLength,
     setProductFolderPoseVariation,
+    setProductFolderOnModelGarment,
     complementaryFolders,
     addComplementaryFolder,
     removeComplementaryFolder,
@@ -2184,6 +2207,7 @@ export function StepGarments({ store }: StepGarmentsProps) {
                   onSetFootwearSide={!isModelSwap && isFootwear ? setFolderImageFootwearSide : undefined}
                   isFootwear={isFootwear}
                   onTogglePoseVariation={isModelSwap ? setProductFolderPoseVariation : undefined}
+                  onToggleOnModelGarment={!isModelSwap && !isFootwear ? setProductFolderOnModelGarment : undefined}
                 />
               ))}
             </div>
@@ -2281,6 +2305,21 @@ export function StepGarments({ store }: StepGarmentsProps) {
               ))}
             </div>
           </div>
+        )}
+
+        {/* On-model garment (VTON clothing single mode) */}
+        {!isFootwear && !isModelSwap && garmentImages.length > 0 && (
+          <label className="flex items-start gap-2 cursor-pointer rounded-lg border border-border bg-card p-3">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={onModelGarment === true}
+              onChange={(e) => setOnModelGarment(e.target.checked)}
+            />
+            <span className="text-xs leading-snug text-muted-foreground">
+              <span className="font-medium text-foreground">Garment images are on-model</span> — worn by a person. Strips the wearer so your chosen AI model appears in the output (not the person in the input images).
+            </span>
+          </label>
         )}
 
         {/* Product Info */}
