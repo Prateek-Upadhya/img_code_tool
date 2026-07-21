@@ -66,7 +66,7 @@ import {
 // Image generation models use flat per-image pricing for output (handled separately).
 const MODEL_PRICING: Record<string, { input: number; outputText: number }> = {
   "gemini-3.1-pro-preview":          { input: 2.00, outputText: 12.00 },
-  "gemini-3.1-flash-image-preview":  { input: 0.15, outputText: 0.60 },
+  "gemini-3.1-flash-image":  { input: 0.15, outputText: 0.60 },
   "gemini-3-flash-preview":          { input: 0.50, outputText: 3.00 },
   // Azure OpenAI text models — placeholder pricing; update with contract rates.
   "gpt-5.4-pro":                     { input: 5.00, outputText: 15.00 },
@@ -83,7 +83,7 @@ function textCostModel(textGenModel: TextGenModel = "gemini"): string {
   return textGenModel === "gemini" ? "gemini-3.1-pro-preview" : textGenModel;
 }
 
-// Flat per-image output cost for Nano Banana 2 (gemini-3.1-flash-image-preview)
+// Flat per-image output cost for Nano Banana 2 (gemini-3.1-flash-image)
 const IMAGE_OUTPUT_COST: Record<string, number> = {
   "512": 0.045,
   "1K": 0.067,
@@ -107,7 +107,7 @@ export function computeStepCost(model: string, label: string, tokens: TokenUsage
 
 /** For the image generation model, output cost = flat per-image rate + text input token cost */
 export function computeImageGenCost(label: string, tokens: TokenUsage, imageSize: "512" | "1K" | "2K" | "4K"): StepCost {
-  const model = "gemini-3.1-flash-image-preview";
+  const model = "gemini-3.1-flash-image";
   const pricing = MODEL_PRICING[model]!;
   const inputCost = (tokens.inputTokens / 1_000_000) * pricing.input;
   const outputCost = IMAGE_OUTPUT_COST[imageSize] ?? 0.067;
@@ -428,7 +428,7 @@ function buildCustomPoseImageReferenceExtractionBlock({
   referenceImageCount,
   productLabel,
   productNoun,
-  imageModelName = "Nano Banana / gemini-3.1-flash-image-preview",
+  imageModelName = "Nano Banana / gemini-3.1-flash-image",
 }: {
   isProductOnlyShot: boolean;
   referenceImageCount: number;
@@ -539,7 +539,7 @@ function buildReferencePhotoshootExtractionBlock({
   productLabel,
   productNoun,
   replicateWornExtras = false,
-  imageModelName = "Nano Banana / gemini-3.1-flash-image-preview",
+  imageModelName = "Nano Banana / gemini-3.1-flash-image",
 }: {
   photoshootMode: ReferencePhotoshootMode;
   isProductOnlyShot: boolean;
@@ -1803,10 +1803,10 @@ Frame these overrides POSITIVELY in the output prompt (describe what IS, using a
   const isGptTarget = targetImageModel === "gpt-image-2";
   const modelAudience = isGptTarget
     ? "GPT-Image-2 (Azure OpenAI)"
-    : "Nano Banana 2 (gemini-3.1-flash-image-preview)";
+    : "Nano Banana 2 (gemini-3.1-flash-image)";
   const modelAudienceShort = isGptTarget
     ? "GPT-Image-2"
-    : "gemini-3.1-flash-image-preview";
+    : "gemini-3.1-flash-image";
   const closingStyleClause = isGptTarget
     ? "High-end commercial product photography, photorealistic, ultra-sharp focus, macro-level texture detail, crisp edges, professional studio lighting aesthetic."
     : "High-end commercial product photography, 8K resolution, photorealistic, ultra-sharp focus, macro-level texture detail, crisp edges, professional lighting aesthetic.";
@@ -2705,7 +2705,7 @@ Now write the ${isGhostMannequin ? "ghost mannequin" : isProductOnlyShot ? "prod
 }
 
 /**
- * Step 2: Use Nano Banana 2 (gemini-3.1-flash-image-preview) to generate the VTON image
+ * Step 2: Use Nano Banana 2 (gemini-3.1-flash-image) to generate the VTON image
  */
 type ContentPart = { text: string } | { inlineData: { mimeType: string; data: string } };
 
@@ -2961,7 +2961,7 @@ export async function buildVTONImageContentParts({
     parts.push({
       text: `\n═══ GENERATION INSTRUCTIONS ═══\n${prompt}\n\n` +
         (isReplicaBg
-          ? `═══ BACKGROUND & ENVIRONMENT (REPLICA MODE — gemini-3.1-flash-image-preview) ═══\n` +
+          ? `═══ BACKGROUND & ENVIRONMENT (REPLICA MODE — gemini-3.1-flash-image) ═══\n` +
             `The background environment is REPLICATED EXACTLY from the BACKGROUND ENVIRONMENT — EXACT REPLICATION REFERENCE image attached above. ` +
             `Preserve its composition, perspective, palette, light direction, color temperature, surface materials, depth-of-field, and atmosphere with pixel-level fidelity. ` +
             `Do NOT substitute a white studio backdrop, a neutral grey cyclorama, or any other default environment. ` +
@@ -2969,7 +2969,7 @@ export async function buildVTONImageContentParts({
             `Relight the footwear so it belongs in the replicated environment (shadow softness, color temperature, and wrap consistent with that backdrop).` +
             replicaDirective +
             `\n\n`
-          : `═══ BACKGROUND & ENVIRONMENT (gemini-3.1-flash-image-preview) ═══\n` +
+          : `═══ BACKGROUND & ENVIRONMENT (gemini-3.1-flash-image) ═══\n` +
             `The scene, backdrop, surfaces, atmosphere, and global lighting MUST follow ONLY the generation prompt text above (which encodes the user's intended environment). ` +
             `Do NOT substitute a white studio backdrop, a neutral grey cyclorama, or any other default environment when the prompt above describes a different scene — the prompt's background description is the SOLE source of truth. Render a pure white (#FFFFFF) cyclorama ONLY if the prompt above itself specifies one. ` +
             `Treat the product reference photos as defining footwear identity only: ZERO transfer of their original location, flooring, walls, props, or spill light from those photos. ` +
@@ -3096,7 +3096,7 @@ export async function buildVTONImageContentParts({
   if (sceneReferenceImage && !isReplicaBg) {
     parts.push({
       text:
-        `\n\n═══ SCENE / BACKGROUND — LOCATION REFERENCE (gemini-3.1-flash-image-preview) ═══\n` +
+        `\n\n═══ SCENE / BACKGROUND — LOCATION REFERENCE (gemini-3.1-flash-image) ═══\n` +
         `The image below is the LOCATION REFERENCE — the identity, materials, colour palette, objects, and light of the physical PLACE this photo is taken in (the SAME location across every output of this product). Do NOT paste the model onto this image as a flat backdrop. Instead, PHOTOGRAPH THE MODEL PHYSICALLY STANDING (or seated) IN this real, three-dimensional location, at true human scale.\n` +
         `CAMERA & FRAMING FROM THE TEXT: the exact crop, camera height/angle and what fills the frame come from the prompt text above (which reimagines the most photographically sensible, scale-correct camera for this shot) — NOT from the flat composition of this image. A full-length shot shows the wide location grounded on the floor; a tighter shot is a NEW camera angle on the same location (e.g. the hero wall behind the subject, or a tilt up into the sky). Elements out of the reimagined frame simply fall away.\n` +
         `═══ LIGHTING HARMONISE (de-composite — MANDATORY) ═══ Sequence: (1) build the location from this reference; (2) place the model as a real person in it at correct scale; (3) UNIFY the light. The model, face and garment are lit by the SAME key light as the scene (same direction + colour temperature). The model MUST cast a CONTACT SHADOW and ambient-occlusion where feet/body meet the ground or a wall, consistent with that key light — this is what proves they are really in the scene, not edited in. Allow SUBTLE environmental bounce/reflected colour from the scene onto skin, hair and garment for realism. Shadows stay soft and gentle (no harsh chiaroscuro). CRITICAL: the garment keeps its true base colour and pattern identity — the bounce is subtle and must never shift the garment's recognisable colour. Copy NO person, product, or garment from this image — only the environment; never default to a white studio backdrop or grey cyclorama.`,
@@ -3108,7 +3108,7 @@ export async function buildVTONImageContentParts({
   }
 
   // ═══ COMPOSITION & FRAMING REFERENCE (reference-photoshoot framing channel) ═══
-  // Attached LAST (recency anchor) so gemini-3.1-flash-image-preview reads it as the
+  // Attached LAST (recency anchor) so gemini-3.1-flash-image reads it as the
   // authoritative composition signal. Per Nano Banana guidance: role-label the image,
   // positive framing ("replicate / match / preserve"), and sequence the operation
   // (lock framing → keep footwear/accessories → swap in the configured model + garment).
@@ -3132,7 +3132,7 @@ export async function buildVTONImageContentParts({
       : "";
     parts.push({
       text:
-        `\n\n═══ COMPOSITION & FRAMING REFERENCE (gemini-3.1-flash-image-preview) ═══\n` +
+        `\n\n═══ COMPOSITION & FRAMING REFERENCE (gemini-3.1-flash-image) ═══\n` +
         `The image below is the AUTHORITATIVE COMPOSITION & FRAMING reference. Replicate its EXACT image framing with pixel-level fidelity: the SAME crop, the SAME camera distance and angle, the SAME lens compression, the SAME subject size and placement within the frame, the SAME headroom, and the SAME top/bottom/left/right edge crops. The output must read as the same shot, re-taken.\n` +
         `${poseLine}${seatingClause}${sceneLine}${extrasLine}\n` +
         `DO NOT COPY from this image: (1) the person's face or identity — the person comes SOLELY from the MODEL REFERENCE image; (2) the main clothing/garment — that comes SOLELY from the GARMENT SOURCE images; (3) the reference's own background/furniture (unless replication) — the scene comes from the SCENE / BACKGROUND reference. Swap in the configured model and garment while PRESERVING the framing, pose${m === "replication" ? ", scene" : ""}${compositionReference.replicateFootwearAccessories ? ", footwear, accessories and held props" : ""} from this reference.`,
@@ -3223,7 +3223,7 @@ export async function generateVTONImage({
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents: contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -3251,7 +3251,7 @@ export async function generateVTONImage({
 }
 
 /**
- * Multi-turn edit: sends the user's edit instruction to gemini-3.1-flash-image-preview
+ * Multi-turn edit: sends the user's edit instruction to gemini-3.1-flash-image
  * with the full conversation history from the original generation + any prior edits.
  */
 export async function editVTONImage({
@@ -3289,7 +3289,7 @@ export async function editVTONImage({
   contents.push({ role: "user", parts: [{ text: editInstruction }] });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -3323,7 +3323,7 @@ export async function editVTONImage({
  *   product reference(s), the AI model reference, and the full multimodal configuration,
  *   plus the user's change marked CRITICAL, write ONE minimal, strictly-constrained
  *   "Change only…" edit instruction.
- * Step B (gemini-3.1-flash-image-preview / Nano Banana 2): replay the original multi-turn
+ * Step B (gemini-3.1-flash-image / Nano Banana 2): replay the original multi-turn
  *   VTON context + edit history and apply ONLY that Pro-authored instruction.
  *
  * Mirrors `editInfographicImage` but enriched for VTON (garment + model identity + config).
@@ -3467,7 +3467,7 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
   contents.push({ role: "user", parts: [{ text: editInstruction }] });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -4056,7 +4056,7 @@ export async function generateModelSwapImage({
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents: contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -4083,7 +4083,7 @@ export async function generateModelSwapImage({
 }
 
 /**
- * Multi-turn edit for model swap: sends the user's edit instruction to gemini-3.1-flash-image-preview
+ * Multi-turn edit for model swap: sends the user's edit instruction to gemini-3.1-flash-image
  * with the full conversation history from the original generation + any prior edits.
  */
 export async function editModelSwapImage({
@@ -4121,7 +4121,7 @@ export async function editModelSwapImage({
   contents.push({ role: "user", parts: [{ text: editInstruction }] });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -4451,7 +4451,7 @@ List up to 6 dominant colors as hex codes matching the fabric's actual colors in
   const imageSize = size <= 512 ? "512" as const : "1K" as const;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -4611,7 +4611,7 @@ CRITICAL: This must be a COMPLETE, FINISHED infographic image — not just the p
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents: contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -4852,7 +4852,7 @@ export async function generateSetProductImage({
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -5121,7 +5121,7 @@ export async function generateUGCImage({
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -5333,7 +5333,7 @@ export async function generateReplicateImage({
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -6056,7 +6056,7 @@ Keep the product exactly the same as in the reference images above. Preserve the
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -6281,7 +6281,7 @@ Render a single, finished, professional product infographic in a ${aspectRatio} 
 }
 
 /**
- * Step 2 — Render the infographic with gemini-3.1-flash-image-preview from the enriched
+ * Step 2 — Render the infographic with gemini-3.1-flash-image from the enriched
  * prompt + product reference images (+ optional brand logo). Returns the saved content
  * parts and response content so the result can be refined via {@link editInfographicImage}.
  */
@@ -6315,7 +6315,7 @@ export async function generateInfographicImage({
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -6495,7 +6495,7 @@ Output ONLY the final image-generation prompt as flowing prose. It MUST restate,
 }
 
 /**
- * Step 2 — render the model with gemini-3.1-flash-image-preview (Nano Banana 2)
+ * Step 2 — render the model with gemini-3.1-flash-image (Nano Banana 2)
  * from the enriched prompt (+ optional face reference). Funnels through
  * `/api/gemini/generate`, so the global 4-concurrent image gate applies.
  */
@@ -6537,7 +6537,7 @@ export async function generateModelImage({
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -6616,7 +6616,7 @@ export async function generateModelViewImage({
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -6749,7 +6749,7 @@ Output a single photorealistic edited image at the SAME aspect ratio and framing
 
 /**
  * Edit-models — Step 2. Renders the edited image with
- * gemini-3.1-flash-image-preview from the source image (Image 1, preserved),
+ * gemini-3.1-flash-image from the source image (Image 1, preserved),
  * an optional reference (Image 2), and the enrichment snippet. Funnels through
  * `/api/gemini/generate`, so the global 4-concurrent image gate applies.
  */
@@ -6795,7 +6795,7 @@ export async function generateModelEditImage({
   });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
@@ -6917,7 +6917,7 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
   contents.push({ role: "user", parts: [{ text: editInstruction }] });
 
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image-preview",
+    model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],

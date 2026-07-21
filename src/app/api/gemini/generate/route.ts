@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
     // tabs (see src/lib/gemini-image-gate.ts). Acquire before the model call so
     // an abort-while-queued is handled cleanly; release in `finally` so the slot
     // is always returned. Non-image Gemini calls (text/prompt) are not gated.
-    const isGeminiImage = params.model === "gemini-3.1-flash-image-preview";
+    const isGeminiImage = params.model === "gemini-3.1-flash-image";
     if (isGeminiImage) {
       try {
         await acquireGeminiImageSlot(request.signal);

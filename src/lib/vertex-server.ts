@@ -90,7 +90,7 @@ let cachedGemini: GoogleGenAI | null = null;
  * `x-google-backend` header on /api/gemini/generate; it never sees the key.
  *
  * Model IDs are backend-agnostic in the unified SDK: the same
- * `gemini-3.1-pro-preview` / `gemini-3.1-flash-image-preview` names used for
+ * `gemini-3.1-pro-preview` / `gemini-3.1-flash-image` names used for
  * Vertex work here unchanged — no model-name remap is required.
  *
  * Throws (server-side only) if the key is not configured.

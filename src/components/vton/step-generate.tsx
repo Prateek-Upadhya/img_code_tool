@@ -395,7 +395,7 @@ function CostBreakdownPopover({ costBreakdown, skip = false }: { costBreakdown?:
         </div>
         <div className="p-3 space-y-3 max-h-[400px] overflow-y-auto">
           {costBreakdown.steps.map((step, idx) => {
-            const isImageGen = step.model === "gemini-3.1-flash-image-preview";
+            const isImageGen = step.model === "gemini-3.1-flash-image";
             return (
               <div key={idx} className="space-y-1.5">
                 <p className="text-[11px] font-semibold text-foreground">{step.label}</p>

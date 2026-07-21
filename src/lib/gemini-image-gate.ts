@@ -1,6 +1,6 @@
 /**
  * Server-only global concurrency gate for Gemini image generation
- * (`gemini-3.1-flash-image-preview`).
+ * (`gemini-3.1-flash-image`).
  *
  * Every infographic image request from every browser tab funnels through the
  * single `/api/gemini/generate` route. This counting semaphore caps the number

@@ -2,7 +2,7 @@ export type ProductCategory = "clothing" | "footwear";
 
 /**
  * Backend used to generate the final VTON image.
- * - `gemini`: Nano Banana 2 (gemini-3.1-flash-image-preview). Default for everything.
+ * - `gemini`: Nano Banana 2 (gemini-3.1-flash-image). Default for everything.
  * - `gpt-image-2`: Azure OpenAI gpt-image-2. Currently exposed only for Footwear VTON.
  */
 export type ImageGenModel = "gemini" | "gpt-image-2";
@@ -176,7 +176,7 @@ export type BackgroundMode = "inspiration" | "text";
  *   `analyzeBackgroundScene`, yielding a product-agnostic frozen scene + flat-lighting
  *   override; the image itself is NEVER attached to the Nano Banana image-gen call.
  * - `"replica"`: scene analysis is skipped. The image is attached directly to
- *   `gemini-3.1-flash-image-preview` (and to the meta-prompter) with an exact-replication
+ *   `gemini-3.1-flash-image` (and to the meta-prompter) with an exact-replication
  *   directive so the generated output preserves the reference background pixel-for-pixel.
  *
  * Only meaningful when `mode === "inspiration"` AND `inspirationImage` is set.

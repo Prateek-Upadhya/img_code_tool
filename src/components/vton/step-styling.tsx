@@ -192,7 +192,7 @@ function BulkModelCard({
  *
  * - "inspiration" (default): the image is analyzed once per batch
  *   (`analyzeBackgroundScene`) and never attached to the image-gen call.
- * - "replica": the image is passed directly to `gemini-3.1-flash-image-preview`
+ * - "replica": the image is passed directly to `gemini-3.1-flash-image`
  *   with an exact-replication directive; scene analysis is skipped.
  */
 function ImageReferenceModeToggle({
