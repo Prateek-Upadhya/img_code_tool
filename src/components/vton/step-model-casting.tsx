@@ -6,12 +6,15 @@ import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  MODEL_GENDER_OPTIONS,
   MODEL_AGE_OPTIONS,
-  MODEL_BODY_TYPE_OPTIONS,
   MODEL_ETHNICITY_OPTIONS,
+  FALLBACK_BODY_TYPE,
+  bodyTypeOptionsForAge,
+  genderOptionsForAge,
+  modelAgeGroup,
 } from "@/lib/constants";
 import { researchBrand } from "@/lib/model-creation-client";
+import type { ModelAgeRange } from "@/lib/types";
 import type { VTONStore } from "@/store/vton-store";
 
 interface Props {
@@ -89,6 +92,26 @@ export function StepModelCasting({ store }: Props) {
   const isPresetEthnicity =
     modelEthnicity === "" || MODEL_ETHNICITY_OPTIONS.includes(modelEthnicity);
 
+  // Gender labels and body-type builds both depend on the age band.
+  const genderOptions = genderOptionsForAge(modelAgeRange);
+  const bodyTypeOptions = bodyTypeOptionsForAge(modelAgeRange);
+
+  const childAgeOptions = MODEL_AGE_OPTIONS.filter((o) => o.group !== "adult");
+  const adultAgeOptions = MODEL_AGE_OPTIONS.filter((o) => o.group === "adult");
+
+  /**
+   * Switching between the adult and child bands swaps the whole body-type set,
+   * so a pick that no longer exists (e.g. "Plus-size" → Toddler) is coerced
+   * back to the shared fallback rather than left dangling.
+   */
+  const handleAgeChange = (age: ModelAgeRange) => {
+    setModelAgeRange(age);
+    const nextOptions = bodyTypeOptionsForAge(age);
+    if (!nextOptions.some((o) => o.value === modelBodyType)) {
+      setModelBodyType(FALLBACK_BODY_TYPE);
+    }
+  };
+
   const handleResearch = async () => {
     if (!modelBrandName.trim() || modelBrandStatus === "researching") return;
     setBrandError(null);
@@ -107,20 +130,49 @@ export function StepModelCasting({ store }: Props) {
     <div className="space-y-10 animate-fade-in-up">
       {/* Casting attributes */}
       <div className="space-y-8">
-        <Field label="Gender" hint="Sets the locked wardrobe for every model in this batch">
-          <div className="flex flex-wrap gap-2">
-            {MODEL_GENDER_OPTIONS.map((o) => (
-              <Pill key={o.value} active={modelGender === o.value} onClick={() => setModelGender(o.value)}>
-                {o.label}
-              </Pill>
-            ))}
+        <Field
+          label="Age"
+          hint="Child bands generate a real child at true child proportions, in the kids base layer"
+        >
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Children
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {childAgeOptions.map((o) => (
+                  <Pill key={o.value} active={modelAgeRange === o.value} onClick={() => handleAgeChange(o.value)}>
+                    {o.label}
+                  </Pill>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Adults
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {adultAgeOptions.map((o) => (
+                  <Pill key={o.value} active={modelAgeRange === o.value} onClick={() => handleAgeChange(o.value)}>
+                    {o.label}
+                  </Pill>
+                ))}
+              </div>
+            </div>
           </div>
         </Field>
 
-        <Field label="Age">
+        <Field
+          label="Gender"
+          hint={
+            modelAgeGroup(modelAgeRange) === "adult"
+              ? "Sets the locked wardrobe for every model in this batch"
+              : "Children of every band wear the same locked base layer — black sleeveless U-neck + black shorts"
+          }
+        >
           <div className="flex flex-wrap gap-2">
-            {MODEL_AGE_OPTIONS.map((o) => (
-              <Pill key={o.value} active={modelAgeRange === o.value} onClick={() => setModelAgeRange(o.value)}>
+            {genderOptions.map((o) => (
+              <Pill key={o.value} active={modelGender === o.value} onClick={() => setModelGender(o.value)}>
                 {o.label}
               </Pill>
             ))}
@@ -129,7 +181,7 @@ export function StepModelCasting({ store }: Props) {
 
         <Field label="Body type">
           <div className="flex flex-wrap gap-2">
-            {MODEL_BODY_TYPE_OPTIONS.map((o) => (
+            {bodyTypeOptions.map((o) => (
               <Pill key={o.value} active={modelBodyType === o.value} onClick={() => setModelBodyType(o.value)}>
                 {o.label}
               </Pill>

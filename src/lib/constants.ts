@@ -1,4 +1,4 @@
-import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SoleConstructionLayerCount, SwatchShape, TextGenModel, TopwearLength } from "./types";
+import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelAgeGroup, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SoleConstructionLayerCount, SwatchShape, TextGenModel, TopwearLength } from "./types";
 
 export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; description: string }[] = [
   { value: "clothing", label: "Clothing", description: "Apparel, garments, and fashion items" },
@@ -3010,13 +3010,49 @@ export const MODEL_GENDER_OPTIONS: { value: ModelCreationGender; label: string; 
   { value: "male", label: "Male", description: "Black short-sleeve tee + black shorts" },
 ];
 
-export const MODEL_AGE_OPTIONS: { value: ModelAgeRange; label: string }[] = [
-  { value: "18-25", label: "18–25" },
-  { value: "26-35", label: "26–35" },
-  { value: "36-45", label: "36–45" },
-  { value: "46-60", label: "46–60" },
-  { value: "60+", label: "60+" },
+/**
+ * Gender pills for the non-adult bands. The wardrobe is gender-neutral for
+ * children, so both options carry the same description; only the casting label
+ * changes (boy / girl).
+ */
+const CHILD_GENDER_OPTIONS: { value: ModelCreationGender; label: string; description: string }[] = [
+  { value: "female", label: "Girl", description: "Black sleeveless U-neck + black shorts" },
+  { value: "male", label: "Boy", description: "Black sleeveless U-neck + black shorts" },
 ];
+
+/**
+ * Casting age bands, children first. `group` is the single source of truth for
+ * the age→life-stage mapping consumed by {@link modelAgeGroup}; `span` is the
+ * plain-English age it denotes, fed verbatim into the enrichment prompt so the
+ * text model anchors on a real-world age rather than parsing the key.
+ */
+export const MODEL_AGE_OPTIONS: {
+  value: ModelAgeRange;
+  label: string;
+  group: ModelAgeGroup;
+  span: string;
+}[] = [
+  { value: "baby-0-12m", label: "Baby · 0–12 mo", group: "baby", span: "0 to 12 months old" },
+  { value: "toddler-1-3", label: "Toddler · 1–3", group: "toddler", span: "1 to 3 years old" },
+  { value: "kid-4-7", label: "Kids · 4–7", group: "kid", span: "4 to 7 years old" },
+  { value: "kid-8-12", label: "Kids · 8–12", group: "kid", span: "8 to 12 years old" },
+  { value: "teen-13-17", label: "Teen · 13–17", group: "teen", span: "13 to 17 years old" },
+  { value: "18-25", label: "18–25", group: "adult", span: "18 to 25 years old" },
+  { value: "26-35", label: "26–35", group: "adult", span: "26 to 35 years old" },
+  { value: "36-45", label: "36–45", group: "adult", span: "36 to 45 years old" },
+  { value: "46-60", label: "46–60", group: "adult", span: "46 to 60 years old" },
+  { value: "60+", label: "60+", group: "adult", span: "over 60 years old" },
+];
+
+/** Life stage an age band belongs to. Unknown/legacy values fall back to adult. */
+export function modelAgeGroup(age: ModelAgeRange): ModelAgeGroup {
+  return MODEL_AGE_OPTIONS.find((o) => o.value === age)?.group ?? "adult";
+}
+
+/** Plain-English age span for an age band, used as a prompt anchor. */
+export function modelAgeSpan(age: ModelAgeRange): string {
+  return MODEL_AGE_OPTIONS.find((o) => o.value === age)?.span ?? String(age);
+}
 
 export const MODEL_BODY_TYPE_OPTIONS: { value: ModelBodyType; label: string; description: string }[] = [
   { value: "slim", label: "Slim", description: "Lean, slight frame" },
@@ -3026,6 +3062,35 @@ export const MODEL_BODY_TYPE_OPTIONS: { value: ModelBodyType; label: string; des
   { value: "plus-size", label: "Plus-size", description: "Fuller-figured, plus proportions" },
   { value: "muscular", label: "Muscular", description: "Strong, well-developed musculature" },
 ];
+
+/**
+ * Builds offered for the non-adult bands. Deliberately separate from the adult
+ * set so "curvy", "plus-size" and "muscular" can never be attached to a child.
+ */
+export const CHILD_BODY_TYPE_OPTIONS: { value: ModelBodyType; label: string; description: string }[] = [
+  { value: "slight", label: "Slight", description: "Small, light, finely built for their age" },
+  { value: "average", label: "Average", description: "Balanced, typical build for their age" },
+  { value: "chubby", label: "Chubby", description: "Soft and rounded, plenty of baby fat" },
+  { value: "sturdy", label: "Sturdy", description: "Solid, stocky, broad little frame" },
+  { value: "athletic", label: "Athletic", description: "Lean and active, naturally sporty" },
+  { value: "tall-for-age", label: "Tall for age", description: "Long-limbed, taller than peers" },
+];
+
+/** Body-type pills valid for an age band — child set for every non-adult band. */
+export function bodyTypeOptionsForAge(age: ModelAgeRange) {
+  return modelAgeGroup(age) === "adult" ? MODEL_BODY_TYPE_OPTIONS : CHILD_BODY_TYPE_OPTIONS;
+}
+
+/** Gender pills for an age band — Boy/Girl wording for every non-adult band. */
+export function genderOptionsForAge(age: ModelAgeRange) {
+  return modelAgeGroup(age) === "adult" ? MODEL_GENDER_OPTIONS : CHILD_GENDER_OPTIONS;
+}
+
+/**
+ * Body type to land on when switching between the adult and child option sets
+ * invalidates the current pick. Present in both sets, so always valid.
+ */
+export const FALLBACK_BODY_TYPE: ModelBodyType = "average";
 
 /** Preset ethnicity / skin-tone options. The UI also allows free-text "Custom". */
 export const MODEL_ETHNICITY_OPTIONS: string[] = [

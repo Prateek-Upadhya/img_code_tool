@@ -23,6 +23,7 @@ import {
   SoleConstructionLayerCount,
   ModelBox,
   ModelCreationGender,
+  ModelAgeGroup,
   ModelAgeRange,
   ModelBodyType,
   ModelImage,
@@ -60,6 +61,8 @@ import {
   INFOGRAPHIC_TEMPLATE_SNIPPETS,
   buildSoleConstructionSnippet,
   INFOGRAPHIC_PROMPTING_PRINCIPLES,
+  modelAgeGroup,
+  modelAgeSpan,
 } from "./constants";
 
 // Pricing per 1M tokens (USD)
@@ -6361,19 +6364,106 @@ export async function generateInfographicImage({
  * pure-white empty studio, neutral comfortable smile, and the flat shadowless
  * high-key lighting (reusing {@link EVEN_HIGH_KEY_LIGHTING_DIRECTIVE}).
  */
-function buildLockedModelDirective(gender: ModelCreationGender): string {
-  const wardrobe =
-    gender === "male"
+function buildLockedModelDirective(gender: ModelCreationGender, ageRange: ModelAgeRange): string {
+  const group = modelAgeGroup(ageRange);
+  const isChild = group !== "adult";
+
+  // Children of every band share ONE gender-neutral base layer; only adults use
+  // the gendered wardrobe.
+  const wardrobe = isChild
+    ? "a plain solid-black sleeveless U-neck top (a simple sleeveless vest with a soft U-shaped neckline, straight hem, no buttons, no prints) and plain solid-black shorts"
+    : gender === "male"
       ? "a plain solid-black short-sleeve crew-neck T-shirt and plain solid-black shorts"
       : "a plain solid-black crop top and plain solid-black shorts";
+
+  // An infant cannot stand unaided, and a toddler's stance is not a small adult's
+  // — so the posture rule is per life stage rather than one "stands upright".
+  const framing =
+    group === "baby"
+      ? "A single full-body shot, head-to-toe — the ENTIRE body from the top of the head down to the bare feet is visible inside the frame. The baby is SEATED on the seamless white floor, centered in frame, in the natural forward-leaning slump of an infant who is only just able to sit; both hands and both bare feet are visible. The baby is NOT standing and is NOT held or supported by another person — no adult hands, arms or bodies appear anywhere in the frame."
+      : group === "toddler"
+        ? "A single full-body shot, head-to-toe — the ENTIRE body from the top of the head down to the bare feet is visible inside the frame. The toddler stands centered on a naturally WIDE, slightly bow-legged base with softly bent knees, feet planted apart for balance, soft rounded belly carried slightly forward, and arms hanging loose and a little away from the body — the authentic unsteady stance of a toddler, never an adult model's poised stance."
+        : "A single full-body shot, head-to-toe — the ENTIRE body from the top of the head down to the bare feet is visible inside the frame; the model stands centered and upright.";
+
+  const expression =
+    group === "baby"
+      ? "A calm, curious, wholly natural infant expression — soft and open, eyes to camera, lips relaxed or in a faint spontaneous smile. NOT a posed or performed smile."
+      : isChild
+        ? "A relaxed, easy, unforced expression natural to a child of this age, eyes to camera — a genuine soft smile or a calm neutral look. NOT an adult model's posed smile, and no self-conscious or performed expression."
+        : "A relaxed, natural, comfortable closed-lip smile that conveys ease and comfort, with eyes to camera.";
+
   return `═══ NON-NEGOTIABLE OUTPUT RULES (ALWAYS APPLY — these OVERRIDE any conflicting instruction) ═══
-- WARDROBE: The model wears ONLY ${wardrobe}. The clothing is matte solid black with NO prints, logos, graphics or patterns. No jacket, no socks, no hat, no jewelry, no accessories, no eyewear.
-- FOOTWEAR: The model is fully BAREFOOT — no shoes, no sandals, no socks; the bare feet are completely visible.
-- FRAMING: A single full-body shot, head-to-toe — the ENTIRE body from the top of the head down to the bare feet is visible inside the frame; the model stands centered and upright.
+- WARDROBE: The ${isChild ? "child" : "model"} wears ONLY ${wardrobe}. The clothing is matte solid black with NO prints, logos, graphics or patterns. No jacket, no socks, no hat, no jewelry, no accessories, no eyewear.
+- FOOTWEAR: The ${isChild ? "child" : "model"} is fully BAREFOOT — no shoes, no sandals, no socks; the bare feet are completely visible.
+- FRAMING: ${framing}
 - BACKGROUND: A completely clean, empty studio with a solid pure-white (#FFFFFF) seamless fill — no props, furniture, textures, gradients, text, or visible horizon line.
-- EXPRESSION: A relaxed, natural, comfortable closed-lip smile that conveys ease and comfort, with eyes to camera.
+- EXPRESSION: ${expression}
 ${EVEN_HIGH_KEY_LIGHTING_DIRECTIVE}`;
 }
+
+/**
+ * Per-life-stage anatomy rules for child models. The dominant failure mode when
+ * an image model renders a child is the "shrunken adult" — adult facial
+ * structure, adult head-to-body ratio and adult posing scaled down — so the
+ * head-count ratio is stated as a measurable landmark and every adult signal is
+ * named and excluded. Eye size is called out specifically: enlarging a child's
+ * eyes is a documented uncanny-valley trigger, and pairing realistic eyes with
+ * airbrushed plastic skin is the other classic tell.
+ */
+function buildChildAnatomyDirective(group: ModelAgeGroup): string {
+  const proportions: Record<string, string> = {
+    baby: "The baby is approximately FOUR of its own head-heights tall — the head is about one quarter of the total body length. The torso is long relative to very short arms and legs.",
+    toddler:
+      "The toddler is approximately FOUR-AND-A-HALF to FIVE of its own head-heights tall — the head is still markedly large for the body. Limbs are short relative to a long torso, and the belly is naturally rounded and carried forward.",
+    kid: "The child is approximately FIVE-AND-A-HALF to SIX-AND-A-HALF of their own head-heights tall — the head is still noticeably large for the body compared with an adult's, and the limbs are beginning to lengthen.",
+    teen: "The teenager is approximately SEVEN to SEVEN-AND-A-HALF of their own head-heights tall — close to but not yet fully at adult proportions, with limbs that read slightly long for the still-narrow frame.",
+  };
+
+  const softness =
+    group === "baby" || group === "toddler"
+      ? `- SOFT INFANT/TODDLER BODY: Arms and legs carry soft rounded fat with visible dimpling at the knuckles, wrists, elbows and knees; wrists and ankles show the characteristic soft crease rings. The belly is round and full, the chest and shoulders narrow and unmuscled, the neck very short so the chin sits close to the chest. Hands and feet are small and plump with short stubby fingers and toes — exactly five fingers on each hand and five toes on each foot, correctly formed.\n`
+      : `- BUILD: The body is slender and unformed — narrow shoulders and hips, a flat undeveloped chest, soft unmuscled limbs, and small hands and feet in correct proportion to the frame, with exactly five correctly formed fingers on each hand.\n`;
+
+  const dentition =
+    group === "baby"
+      ? "Mouth and teeth are age-honest: gums are bare or show at most a couple of small lower milk teeth."
+      : group === "toddler"
+        ? "Mouth and teeth are age-honest: a set of small, even, widely spaced milk teeth."
+        : group === "kid"
+          ? "Mouth and teeth are age-honest: mixed dentition — small milk teeth alongside newer, larger adult teeth, with natural gaps where teeth are still coming through."
+          : "Mouth and teeth are age-honest: a full set of natural, unwhitened adolescent teeth.";
+
+  const hair =
+    group === "baby"
+      ? "Hair is age-honest: fine, wispy, soft and thin — sparse or nearly absent is entirely correct for this age. No styled, cut, thick or groomed adult hair."
+      : group === "toddler"
+        ? "Hair is age-honest: fine, soft and wispy, in a simple uncut or lightly trimmed shape. No styled or salon-groomed adult hair."
+        : "Hair is age-honest: soft, natural, in a simple everyday cut appropriate to a child of this age. No editorial styling, no salon finish.";
+
+  return `═══ CHILD ANATOMY & REALISM (MANDATORY — this is what makes the subject read as a real child) ═══
+- HEAD-TO-BODY RATIO (the single strongest age signal — get this exactly right): ${proportions[group] ?? proportions.kid}
+- SKULL & FACE: The cranium is large relative to the face, with a high, full, rounded forehead and a wide upper skull. The whole facial mass sits LOW on the head. The lower face is short, the chin small, soft and receding, the cheeks full and rounded with natural baby fat.
+- EYES: Proportionate to a real child's face and set LOW on the head, roughly halfway down the total head height. They are NOT enlarged, NOT widened and NOT doll-like — oversized eyes instantly make the image read as an uncanny artificial child rather than a real one.
+- NOSE & FEATURES: A small, short, softly rounded nose with a low bridge; small ears; soft, unformed features throughout.
+${softness}- ${dentition}
+- ${hair}
+- SKIN: Soft, matte and even, with REAL fine skin texture and faint downy vellus hair — never airbrushed, waxy or plastic. A perfectly smooth poreless surface paired with realistic eyes is the classic artificial-image tell and must be avoided. No visible pores, no wrinkles, no blemishes, no adult skin detail.
+- NO ADULT SIGNALS ANYWHERE: no defined musculature, no abdominal definition, no jawline or cheekbone definition, no brow ridge, no long adult neck, no body hair, no adult hand or foot proportions, no makeup, no adult grooming.
+- THE OVERRIDING RULE: This is a REAL child photographed at their true age — not an adult's proportions, face, physique or posing scaled down. If any element reads as a miniature adult, it is wrong.`;
+}
+
+/**
+ * Dignity / integrity rules applied to every non-adult generation. The output is
+ * a plain kidswear catalogue record of garment fit, so the child stays fully
+ * clothed in the locked base layer and behaves like a child rather than a
+ * fashion model. Keeps generations squarely inside provider policy as well.
+ */
+const CHILD_INTEGRITY_DIRECTIVE = `═══ CHILD SUBJECT INTEGRITY (MANDATORY) ═══
+- This is a neutral, wholesome children's-apparel catalogue photograph documenting garment fit — nothing more.
+- The child is FULLY CLOTHED in the specified black sleeveless U-neck top and black shorts at all times; both garments are complete, correctly worn and fully covering.
+- Body language is ordinary and childlike — standing, sitting or simply being — never an adult fashion-model pose, never a mannerism borrowed from adult modelling.
+- No makeup, no jewellery, no nail polish, no adult hairstyling, no adult styling or grooming of any kind.
+- The expression and posture are calm, natural, dignified and age-appropriate throughout.`;
 
 /**
  * Step 1 — enrich a single model brief into a precise, deterministic image-gen
@@ -6407,6 +6497,10 @@ export async function generateModelPrompt({
 }): Promise<{ enrichedPrompt: string; cost: StepCost }> {
   const ai = getTextClient(textGenModel);
 
+  const ageGroup = modelAgeGroup(ageRange);
+  const isChild = ageGroup !== "adult";
+  const subject = isChild ? "child" : "model";
+
   const hasReference = !!box.referenceImage;
   const lockFace = hasReference && box.lockToReferenceFace;
   const distinctFace = !lockFace; // distinct face per variant unless locked to a reference
@@ -6422,17 +6516,23 @@ export async function generateModelPrompt({
   // diversifies across hairstyle → facial features → features + subtle complexion.
   const axisIndex = (variantIndex - 1) % 3;
   const primaryAxis =
-    axisIndex === 0
-      ? "the HAIRSTYLE — give a clearly different cut, length, texture or natural hair colour — while keeping the facial features and complexion close"
-      : axisIndex === 1
-        ? "the FACIAL FEATURES — a different combination of eye shape, nose, lips, brow and jawline — while keeping the hairstyle and complexion close"
-        : `the FACIAL FEATURES together with a fresh hairstyle, plus a VERY subtle complexion shift kept strictly within ${ethnicitySpectrum}`;
+    // Babies have little to no hair, so the hairstyle axis carries almost no
+    // identity signal for them — vary features and hair density instead.
+    axisIndex === 0 && ageGroup === "baby"
+      ? "the FACIAL FEATURES together with the hair density and texture — from nearly bald to a soft covering of fine hair — while keeping the complexion close"
+      : axisIndex === 0
+        ? "the HAIRSTYLE — give a clearly different cut, length, texture or natural hair colour — while keeping the facial features and complexion close"
+        : axisIndex === 1
+          ? "the FACIAL FEATURES — a different combination of eye shape, nose, lips, brow and jawline — while keeping the hairstyle and complexion close"
+          : `the FACIAL FEATURES together with a fresh hairstyle, plus a VERY subtle complexion shift kept strictly within ${ethnicitySpectrum}`;
 
   const referenceDirective = hasReference
     ? lockFace
       ? `A REFERENCE PORTRAIT of a real person is attached. Use ONLY their facial features, face shape, hairstyle, hair color/texture and skin complexion, and recreate that SAME face and hair faithfully and consistently. IGNORE everything else in the reference (its clothing, body, background, pose, framing and lighting). The image model WILL also receive this reference, so keep the identity description consistent with it.`
       : `A REFERENCE PORTRAIT of a real person is attached FOR YOUR ANALYSIS ONLY — it will NOT be shown to the image model. Read it to identify the hairstyle, the set of facial features (eye shape, nose, lips, brow, jaw) and the complexion, and infer the person's ethnicity. Then DESIGN A DISTINCT INDIVIDUAL who is clearly NOT the reference person — a different identity with different facial features — while staying within the SAME ethnicity and complexion spectrum (${ethnicitySpectrum}). Because the image model receives ONLY your written description, describe this new face fully and concretely.`
-    : `No reference image is provided — invent a believable, photogenic face that fits the casting attributes${ethnicity?.trim() ? `, within the ${ethnicitySpectrum} spectrum` : ""}.`;
+    : isChild
+      ? `No reference image is provided — invent an ordinary, natural, real-looking child's face that fits the casting attributes${ethnicity?.trim() ? `, within the ${ethnicitySpectrum} spectrum` : ""}. Cast an everyday child, not a polished editorial or "photogenic" one.`
+      : `No reference image is provided — invent a believable, photogenic face that fits the casting attributes${ethnicity?.trim() ? `, within the ${ethnicitySpectrum} spectrum` : ""}.`;
 
   const variantDirective =
     variantCount > 1
@@ -6442,27 +6542,27 @@ This variant MUST be a genuinely DISTINCT individual — a different person with
         : `This is variant ${variantIndex} of ${variantCount}. Keep the SAME identity (same face, hair and complexion) across every variant; introduce only subtle differences in stance, hand placement, weight shift and camera angle, always within the full-body framing rule.`
       : "";
 
-  const systemPrompt = `You are an expert fashion-casting director and prompt engineer. Write ONE precise, deterministic, self-contained IMAGE-GENERATION PROMPT (flowing prose) that an image model will follow to render a single professional full-body studio photograph of ONE human fashion model.
+  const systemPrompt = `You are an expert ${isChild ? "children's-apparel casting director" : "fashion-casting director"} and prompt engineer. Write ONE precise, deterministic, self-contained IMAGE-GENERATION PROMPT (flowing prose) that an image model will follow to render a single professional full-body studio photograph of ONE ${isChild ? `human ${ageGroup === "baby" ? "baby" : ageGroup === "toddler" ? "toddler" : "child"}, photographed for a children's clothing catalogue` : "human fashion model"}.
 
-${buildLockedModelDirective(gender)}
-
-═══ CASTING ATTRIBUTES (apply to this model) ═══
-- Gender: ${gender}
-- Age range: ${ageRange}
+${buildLockedModelDirective(gender, ageRange)}
+${isChild ? `\n${buildChildAnatomyDirective(ageGroup)}\n\n${CHILD_INTEGRITY_DIRECTIVE}\n` : ""}
+═══ CASTING ATTRIBUTES (apply to this ${subject}) ═══
+- Gender: ${isChild ? (gender === "male" ? "boy" : "girl") : gender}
+${isChild ? `- Age: ${modelAgeSpan(ageRange)} (${ageGroup})` : `- Age range: ${ageRange}`}
 - Body type: ${bodyType}
 ${ethnicity?.trim() ? `- Ethnicity / skin tone: ${ethnicity.trim()}` : ""}
 
-═══ MODEL BRIEF ═══
-${box.description?.trim() ? box.description.trim() : "No extra description — derive a tasteful, on-brand appearance from the casting attributes."}
-${guidelines?.trim() ? `\n═══ ADDITIONAL VISUAL GUIDELINES (apply to every model) ═══\n${guidelines.trim()}` : ""}
-${brandDirectives?.trim() ? `\n═══ BRAND CREATIVE DIRECTION (apply to every model) ═══\n${brandDirectives.trim()}` : ""}
+═══ ${isChild ? "CHILD" : "MODEL"} BRIEF ═══
+${box.description?.trim() ? box.description.trim() : isChild ? "No extra description — derive a natural, everyday child's appearance from the casting attributes." : "No extra description — derive a tasteful, on-brand appearance from the casting attributes."}
+${guidelines?.trim() ? `\n═══ ADDITIONAL VISUAL GUIDELINES (apply to every ${subject}) ═══\n${guidelines.trim()}` : ""}
+${brandDirectives?.trim() ? `\n═══ BRAND CREATIVE DIRECTION (apply to every ${subject}) ═══\n${brandDirectives.trim()}${isChild ? "\nInterpret the brand direction ONLY through the background-free studio treatment and the child's natural, age-appropriate look — never through styling, makeup, grooming, accessories or posing." : ""}` : ""}
 
 ═══ FACE / IDENTITY ═══
 ${referenceDirective}
 ${variantDirective ? `\n═══ VARIATION ═══\n${variantDirective}` : ""}
 
 ═══ OUTPUT FORMAT ═══
-Output ONLY the final image-generation prompt as flowing prose. It MUST restate, in positive photographic language: the full-body head-to-toe framing, the barefoot feet, the exact black wardrobe for this gender, the pure-white empty studio background, the neutral comfortable closed-lip smile, and the flat, even, shadowless high-key lighting (include the verbatim lighting anchor sentence). Describe the model's face, hair, complexion, build and styling in concrete, unambiguous detail — the image model relies on this text to render the identity and does NOT see the reference image unless the face is locked. No preamble, no commentary.`;
+Output ONLY the final image-generation prompt as flowing prose. It MUST restate, in positive photographic language: the full-body head-to-toe framing, the barefoot feet, the exact black wardrobe${isChild ? " (black sleeveless U-neck top + black shorts)" : " for this gender"}, the pure-white empty studio background, ${isChild ? `the ${ageGroup === "baby" ? "seated infant posture" : ageGroup === "toddler" ? "wide, softly bent-kneed toddler stance" : "natural upright stance"}, the natural age-appropriate expression, the explicit head-to-body ratio in head-heights, and the child-anatomy rules (large rounded cranium, low-set proportionate NON-enlarged eyes, short chin, full cheeks, soft unmuscled build, real skin texture)` : "the neutral comfortable closed-lip smile"}, and the flat, even, shadowless high-key lighting (include the verbatim lighting anchor sentence). Describe the ${subject}'s face, hair, complexion, build and styling in concrete, unambiguous detail — the image model relies on this text to render the identity and does NOT see the reference image unless the face is locked.${isChild ? " State plainly that the subject is a real child of the stated age with true child proportions, never an adult scaled down." : ""} No preamble, no commentary.`;
 
   const contents: ContentPart[] = [{ text: systemPrompt }];
   if (box.referenceImage) {
@@ -6533,7 +6633,10 @@ export async function generateModelImage({
   }
 
   contents.push({
-    text: `═══ FASHION MODEL TO RENDER ═══\n${prompt}\n\nRender a single photorealistic, full-body, head-to-toe studio photograph in a ${aspectRatio} canvas.`,
+    // Deliberately neutral heading — this path renders adult models and child
+    // catalogue subjects alike, and the enriched prompt already carries the
+    // age-specific wardrobe, posture and anatomy rules.
+    text: `═══ SUBJECT TO RENDER ═══\n${prompt}\n\nRender a single photorealistic, full-body, head-to-toe studio photograph in a ${aspectRatio} canvas.`,
   });
 
   const response = await ai.models.generateContent({
@@ -6568,7 +6671,10 @@ export async function generateModelImage({
 /** View-specific rendering blocks for {@link generateModelViewImage}. */
 export function buildModelViewPrompt(view: ModelViewKind): string {
   if (view === "face-closeup") {
-    return `Render a close-up beauty portrait of the SAME person shown in the source photograph, facing the camera directly. Reproduce the person's facial features, face shape, eye color, eyebrows, hairstyle, hair color and texture, skin tone, complexion and makeup EXACTLY as they appear in the source — this is the same individual, photographed closer.
+    // "beauty portrait" is deliberately avoided — this renders child subjects as
+    // well as adults, and the source photograph is the identity source of truth
+    // either way.
+    return `Render a close-up portrait of the SAME person shown in the source photograph, facing the camera directly. Reproduce the person's facial features, face shape, eye color, eyebrows, hairstyle, hair color and texture, skin tone, complexion and any makeup EXACTLY as they appear in the source — this is the same individual, photographed closer.
 
 FRAMING: head-and-shoulders close-up — upper boundary just above the top of the head (including hair volume), lower boundary at the collarbone. The face is sharp, centered and fills most of the frame.
 
