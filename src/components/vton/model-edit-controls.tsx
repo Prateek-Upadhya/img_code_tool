@@ -7,8 +7,14 @@ import { MODEL_EDIT_CATEGORIES } from "@/lib/constants";
 
 interface Props {
   disabled?: boolean;
-  /** Fired with the composed change directive + a short human label. */
-  onApply: (directive: string, label: string) => void;
+  /**
+   * Fired with the composed change directive, a short human label, and the
+   * structured category keys that contributed to it. The keys let the caller
+   * tell — deterministically, without sniffing the prose — which attributes the
+   * edit is allowed to move (see the skin-tone handling in
+   * model-refine-panel.tsx). Freeform-only text contributes no keys.
+   */
+  onApply: (directive: string, label: string, categoryKeys: string[]) => void;
 }
 
 /**
@@ -31,29 +37,31 @@ export function ModelEditControls({ disabled, onApply }: Props) {
     });
   };
 
-  const { directive, label } = useMemo(() => {
+  const { directive, label, categoryKeys } = useMemo(() => {
     const sentences: string[] = [];
     const labelParts: string[] = [];
+    const keys: string[] = [];
     for (const cat of MODEL_EDIT_CATEGORIES) {
       const value = selections[cat.key];
       if (!value) continue;
       sentences.push(cat.template.replace("{v}", value));
       const opt = cat.options.find((o) => o.value === value);
       labelParts.push(`${cat.label}: ${opt?.label ?? value}`);
+      keys.push(cat.key);
     }
     const extra = freeform.trim();
     if (extra) {
       sentences.push(extra);
       labelParts.push(extra.length > 40 ? `${extra.slice(0, 40)}…` : extra);
     }
-    return { directive: sentences.join(" "), label: labelParts.join(" · ") };
+    return { directive: sentences.join(" "), label: labelParts.join(" · "), categoryKeys: keys };
   }, [selections, freeform]);
 
   const canApply = directive.length > 0 && !disabled;
 
   const handleApply = () => {
     if (!canApply) return;
-    onApply(directive, label);
+    onApply(directive, label, categoryKeys);
     setSelections({});
     setFreeform("");
   };

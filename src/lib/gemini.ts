@@ -6828,6 +6828,63 @@ Output ONLY the snippet text.`;
   return { editInstruction: text.trim(), cost };
 }
 
+/** Which SOURCE attributes a model edit is allowed to change. */
+export interface ModelEditPreservationOptions {
+  /**
+   * Face-sync: the full body is being re-rendered from an edited face close-up,
+   * so identity, hair AND complexion all come from the REFERENCE.
+   */
+  identityFromReference?: boolean;
+  /**
+   * The requested edit is itself a complexion change, so skin tone must not be
+   * pinned to the SOURCE even though identity and hair still are.
+   */
+  releaseSkinTone?: boolean;
+}
+
+/**
+ * The "everything else stays put" sentence shared by both model-edit paths
+ * (Nano Banana here, gpt-image-2 in `azure-image.ts`) so the two can never
+ * drift apart again.
+ *
+ * `identityFromReference` is the face-sync case: the full-body shot is being
+ * re-rendered from an edited face close-up, so identity, hair AND complexion
+ * all come from the REFERENCE. Listing them as "preserve from SOURCE" here
+ * would directly contradict the edit instruction — the old body's skin tone
+ * would win and the re-toned head would sit on an un-toned body.
+ */
+export function buildModelEditPreservationClause({
+  identityFromReference = false,
+  releaseSkinTone = false,
+}: ModelEditPreservationOptions = {}): string {
+  const preserved: string[] = [];
+  // Face-sync takes identity + hair from the REFERENCE, so they must not be
+  // pinned to the SOURCE.
+  if (!identityFromReference) preserved.push("face and identity", "hairstyle", "hair color");
+  // Skin tone is released either because the REFERENCE supplies it (face-sync)
+  // or because the requested edit is itself a complexion change.
+  if (!identityFromReference && !releaseSkinTone) preserved.push("skin tone");
+  preserved.push(
+    "clothing and garments",
+    "pose and body position",
+    "hands",
+    "background",
+    "lighting",
+    "shadows",
+    "camera framing and crop",
+    "and aspect ratio"
+  );
+  return `Maintain the identical ${preserved.join(", ")} from the SOURCE image. Every region of the SOURCE image that the requested change does not explicitly touch stays exactly as it is.`;
+}
+
+/**
+ * Whole-body complexion transfer, appended only in the face-sync case. A face
+ * close-up shows the head alone, so without naming every skin region the model
+ * re-tones the face and leaves the neck, arms and legs at the source's tone —
+ * producing a visible seam at the jaw and shoulders.
+ */
+export const MODEL_EDIT_COMPLEXION_SYNC_CLAUSE = `COMPLEXION: The skin tone shown in the REFERENCE image is the definitive source of truth for this person's complexion. Render that exact complexion — the same depth, the same undertone — evenly across EVERY area of exposed skin in the output: face, ears, neck, throat, chest, shoulders, arms, forearms, hands and fingers, legs, knees, feet and toes. No region keeps the SOURCE image's previous tone, and the transition at the jaw, neck and shoulders is seamless, with the whole body reading as one person with one consistent skin tone. The SOURCE image's lighting, shadow placement and exposure are unchanged — the complexion changes, the light does not.`;
+
 /**
  * Builds the multimodal content parts for a single-attribute model edit with
  * Nano Banana: Image 1 (source, preserve) + optional Image 2 (reference, take
@@ -6838,17 +6895,22 @@ export function buildModelEditPrompt({
   editInstruction,
   referenceDirective,
   hasReference,
+  identityFromReference = false,
+  releaseSkinTone = false,
 }: {
   editInstruction: string;
   referenceDirective?: string;
   hasReference: boolean;
-}): string {
+} & ModelEditPreservationOptions): string {
   const refClause = hasReference
     ? `\n\nTake ONLY ${referenceDirective?.trim() || "the guidance for the requested change"} from the REFERENCE image; ignore everything else about it — its identity, clothing, pose, background, lighting and framing are irrelevant.`
     : "";
-  return `Edit the SOURCE image. Change ONLY: ${editInstruction.trim()}.${refClause}
+  const complexionClause = identityFromReference
+    ? `\n\n${MODEL_EDIT_COMPLEXION_SYNC_CLAUSE}`
+    : "";
+  return `Edit the SOURCE image. Change ONLY: ${editInstruction.trim()}.${refClause}${complexionClause}
 
-Maintain the identical face and identity, hairstyle, hair color, skin tone, clothing and garments, pose and body position, hands, background, lighting, shadows, camera framing and crop, and aspect ratio from the SOURCE image. Every region of the SOURCE image that the requested change does not explicitly touch stays exactly as it is.
+${buildModelEditPreservationClause({ identityFromReference, releaseSkinTone })}
 
 Output a single photorealistic edited image at the SAME aspect ratio and framing as the SOURCE image.`;
 }
@@ -6865,6 +6927,8 @@ export async function generateModelEditImage({
   sourceImage,
   referenceImage,
   referenceDirective,
+  identityFromReference = false,
+  releaseSkinTone = false,
   aspectRatio,
   imageSize = "2K",
   abortSignal,
@@ -6877,7 +6941,7 @@ export async function generateModelEditImage({
   aspectRatio: AspectRatio;
   imageSize?: "1K" | "2K" | "4K";
   abortSignal?: AbortSignal;
-}): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
+} & ModelEditPreservationOptions): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
   const ai = getGeminiClient(apiKey);
   const hasReference = !!referenceImage;
 
@@ -6897,7 +6961,7 @@ export async function generateModelEditImage({
   }
 
   contents.push({
-    text: `═══ THE EDIT TO PERFORM ═══\n${buildModelEditPrompt({ editInstruction, referenceDirective, hasReference })}`,
+    text: `═══ THE EDIT TO PERFORM ═══\n${buildModelEditPrompt({ editInstruction, referenceDirective, hasReference, identityFromReference, releaseSkinTone })}`,
   });
 
   const response = await ai.models.generateContent({

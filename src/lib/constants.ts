@@ -2974,6 +2974,24 @@ export const MODEL_EDIT_CATEGORIES: ModelEditCategory[] = [
     ],
   },
   {
+    /**
+     * Relative shade steps, deliberately not absolute complexions: each option
+     * states that the undertone and ethnicity are otherwise unchanged, so a
+     * shade adjustment never reads as recasting the model.
+     */
+    key: "skin-tone",
+    label: "Skin tone",
+    template: "Shift the complexion to be {v}.",
+    options: [
+      { value: "very slightly lighter, with the same undertone and the same ethnicity otherwise unchanged", label: "Slightly lighter" },
+      { value: "noticeably lighter, with the same undertone and the same ethnicity otherwise unchanged", label: "Lighter" },
+      { value: "very slightly deeper, with the same undertone and the same ethnicity otherwise unchanged", label: "Slightly deeper" },
+      { value: "noticeably deeper, with the same undertone and the same ethnicity otherwise unchanged", label: "Deeper" },
+      { value: "the same depth but with a warmer, more golden undertone, the ethnicity otherwise unchanged", label: "Warmer undertone" },
+      { value: "the same depth but with a cooler, more neutral undertone, the ethnicity otherwise unchanged", label: "Cooler undertone" },
+    ],
+  },
+  {
     key: "skin",
     label: "Skin finish",
     template: "Give the skin a {v} finish.",
