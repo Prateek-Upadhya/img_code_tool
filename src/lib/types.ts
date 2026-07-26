@@ -444,21 +444,55 @@ export type NamingLogic = "folder-name-sequential" | "folder-name-sequential-1";
 // --- AI Model Creation Types ---
 
 /**
- * Model gender. Only male/female (no unisex) because the locked wardrobe rule is
- * gender-specific: men → black short-sleeve T-shirt + black shorts; women →
- * black crop top + black shorts.
+ * Model gender. Only male/female (no unisex) because the ADULT locked wardrobe
+ * rule is gender-specific: men → black short-sleeve T-shirt + black shorts;
+ * women → black crop top + black shorts. Every non-adult age band (baby →
+ * teen) shares one gender-neutral wardrobe instead — a black sleeveless U-neck
+ * top + black shorts — so for those bands this field only drives casting
+ * (boy / girl), not the clothing.
  */
 export type ModelCreationGender = "male" | "female";
 
-export type ModelAgeRange = "18-25" | "26-35" | "36-45" | "46-60" | "60+";
+/**
+ * Casting age band. The child bands use semantic keys rather than bare number
+ * ranges so their labels can be reworded without migrating persisted
+ * {@link SavedModel} records; the adult keys are byte-identical to the original
+ * five, so models saved before child support keep validating.
+ */
+export type ModelAgeRange =
+  // Children — see MODEL_AGE_OPTIONS for the age→group mapping.
+  | "baby-0-12m"
+  | "toddler-1-3"
+  | "kid-4-7"
+  | "kid-8-12"
+  | "teen-13-17"
+  // Adults
+  | "18-25"
+  | "26-35"
+  | "36-45"
+  | "46-60"
+  | "60+";
+
+/**
+ * Coarse life-stage an age band belongs to. This — not the raw band — is the
+ * axis every wardrobe / posture / anatomy prompt branch and casting-option
+ * helper keys off.
+ */
+export type ModelAgeGroup = "baby" | "toddler" | "kid" | "teen" | "adult";
 
 export type ModelBodyType =
+  // Adult builds
   | "slim"
   | "athletic"
   | "average"
   | "curvy"
   | "plus-size"
-  | "muscular";
+  | "muscular"
+  // Child builds ("average" and "athletic" are shared with the adult set)
+  | "slight"
+  | "chubby"
+  | "sturdy"
+  | "tall-for-age";
 
 export interface ModelReferenceImage {
   file: File;
