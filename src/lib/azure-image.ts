@@ -27,7 +27,7 @@ import type {
   StepCost,
   TokenUsage,
 } from "./types";
-import { buildModelViewPrompt } from "./gemini";
+import { buildModelViewPrompt, MODEL_EDIT_COMPLEXION_SYNC_CLAUSE } from "./gemini";
 
 // --- Size resolver -------------------------------------------------------
 
@@ -407,6 +407,10 @@ export interface AzureModelEditImageArgs {
   sourceImage: { file: File };
   referenceImage?: { file: File };
   referenceDirective?: string;
+  /** Face-sync: identity, hair and complexion come from the REFERENCE, not the SOURCE. */
+  identityFromReference?: boolean;
+  /** The edit is itself a complexion change, so skin tone is not pinned to the SOURCE. */
+  releaseSkinTone?: boolean;
   aspectRatio: AspectRatio;
   imageSize: "1K" | "2K" | "4K";
 }
@@ -423,6 +427,8 @@ export async function generateModelEditImageAzure({
   sourceImage,
   referenceImage,
   referenceDirective,
+  identityFromReference = false,
+  releaseSkinTone = false,
   aspectRatio,
   imageSize,
 }: AzureModelEditImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
@@ -433,7 +439,26 @@ export async function generateModelEditImageAzure({
         referenceDirective?.trim() || "guidance for the requested change"
       } from it and ignore everything else about it.`
     : "";
-  const prompt = `Edit the first attached image (the SOURCE). Change ONLY: ${editInstruction.trim()}.${refClause} Maintain the identical face and identity, hairstyle, hair color, skin tone, clothing, pose and body position, hands, background, lighting, shadows, framing and crop from the source image — every region the change does not touch stays exactly the same. Output a single photorealistic edited image keeping the same framing as the source.`;
+  // The preservation sentence stays in gpt-image-2's flat, order-referenced
+  // phrasing (it has no slot labels), but it branches on the SAME flag as the
+  // Nano Banana path — see buildModelEditPreservationClause in gemini.ts. In the
+  // face-sync case identity, hair and complexion come from the REFERENCE, so
+  // pinning them to the source here would cancel the edit out.
+  const preservedParts: string[] = [];
+  if (!identityFromReference) preservedParts.push("face and identity", "hairstyle", "hair color");
+  if (!identityFromReference && !releaseSkinTone) preservedParts.push("skin tone");
+  preservedParts.push(
+    "clothing",
+    "pose and body position",
+    "hands",
+    "background",
+    "lighting",
+    "shadows",
+    "framing and crop"
+  );
+  const preserved = preservedParts.join(", ");
+  const complexionClause = identityFromReference ? ` ${MODEL_EDIT_COMPLEXION_SYNC_CLAUSE}` : "";
+  const prompt = `Edit the first attached image (the SOURCE). Change ONLY: ${editInstruction.trim()}.${refClause}${complexionClause} Maintain the identical ${preserved} from the source image — every region the change does not touch stays exactly the same. Output a single photorealistic edited image keeping the same framing as the source.`;
 
   const form = new FormData();
   form.append("prompt", prompt);

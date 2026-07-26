@@ -54,10 +54,18 @@ function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-/** What the full body must copy from an edited face close-up on re-sync. */
+/**
+ * What the full body must copy from an edited face close-up on re-sync.
+ * Complexion is included deliberately: the close-up is the identity source of
+ * truth, so a skin-tone edit there has to travel to the body — otherwise a
+ * re-toned head ends up on a body still at the old shade. The image prompt's
+ * companion clause (MODEL_EDIT_COMPLEXION_SYNC_CLAUSE) spells out the full skin
+ * inventory; this names the intent.
+ */
 const FACE_SYNC_INSTRUCTION =
-  "the model's face, facial features, hairstyle, hair color and makeup exactly match the REFERENCE image";
-const FACE_SYNC_REFERENCE_DIRECTIVE = "the face, hairstyle, hair color and makeup";
+  "the model's face, facial features, skin tone and complexion, hairstyle, hair color and makeup exactly match the REFERENCE image, with that complexion carried evenly across every area of exposed skin on the whole body";
+const FACE_SYNC_REFERENCE_DIRECTIVE =
+  "the face, skin tone and complexion, hairstyle, hair color and makeup";
 
 const VIEW_META: Record<ModelViewKind, { key: "faceCloseUp" | "backHead"; title: string }> = {
   "face-closeup": { key: "faceCloseUp", title: "Face close-up" },
@@ -165,9 +173,13 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
 
   /** Stage 1 — apply the composed directive to the face close-up only. */
   const handleApplyEdit = useCallback(
-    async (directive: string, label: string) => {
+    async (directive: string, label: string, categoryKeys: string[] = []) => {
       const closeUp = data.faceCloseUp?.imageData;
       if (!closeUp || busy) return;
+      // A complexion edit has to be exempted from the "preserve skin tone"
+      // rule, or the preservation clause cancels the very change requested.
+      // Driven off the structured selection, so there is no text sniffing.
+      const releaseSkinTone = categoryKeys.includes("skin-tone");
       setEditError(null);
       setEditStage("editing");
       beginOp();
@@ -184,6 +196,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
             ? await generateModelEditImageAzure({
                 editInstruction: instr.editInstruction,
                 sourceImage: { file },
+                releaseSkinTone,
                 aspectRatio,
                 imageSize: "2K",
               })
@@ -191,6 +204,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
                 apiKey,
                 editInstruction: instr.editInstruction,
                 sourceImage: { file },
+                releaseSkinTone,
                 aspectRatio,
                 imageSize: "2K",
               });
@@ -241,6 +255,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
               sourceImage: { file: bodyFile },
               referenceImage: { file: refFile },
               referenceDirective: FACE_SYNC_REFERENCE_DIRECTIVE,
+              identityFromReference: true,
               aspectRatio,
               imageSize: "2K",
             })
@@ -250,6 +265,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
               sourceImage: { file: bodyFile },
               referenceImage: { file: refFile },
               referenceDirective: FACE_SYNC_REFERENCE_DIRECTIVE,
+              identityFromReference: true,
               aspectRatio,
               imageSize: "2K",
             });
@@ -506,7 +522,10 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
             re-sync from the result.
           </p>
         )}
-        <ModelEditControls disabled={!canEdit || busy} onApply={(d, l) => void handleApplyEdit(d, l)} />
+        <ModelEditControls
+          disabled={!canEdit || busy}
+          onApply={(d, l, keys) => void handleApplyEdit(d, l, keys)}
+        />
       </div>
 
       {/* Version history */}
