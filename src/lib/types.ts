@@ -559,6 +559,12 @@ export interface ModelCreationResult extends ModelRefineFields {
   id: string;
   boxId: string;
   boxName: string;
+  /**
+   * Casting age band this result was generated at. Captured per result rather
+   * than read live from the store so the Refine step still targets the right
+   * `personGeneration` after the casting attributes are changed.
+   */
+  ageRange: ModelAgeRange;
   /** 1-based variant number within this box. */
   variantIndex: number;
   variantCount: number;

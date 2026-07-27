@@ -27,13 +27,19 @@ import { dataUrlToFile, imageAspectRatio } from "@/lib/model-creation-client";
 import { downloadModelZip } from "@/lib/model-zip";
 import { ModelEditControls } from "./model-edit-controls";
 import type { VTONStore } from "@/store/vton-store";
-import type { ModelVersion, ModelViewKind, ModelViewResult } from "@/lib/types";
+import type { ModelAgeGroup, ModelVersion, ModelViewKind, ModelViewResult } from "@/lib/types";
 
 /** The refine-able slice of a ModelCreationResult or SavedModel. */
 export interface ModelRefineData {
   name: string;
   /** Full-body image as a data URL. */
   imageData: string;
+  /**
+   * Life stage of the subject, driving `personGeneration` on every refine
+   * render. Optional so pre-existing library entries without an age still load;
+   * those fall back to adult in the image helpers.
+   */
+  ageGroup?: ModelAgeGroup;
   faceCloseUp?: ModelViewResult;
   backHead?: ModelViewResult;
   versions?: ModelVersion[];
@@ -128,6 +134,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
                 apiKey,
                 sourceImage: { file },
                 view,
+                ageGroup: data.ageGroup,
                 aspectRatio,
                 imageSize: "2K",
               });
@@ -205,6 +212,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
                 editInstruction: instr.editInstruction,
                 sourceImage: { file },
                 releaseSkinTone,
+                ageGroup: data.ageGroup,
                 aspectRatio,
                 imageSize: "2K",
               });
@@ -266,6 +274,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
               referenceImage: { file: refFile },
               referenceDirective: FACE_SYNC_REFERENCE_DIRECTIVE,
               identityFromReference: true,
+              ageGroup: data.ageGroup,
               aspectRatio,
               imageSize: "2K",
             });

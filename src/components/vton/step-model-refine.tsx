@@ -5,6 +5,7 @@ import { Archive, Check, Library, Save } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { loadSavedModels, saveModel } from "@/lib/model-library";
 import { downloadModelsZip, type ModelZipEntry } from "@/lib/model-zip";
+import { modelAgeGroup } from "@/lib/constants";
 import { ModelRefinePanel, type ModelRefinePatch } from "./model-refine-panel";
 import type { VTONStore } from "@/store/vton-store";
 import type { ModelCreationResult, SavedModel } from "@/lib/types";
@@ -275,6 +276,13 @@ export function StepModelRefine({ store }: Props) {
                 selected.source === "result"
                   ? selected.result!.imageData!
                   : selected.saved!.imageData,
+              // Both sources carry the band the model was cast at, so refine
+              // renders keep the same personGeneration as the original.
+              ageGroup: modelAgeGroup(
+                selected.source === "result"
+                  ? selected.result!.ageRange
+                  : selected.saved!.ageRange
+              ),
               faceCloseUp:
                 selected.source === "result"
                   ? selected.result!.faceCloseUp

@@ -1,4 +1,4 @@
-import { ThinkingLevel } from "@google/genai";
+import { HarmBlockThreshold, HarmCategory, ThinkingLevel } from "@google/genai";
 import { getGeminiClient } from "./gemini-client";
 import { getTextClient } from "./text-client";
 import { fileToBase64Cached } from "./image-downscale";
@@ -122,6 +122,125 @@ export function computeImageGenCost(label: string, tokens: TokenUsage, imageSize
 // shared across the prompt-gen + image-gen requests. See src/lib/image-downscale.ts.
 function fileToBase64(file: File): Promise<string> {
   return fileToBase64Cached(file);
+}
+
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║              PROVIDER SAFETY / PERSON-GENERATION CONFIG           ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+
+/**
+ * Vertex defaults `imageConfig.personGeneration` to ALLOW_ADULT, documented in
+ * the SDK as "Generate images of adults, but not children". Leaving it unset
+ * therefore refuses every non-adult casting band at the API — before the prompt
+ * is even considered — so each band must opt into ALLOW_ALL explicitly.
+ *
+ * ALLOW_ALL is gated: it requires per-project allowlisting from Google and is
+ * unavailable in EU/UK/CH/MENA. A project without that grant gets a permission
+ * error, which {@link classifyImageGenFailure} turns into an actionable message
+ * rather than a generic "no image generated".
+ *
+ * Adults are pinned to ALLOW_ADULT rather than left implicit so the behaviour
+ * stops depending on a provider default that could change under us.
+ */
+export function personGenerationFor(group: ModelAgeGroup): "ALLOW_ALL" | "ALLOW_ADULT" {
+  return group === "adult" ? "ALLOW_ADULT" : "ALLOW_ALL";
+}
+
+/**
+ * The four CONFIGURABLE harm categories, relaxed for this commercial apparel
+ * catalogue pipeline. Body- and garment-descriptive fashion prompts otherwise
+ * draw occasional false positives from SEXUALLY_EXPLICIT at the default
+ * BLOCK_MEDIUM_AND_ABOVE threshold.
+ *
+ * IMPORTANT — do not mistake this for a general "safety off" switch. Google runs
+ * NON-CONFIGURABLE filters (child safety / CSAM, PII) ABOVE these four, and
+ * those cannot be disabled by any threshold. A PROHIBITED_CONTENT finish reason
+ * comes from that upper layer and is entirely unaffected by the settings below.
+ */
+const IMAGE_SAFETY_SETTINGS = [
+  HarmCategory.HARM_CATEGORY_HARASSMENT,
+  HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+  HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+  HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+].map((category) => ({ category, threshold: HarmBlockThreshold.OFF }));
+
+/** Finish reasons that mean the provider refused on content grounds. */
+const BLOCKED_FINISH_REASONS = new Set([
+  "IMAGE_SAFETY",
+  "PROHIBITED_CONTENT",
+  "SAFETY",
+  "BLOCKLIST",
+  "RECITATION",
+]);
+
+/**
+ * A content refusal, as distinct from a transient empty response. Callers use
+ * this to skip the blind retry — re-running an identical request that was
+ * refused deterministically just burns a second full pipeline.
+ */
+export class ImageSafetyBlockError extends Error {
+  readonly reason: string;
+  constructor(reason: string) {
+    super(`Blocked by safety filters (${reason}).`);
+    this.name = "ImageSafetyBlockError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * The project is not allowlisted for `personGeneration: ALLOW_ALL`, so child
+ * age bands cannot be rendered at all. This is a Google-side entitlement, not
+ * something a prompt or retry can work around — so say exactly that.
+ */
+export class PersonGenerationNotAllowlistedError extends Error {
+  constructor() {
+    super(
+      "Child model generation requires personGeneration: ALLOW_ALL, which this Google Cloud project is not allowlisted for. Request access from Google, or switch to an adult age band."
+    );
+    this.name = "PersonGenerationNotAllowlistedError";
+  }
+}
+
+/** Shape of the bits of a generateContent response we inspect for refusals. */
+type ImageGenResponse = {
+  candidates?: { finishReason?: string }[];
+  promptFeedback?: { blockReason?: string };
+};
+
+/**
+ * Called when an image response carried no inline image data. Distinguishes a
+ * content refusal from an ordinary empty response so the caller can react
+ * appropriately, instead of the previous behaviour where every cause collapsed
+ * into one opaque "No image generated" string.
+ */
+function throwImageGenFailure(response: ImageGenResponse, label: string): never {
+  const finishReason = response.candidates?.[0]?.finishReason;
+  const blockReason = response.promptFeedback?.blockReason;
+
+  if (blockReason) throw new ImageSafetyBlockError(blockReason);
+  if (finishReason && BLOCKED_FINISH_REASONS.has(finishReason)) {
+    throw new ImageSafetyBlockError(finishReason);
+  }
+
+  throw new Error(`No ${label} generated from Nano Banana 2`);
+}
+
+/**
+ * Maps a thrown transport/API error onto {@link PersonGenerationNotAllowlistedError}
+ * when it is really the ALLOW_ALL entitlement being refused. Vertex reports this
+ * as a permission or invalid-argument error naming the field, which would
+ * otherwise read as an unrelated server fault.
+ */
+export function classifyImageGenFailure(error: unknown): unknown {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  if (
+    lower.includes("persongeneration") ||
+    (lower.includes("allow_all") && (lower.includes("permission") || lower.includes("allowlist")))
+  ) {
+    return new PersonGenerationNotAllowlistedError();
+  }
+  return error;
 }
 
 /**
@@ -6602,6 +6721,7 @@ Output ONLY the final image-generation prompt as flowing prose. It MUST restate,
 export async function generateModelImage({
   apiKey,
   prompt,
+  ageGroup,
   referenceImage,
   lockToReferenceFace = false,
   aspectRatio,
@@ -6610,6 +6730,8 @@ export async function generateModelImage({
 }: {
   apiKey: string;
   prompt: string;
+  /** Drives `personGeneration` — non-adult bands need ALLOW_ALL to render at all. */
+  ageGroup: ModelAgeGroup;
   referenceImage?: { file: File };
   lockToReferenceFace?: boolean;
   aspectRatio: AspectRatio;
@@ -6639,15 +6761,25 @@ export async function generateModelImage({
     text: `═══ SUBJECT TO RENDER ═══\n${prompt}\n\nRender a single photorealistic, full-body, head-to-toe studio photograph in a ${aspectRatio} canvas.`,
   });
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image",
-    contents,
-    config: {
-      responseModalities: ["TEXT", "IMAGE"],
-      imageConfig: { aspectRatio, imageSize },
-      abortSignal,
-    },
-  });
+  let response;
+  try {
+    response = await ai.models.generateContent({
+      model: "gemini-3.1-flash-image",
+      contents,
+      config: {
+        responseModalities: ["TEXT", "IMAGE"],
+        imageConfig: {
+          aspectRatio,
+          imageSize,
+          personGeneration: personGenerationFor(ageGroup),
+        },
+        safetySettings: IMAGE_SAFETY_SETTINGS,
+        abortSignal,
+      },
+    });
+  } catch (error) {
+    throw classifyImageGenFailure(error);
+  }
 
   const tokens = extractTokenUsage(response);
   const cost = computeImageGenCost("Model Image (Nano Banana 2)", tokens, imageSize);
@@ -6665,7 +6797,7 @@ export async function generateModelImage({
     }
   }
 
-  throw new Error("No model image generated from Nano Banana 2");
+  throwImageGenFailure(response, "model image");
 }
 
 /** View-specific rendering blocks for {@link generateModelViewImage}. */
@@ -6697,6 +6829,7 @@ export async function generateModelViewImage({
   apiKey,
   sourceImage,
   view,
+  ageGroup = "adult",
   aspectRatio,
   imageSize = "2K",
   abortSignal,
@@ -6704,6 +6837,8 @@ export async function generateModelViewImage({
   apiKey: string;
   sourceImage: { file: File };
   view: ModelViewKind;
+  /** Drives `personGeneration`. Defaults to adult for legacy library entries. */
+  ageGroup?: ModelAgeGroup;
   aspectRatio: AspectRatio;
   imageSize?: "1K" | "2K" | "4K";
   abortSignal?: AbortSignal;
@@ -6721,15 +6856,25 @@ export async function generateModelViewImage({
     text: `═══ SHOT TO RENDER ═══\n${buildModelViewPrompt(view)}\n\nOutput a single photorealistic photograph in a ${aspectRatio} canvas.`,
   });
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image",
-    contents,
-    config: {
-      responseModalities: ["TEXT", "IMAGE"],
-      imageConfig: { aspectRatio, imageSize },
-      abortSignal,
-    },
-  });
+  let response;
+  try {
+    response = await ai.models.generateContent({
+      model: "gemini-3.1-flash-image",
+      contents,
+      config: {
+        responseModalities: ["TEXT", "IMAGE"],
+        imageConfig: {
+          aspectRatio,
+          imageSize,
+          personGeneration: personGenerationFor(ageGroup),
+        },
+        safetySettings: IMAGE_SAFETY_SETTINGS,
+        abortSignal,
+      },
+    });
+  } catch (error) {
+    throw classifyImageGenFailure(error);
+  }
 
   const tokens = extractTokenUsage(response);
   const cost = computeImageGenCost(
@@ -6753,7 +6898,7 @@ export async function generateModelViewImage({
     }
   }
 
-  throw new Error("No model view image generated from Nano Banana 2");
+  throwImageGenFailure(response, "model view image");
 }
 
 /**
@@ -6929,6 +7074,7 @@ export async function generateModelEditImage({
   referenceDirective,
   identityFromReference = false,
   releaseSkinTone = false,
+  ageGroup = "adult",
   aspectRatio,
   imageSize = "2K",
   abortSignal,
@@ -6938,6 +7084,8 @@ export async function generateModelEditImage({
   sourceImage: { file: File };
   referenceImage?: { file: File };
   referenceDirective?: string;
+  /** Drives `personGeneration`. Defaults to adult for legacy library entries. */
+  ageGroup?: ModelAgeGroup;
   aspectRatio: AspectRatio;
   imageSize?: "1K" | "2K" | "4K";
   abortSignal?: AbortSignal;
@@ -6964,15 +7112,25 @@ export async function generateModelEditImage({
     text: `═══ THE EDIT TO PERFORM ═══\n${buildModelEditPrompt({ editInstruction, referenceDirective, hasReference, identityFromReference, releaseSkinTone })}`,
   });
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image",
-    contents,
-    config: {
-      responseModalities: ["TEXT", "IMAGE"],
-      imageConfig: { aspectRatio, imageSize },
-      abortSignal,
-    },
-  });
+  let response;
+  try {
+    response = await ai.models.generateContent({
+      model: "gemini-3.1-flash-image",
+      contents,
+      config: {
+        responseModalities: ["TEXT", "IMAGE"],
+        imageConfig: {
+          aspectRatio,
+          imageSize,
+          personGeneration: personGenerationFor(ageGroup),
+        },
+        safetySettings: IMAGE_SAFETY_SETTINGS,
+        abortSignal,
+      },
+    });
+  } catch (error) {
+    throw classifyImageGenFailure(error);
+  }
 
   const tokens = extractTokenUsage(response);
   const cost = computeImageGenCost("Model Edit Image (Nano Banana 2)", tokens, imageSize);
@@ -6990,7 +7148,7 @@ export async function generateModelEditImage({
     }
   }
 
-  throw new Error("No edited model image generated from Nano Banana 2");
+  throwImageGenFailure(response, "edited model image");
 }
 
 export async function editInfographicImage({

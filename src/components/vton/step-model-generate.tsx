@@ -16,9 +16,15 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ModelComboPicker } from "./model-combo-picker";
-import { generateModelPrompt, generateModelImage } from "@/lib/gemini";
+import {
+  generateModelPrompt,
+  generateModelImage,
+  ImageSafetyBlockError,
+  PersonGenerationNotAllowlistedError,
+} from "@/lib/gemini";
 import { generateModelImageAzure } from "@/lib/azure-image";
 import { loadSavedModels, saveModel, deleteSavedModel } from "@/lib/model-library";
+import { modelAgeGroup } from "@/lib/constants";
 import type { VTONStore } from "@/store/vton-store";
 import type {
   AspectRatio,
@@ -53,6 +59,36 @@ function isBusy(status: ModelCreationResult["status"]) {
     status === "generating-prompt" ||
     status === "generating-image" ||
     status === "auto-retrying"
+  );
+}
+
+/**
+ * Turns a thrown generation error into copy the user can act on. Both backends
+ * feed through here so a content refusal reads the same whether it came from
+ * Nano Banana or Azure's `moderation_blocked`.
+ */
+function friendlyError(err: unknown): string {
+  if (err instanceof PersonGenerationNotAllowlistedError) return err.message;
+  if (err instanceof ImageSafetyBlockError) {
+    return "Blocked by the provider's content filters. Try a different reference image or casting brief.";
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  const lower = message.toLowerCase();
+  if (lower.includes("moderation_blocked") || lower.includes("content_policy")) {
+    return "Blocked by the provider's content filters. Try a different reference image or casting brief.";
+  }
+  if (lower.includes("aborted")) return "Generation cancelled.";
+  return message || "Generation failed";
+}
+
+/**
+ * A refusal is deterministic — the same request will be refused again — so
+ * retrying one only burns a second full prompt + image pipeline.
+ */
+function isRetryable(err: unknown): boolean {
+  return !(
+    err instanceof ImageSafetyBlockError ||
+    err instanceof PersonGenerationNotAllowlistedError
   );
 }
 
@@ -153,6 +189,9 @@ export function StepModelGenerate({ store }: Props) {
       return generateModelImage({
         apiKey,
         prompt,
+        // Non-adult bands need personGeneration: ALLOW_ALL — the Vertex default
+        // of ALLOW_ADULT refuses them outright, before the prompt is read.
+        ageGroup: modelAgeGroup(modelAgeRange),
         // Only attach the reference to the image model when locking the face.
         // In non-lock mode the reference reached only the enrichment model, which
         // authored a distinct face into the prompt — sending the image here would
@@ -163,7 +202,7 @@ export function StepModelGenerate({ store }: Props) {
         imageSize,
       });
     },
-    [apiKey, imageGenModel, aspectRatio, imageSize]
+    [apiKey, imageGenModel, aspectRatio, imageSize, modelAgeRange]
   );
 
   const runOne = useCallback(
@@ -209,7 +248,14 @@ export function StepModelGenerate({ store }: Props) {
 
       try {
         await generate();
-      } catch {
+      } catch (err) {
+        // A content refusal or a missing ALLOW_ALL entitlement is deterministic:
+        // the identical request will be refused again, so surface it instead of
+        // burning a second prompt + image cycle on it.
+        if (!isRetryable(err)) {
+          updateModelCreationResult(result.id, { status: "error", error: friendlyError(err) });
+          return;
+        }
         try {
           retrySteps = [...collected];
           updateModelCreationResult(result.id, { status: "auto-retrying", error: undefined });
@@ -218,7 +264,7 @@ export function StepModelGenerate({ store }: Props) {
         } catch (err2) {
           updateModelCreationResult(result.id, {
             status: "error",
-            error: err2 instanceof Error ? err2.message : "Generation failed",
+            error: friendlyError(err2),
           });
         }
       }
@@ -249,6 +295,9 @@ export function StepModelGenerate({ store }: Props) {
         id,
         boxId: p.boxId,
         boxName: p.boxName,
+        // Pinned at generation time so Refine keeps targeting the right
+        // personGeneration even if the casting age band is changed afterwards.
+        ageRange: modelAgeRange,
         variantIndex: p.variantIndex,
         variantCount: p.variantCount,
         status: "pending",
@@ -267,7 +316,7 @@ export function StepModelGenerate({ store }: Props) {
     await Promise.all(Array.from({ length: Math.min(concurrency, initial.length) }, () => next()));
 
     setIsModelCreationGenerating(false);
-  }, [canGenerate, plan, imageGenModel, runOne, setModelCreationResults, setIsModelCreationGenerating]);
+  }, [canGenerate, plan, imageGenModel, modelAgeRange, runOne, setModelCreationResults, setIsModelCreationGenerating]);
 
   const handleRegenerate = useCallback(
     (result: ModelCreationResult) => {
@@ -287,7 +336,9 @@ export function StepModelGenerate({ store }: Props) {
         name: result.boxName + (result.variantCount > 1 ? ` · ${result.variantIndex}` : ""),
         imageData: result.imageData,
         gender: modelGender,
-        ageRange: modelAgeRange,
+        // The band this result was actually rendered at, not whatever the
+        // casting controls happen to show now.
+        ageRange: result.ageRange,
         bodyType: modelBodyType,
         ethnicity: modelEthnicity.trim(),
         brandName: modelBrandName.trim() || undefined,
@@ -303,7 +354,6 @@ export function StepModelGenerate({ store }: Props) {
     },
     [
       modelGender,
-      modelAgeRange,
       modelBodyType,
       modelEthnicity,
       modelBrandName,
