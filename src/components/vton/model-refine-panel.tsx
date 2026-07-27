@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Archive,
   Camera,
@@ -93,23 +93,31 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
   const [editError, setEditError] = useState<string | null>(null);
   const [opCount, setOpCount] = useState(0);
 
-  const beginOp = useCallback(() => {
-    setOpCount((n) => n + 1);
-    setIsModelRefineGenerating(true);
-  }, [setIsModelRefineGenerating]);
-  const endOp = useCallback(() => {
-    setOpCount((n) => {
-      const next = n - 1;
-      if (next <= 0) setIsModelRefineGenerating(false);
-      return Math.max(0, next);
-    });
-  }, [setIsModelRefineGenerating]);
+  // Pure local counter of in-flight renders — several can overlap (the two
+  // reference shots generate concurrently). Keep the updaters side-effect free.
+  const beginOp = useCallback(() => setOpCount((n) => n + 1), []);
+  const endOp = useCallback(() => setOpCount((n) => Math.max(0, n - 1)), []);
 
   const busy =
     opCount > 0 ||
     editStage !== "idle" ||
     data.faceCloseUp?.status === "generating" ||
     data.backHead?.status === "generating";
+
+  // Mirror the panel's busy state into the wizard-level flag that gates step
+  // navigation and mode switching. This has to be an effect, never a call from
+  // inside a setState updater: updaters run during render, so setting another
+  // component's state there triggers React's "Cannot update a component
+  // (`VTONWizard`) while rendering a different component" warning — and, being
+  // impure, fires twice under dev StrictMode. Same lesson as togglePoseBucket
+  // in the store.
+  useEffect(() => {
+    setIsModelRefineGenerating(busy);
+  }, [busy, setIsModelRefineGenerating]);
+
+  // Clear the flag if the panel unmounts mid-run (e.g. the user deselects the
+  // model card), otherwise wizard navigation stays disabled for good.
+  useEffect(() => () => setIsModelRefineGenerating(false), [setIsModelRefineGenerating]);
 
   /** Renders one reference shot from a full-body data URL. Returns the image. */
   const runView = useCallback(
