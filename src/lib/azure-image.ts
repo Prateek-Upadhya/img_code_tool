@@ -27,7 +27,7 @@ import type {
   StepCost,
   TokenUsage,
 } from "./types";
-import { buildModelViewPrompt, MODEL_EDIT_COMPLEXION_SYNC_CLAUSE } from "./gemini";
+import { buildModelViewPrompt, CLEAR_SKIN_ANCHOR, MODEL_EDIT_COMPLEXION_SYNC_CLAUSE } from "./gemini";
 
 // --- Size resolver -------------------------------------------------------
 
@@ -280,7 +280,10 @@ export async function generateModelImageAzure({
   const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
 
   const form = new FormData();
-  form.append("prompt", prompt);
+  // Mirrors the anchor `generateModelImage` appends on the Gemini side. Unlike
+  // that path this function has no prompt wrapper of its own, so without this
+  // line the Azure backend would be the only route with no clear-skin guard.
+  form.append("prompt", `${prompt}\n\n${CLEAR_SKIN_ANCHOR}`);
   form.append("model", "gpt-image-2");
   form.append("n", "1");
   form.append("size", size);
