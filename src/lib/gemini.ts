@@ -351,6 +351,71 @@ natural, healthy, authentic, photographic, lived-in, hydrated, fine grain, low-l
 `;
 
 /**
+ * The one sentence that makes every generated model's skin read as clear and
+ * healthy. Reused verbatim by the meta-prompter (via {@link CLEAR_SKIN_DIRECTIVE})
+ * AND injected directly at the image layer, so it survives even if the
+ * meta-prompter drops or paraphrases it.
+ *
+ * Deliberately pore-free: adults get "visible pores" (ANCHOR 1 above) while
+ * children get "No visible pores" (see `buildChildAnatomyDirective`), so keeping
+ * pores out of this sentence lets ONE anchor serve both without contradiction.
+ * The texture words it does use — fine grain, vellus hair, subsurface glow —
+ * are the same ones the child anatomy block already asks for.
+ */
+export const CLEAR_SKIN_ANCHOR = `The skin is clear, healthy and evenly toned across the face, neck, shoulders, arms, hands, torso, legs and feet — an unbroken, uniformly pigmented complexion carrying only fine natural skin grain, faint vellus hair and a soft subsurface glow, with smooth continuous tonal transitions everywhere and completely free of freckles, moles, beauty marks, birthmarks, sunspots, acne, pimples, breakouts, scars, rashes, pigmentation patches, blotches and mottled or uneven discoloration.`;
+
+/**
+ * Clear-skin rules for the MODEL-CREATION paths (model generation, refine views,
+ * and the skin-touching model edits).
+ *
+ * Why this exists rather than reusing {@link VTON_REALISM_DIRECTIVE}: that block
+ * is wired into `generateVTONPrompt` only, and its HEALTHY-SKIN GUARD bans just
+ * "blemishes, acne, scars, dark pigmentation patches, eczema, rashes" — freckles,
+ * moles and beauty marks appear on no list anywhere. `generateModelPrompt`
+ * meanwhile carried NO skin rules at all, so the casting meta-prompter was free
+ * to write standard editorial casting prose ("light freckles across the nose
+ * bridge", "a small beauty mark") and the image model rendered it faithfully.
+ * The default must be clear, healthy skin; markings appear ONLY when the user
+ * asks for them explicitly (the "Freckled" skin-finish option in
+ * `MODEL_EDIT_CATEGORIES`, or a free-text edit request).
+ *
+ * Design notes:
+ *   - TWO failure directions are banned, not one. Forbidding only the marking
+ *     vocabulary pushes the meta-prompter straight into "flawless porcelain
+ *     complexion" — the exact waxy aesthetic the FORBIDDEN VOCABULARY list in
+ *     VTON_REALISM_DIRECTIVE exists to prevent — so that list is carried here too.
+ *   - POSITIVE-FIRST with a SINGLE anchored negation. Nano Banana / Gemini tend
+ *     to render a negated noun (see the EVEN_HIGH_KEY_LIGHTING_DIRECTIVE notes),
+ *     so the anchor describes the clear skin that IS present and closes with one
+ *     exclusion clause instead of leading with a list of negatives. This mirrors
+ *     ANCHOR 2 above, which is already proven in the VTON pipeline.
+ *   - Banning the WORDS at the meta-prompter is the highest-leverage half of the
+ *     fix: if Gemini 3.1 Pro never writes "freckles", the image model never sees
+ *     it and cannot draw it.
+ */
+const CLEAR_SKIN_DIRECTIVE = `
+═══ CLEAR & HEALTHY SKIN DIRECTIVE (MANDATORY — the default complexion for every generated subject) ═══
+
+VERBATIM-INSERTION CONTRACT — NON-NEGOTIABLE:
+The output prompt you generate MUST contain the following anchor sentence WORD-FOR-WORD, somewhere in the body of the prompt. Copy it exactly as written — do NOT paraphrase, do NOT summarise, do NOT split it into multiple sentences, do NOT omit it. It is the single strongest signal producing clear, healthy skin; paraphrasing it lets freckles, moles and blemishes back into the render and fails QA.
+
+CLEAR-SKIN ANCHOR (always include verbatim):
+"${CLEAR_SKIN_ANCHOR}"
+
+FORBIDDEN VOCABULARY — SKIN MARKINGS (do NOT use any of these words anywhere in the output prompt — naming a marking is precisely what makes the image model draw it):
+freckle, freckles, freckled, freckling, mole, moles, beauty mark, beauty spot, birthmark, blemish, blemishes, acne, pimple, breakout, spot, spotted, blotch, blotchy, scar, sunspot, age spot, liver spot, hyperpigmentation, dark patch, patchy, skin imperfection, imperfections, characterful skin, weathered.
+EXCEPTION: several of these words appear once, deliberately, inside the verbatim anchor sentence above. That anchored negation is required and must NOT be removed or softened. Outside the anchor, none of these words may appear anywhere in your output.
+
+FORBIDDEN VOCABULARY — PLASTIC SKIN (do NOT use these either — clear skin must never become waxy, doll-like skin):
+flawless, perfect, porcelain, doll-like, CGI, 3D render, render, plastic, waxy, smooth skin, beauty filter, airbrushed.
+
+PREFERRED VOCABULARY (use these when describing the complexion):
+clear, healthy, even-toned, uniform, natural, authentic, photographic, hydrated, fine grain, real-skin.
+
+THE BALANCE TO STRIKE: the complexion is CLEAR and EVEN, not RETOUCHED. Keep the fine grain, the faint vellus hair and the soft subsurface glow of real photographed skin — remove the markings, never the texture.
+`;
+
+/**
  * Custom lighting override — injected into the meta-prompt (via `bgInstruction`,
  * so it reaches BOTH the clothing and footwear meta-prompts) ONLY when the user
  * enables `background.evenLighting`. Forces flat, even, high-key, SHADOWLESS
@@ -3816,7 +3881,10 @@ The output prompt MUST enumerate and lock the following identity attributes of t
 model from the supplied reference photo:
   • Facial features: eye shape, eye colour, brow shape, nose bridge contour, lip shape
     and proportions, jawline angle, cheekbone definition, chin shape, ear shape
-  • Skin: exact skin tone, undertone (warm/cool/neutral), texture, freckles/marks/moles
+  • Skin: exact skin tone, undertone (warm/cool/neutral) and texture — clear, healthy and
+    even-toned, reproducing ONLY those skin markings that are genuinely visible in the NEW
+    MODEL reference. Never invent markings that are not there: if the reference shows clear
+    skin, the output shows clear skin.
   • Hair: colour, texture, length, hairline, styling and parting
   • Body: build, proportions, musculature, shoulder width, frame, height impression
   • Age impression and overall facial character
@@ -6566,7 +6634,7 @@ function buildChildAnatomyDirective(group: ModelAgeGroup): string {
 - NOSE & FEATURES: A small, short, softly rounded nose with a low bridge; small ears; soft, unformed features throughout.
 ${softness}- ${dentition}
 - ${hair}
-- SKIN: Soft, matte and even, with REAL fine skin texture and faint downy vellus hair — never airbrushed, waxy or plastic. A perfectly smooth poreless surface paired with realistic eyes is the classic artificial-image tell and must be avoided. No visible pores, no wrinkles, no blemishes, no adult skin detail.
+- SKIN: Soft, matte and even, with REAL fine skin texture and faint downy vellus hair — never airbrushed, waxy or plastic. A perfectly smooth poreless surface paired with realistic eyes is the classic artificial-image tell and must be avoided. The complexion is clear and healthy throughout: no visible pores, no wrinkles, no freckles, no moles or beauty marks, no blemishes or spots, and no adult skin detail.
 - NO ADULT SIGNALS ANYWHERE: no defined musculature, no abdominal definition, no jawline or cheekbone definition, no brow ridge, no long adult neck, no body hair, no adult hand or foot proportions, no makeup, no adult grooming.
 - THE OVERRIDING RULE: This is a REAL child photographed at their true age — not an adult's proportions, face, physique or posing scaled down. If any element reads as a miniature adult, it is wrong.`;
 }
@@ -6664,6 +6732,7 @@ This variant MUST be a genuinely DISTINCT individual — a different person with
   const systemPrompt = `You are an expert ${isChild ? "children's-apparel casting director" : "fashion-casting director"} and prompt engineer. Write ONE precise, deterministic, self-contained IMAGE-GENERATION PROMPT (flowing prose) that an image model will follow to render a single professional full-body studio photograph of ONE ${isChild ? `human ${ageGroup === "baby" ? "baby" : ageGroup === "toddler" ? "toddler" : "child"}, photographed for a children's clothing catalogue` : "human fashion model"}.
 
 ${buildLockedModelDirective(gender, ageRange)}
+${CLEAR_SKIN_DIRECTIVE}
 ${isChild ? `\n${buildChildAnatomyDirective(ageGroup)}\n\n${CHILD_INTEGRITY_DIRECTIVE}\n` : ""}
 ═══ CASTING ATTRIBUTES (apply to this ${subject}) ═══
 - Gender: ${isChild ? (gender === "male" ? "boy" : "girl") : gender}
@@ -6681,7 +6750,7 @@ ${referenceDirective}
 ${variantDirective ? `\n═══ VARIATION ═══\n${variantDirective}` : ""}
 
 ═══ OUTPUT FORMAT ═══
-Output ONLY the final image-generation prompt as flowing prose. It MUST restate, in positive photographic language: the full-body head-to-toe framing, the barefoot feet, the exact black wardrobe${isChild ? " (black sleeveless U-neck top + black shorts)" : " for this gender"}, the pure-white empty studio background, ${isChild ? `the ${ageGroup === "baby" ? "seated infant posture" : ageGroup === "toddler" ? "wide, softly bent-kneed toddler stance" : "natural upright stance"}, the natural age-appropriate expression, the explicit head-to-body ratio in head-heights, and the child-anatomy rules (large rounded cranium, low-set proportionate NON-enlarged eyes, short chin, full cheeks, soft unmuscled build, real skin texture)` : "the neutral comfortable closed-lip smile"}, and the flat, even, shadowless high-key lighting (include the verbatim lighting anchor sentence). Describe the ${subject}'s face, hair, complexion, build and styling in concrete, unambiguous detail — the image model relies on this text to render the identity and does NOT see the reference image unless the face is locked.${isChild ? " State plainly that the subject is a real child of the stated age with true child proportions, never an adult scaled down." : ""} No preamble, no commentary.`;
+Output ONLY the final image-generation prompt as flowing prose. It MUST restate, in positive photographic language: the full-body head-to-toe framing, the barefoot feet, the exact black wardrobe${isChild ? " (black sleeveless U-neck top + black shorts)" : " for this gender"}, the pure-white empty studio background, ${isChild ? `the ${ageGroup === "baby" ? "seated infant posture" : ageGroup === "toddler" ? "wide, softly bent-kneed toddler stance" : "natural upright stance"}, the natural age-appropriate expression, the explicit head-to-body ratio in head-heights, and the child-anatomy rules (large rounded cranium, low-set proportionate NON-enlarged eyes, short chin, full cheeks, soft unmuscled build, real skin texture)` : "the neutral comfortable closed-lip smile"}, and the flat, even, shadowless high-key lighting (include the verbatim lighting anchor sentence), and the clear, healthy complexion (include the verbatim CLEAR-SKIN ANCHOR sentence). Describe the ${subject}'s face, hair, complexion, build and styling in concrete, unambiguous detail — the complexion described as clear, even-toned and healthy, and never carrying any skin markings — the image model relies on this text to render the identity and does NOT see the reference image unless the face is locked.${isChild ? " State plainly that the subject is a real child of the stated age with true child proportions, never an adult scaled down." : ""} No preamble, no commentary.`;
 
   const contents: ContentPart[] = [{ text: systemPrompt }];
   if (box.referenceImage) {
@@ -6758,7 +6827,9 @@ export async function generateModelImage({
     // Deliberately neutral heading — this path renders adult models and child
     // catalogue subjects alike, and the enriched prompt already carries the
     // age-specific wardrobe, posture and anatomy rules.
-    text: `═══ SUBJECT TO RENDER ═══\n${prompt}\n\nRender a single photorealistic, full-body, head-to-toe studio photograph in a ${aspectRatio} canvas.`,
+    // The clear-skin anchor is repeated here verbatim as a second, un-paraphrasable
+    // line of defence: it holds even when the enrichment model drops or softens it.
+    text: `═══ SUBJECT TO RENDER ═══\n${prompt}\n\nRender a single photorealistic, full-body, head-to-toe studio photograph in a ${aspectRatio} canvas.\n\n${CLEAR_SKIN_ANCHOR}`,
   });
 
   let response;
@@ -6810,7 +6881,9 @@ export function buildModelViewPrompt(view: ModelViewKind): string {
 
 FRAMING: head-and-shoulders close-up — upper boundary just above the top of the head (including hair volume), lower boundary at the collarbone. The face is sharp, centered and fills most of the frame.
 
-SETTING: the identical neutral studio background, lighting direction and color temperature as the source photograph, so the two images read as frames from the same photoshoot.`;
+SETTING: the identical neutral studio background, lighting direction and color temperature as the source photograph, so the two images read as frames from the same photoshoot.
+
+COMPLEXION: ${CLEAR_SKIN_ANCHOR} Do not introduce any skin marking that is not already present in the source photograph.`;
   }
   return `Render the SAME person shown in the source photograph, photographed from DIRECTLY BEHIND — a back-of-the-head shot. Reproduce the person's hairstyle, hair color, hair texture, hair length, skin tone at the neck and ears, and overall head shape EXACTLY as they appear in the source — this is the same individual, viewed from behind.
 
@@ -6937,7 +7010,8 @@ HARD CONSTRAINTS:
 - Output ONE concise, photographic snippet describing ONLY the FINAL changed state of the single attribute — present tense, positive language, NO negations.
 - Describe the change as the final result (e.g. "a slightly fuller, heavier build with a softer waist, fuller arms and a slightly rounder face"), NOT as an action ("don't"/"remove"/"make").
 - Do NOT restate preservation rules, do NOT mention "Image 1"/"Image 2" labels, do NOT add quotes, preamble or commentary — the wrapping template handles preservation and slot labeling.
-- Keep it tight: one to three sentences, focused solely on the one attribute the user named.${hasReference ? `\n- Fold in ONLY the specified detail to take from the reference; ignore everything else about the reference.` : ""}
+- Keep it tight: one to three sentences, focused solely on the one attribute the user named.
+- SKIN MARKINGS: never introduce freckles, moles, beauty marks, birthmarks, blemishes, spots, scars or any other skin marking into the snippet. Describe skin as clear, healthy and even-toned. The ONLY exception is when the requested change above explicitly names such a marking (e.g. asking for freckles) — then render exactly what was asked for and nothing more.${hasReference ? `\n- Fold in ONLY the specified detail to take from the reference; ignore everything else about the reference.` : ""}
 
 Output ONLY the snippet text.`;
 
@@ -7053,7 +7127,17 @@ export function buildModelEditPrompt({
   const complexionClause = identityFromReference
     ? `\n\n${MODEL_EDIT_COMPLEXION_SYNC_CLAUSE}`
     : "";
-  return `Edit the SOURCE image. Change ONLY: ${editInstruction.trim()}.${refClause}${complexionClause}
+  // Only edits that actually re-render skin need the clear-skin anchor: a
+  // complexion change (`releaseSkinTone`) or the face→body sync
+  // (`identityFromReference`). For every other edit the preservation clause
+  // below already pins skin tone to the SOURCE, so adding it would be noise.
+  // The trailing exemption is what keeps the "Freckled" skin-finish option (see
+  // MODEL_EDIT_CATEGORIES in constants.ts) working — an explicit request wins.
+  const clearSkinClause =
+    identityFromReference || releaseSkinTone
+      ? `\n\nCLEAR SKIN: ${CLEAR_SKIN_ANCHOR} Do not introduce any skin marking that is not already present in the SOURCE image. The ONLY exception is when the requested change above explicitly asks for a specific marking — that request takes precedence over this clause.`
+      : "";
+  return `Edit the SOURCE image. Change ONLY: ${editInstruction.trim()}.${refClause}${complexionClause}${clearSkinClause}
 
 ${buildModelEditPreservationClause({ identityFromReference, releaseSkinTone })}
 

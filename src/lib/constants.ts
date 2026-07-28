@@ -2998,6 +2998,13 @@ export const MODEL_EDIT_CATEGORIES: ModelEditCategory[] = [
     options: [
       { value: "matte, even-toned", label: "Matte" },
       { value: "dewy, luminous", label: "Dewy" },
+      /**
+       * Generated models default to clear, unmarked skin (see CLEAR_SKIN_ANCHOR
+       * in lib/gemini.ts). This option is the deliberate opt-in for the user who
+       * actually wants freckles, and the clear-skin clause in
+       * `buildModelEditPrompt` explicitly exempts an explicitly-requested
+       * marking — do NOT "clean this up" to match the default.
+       */
       { value: "natural with light freckles", label: "Freckled" },
       { value: "softly sun-kissed", label: "Sun-kissed" },
     ],
