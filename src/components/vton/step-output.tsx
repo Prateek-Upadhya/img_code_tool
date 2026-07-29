@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Camera, Check, CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, Filter, GripVertical, ImageIcon, Package, Plus, ShieldCheck, ShieldOff, Sparkles, Trash2, Upload, User, X } from "lucide-react";
+import { AlertCircle, BarChart3, Camera, Check, CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, Filter, GripVertical, ImageIcon, Loader2, Lock, Package, Plus, RefreshCw, ShieldCheck, ShieldOff, Sparkles, Trash2, Upload, User, Wand2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ACCESSORY_CATEGORIES, ASPECT_RATIOS, FRAMING_OPTIONS, POSES, FOOTWEAR_POSES, UGC_SHOT_TYPE_OPTIONS, UGC_SCENE_PRESETS } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
@@ -11,10 +11,12 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { AccessoryCategory, AccessoryItem, CustomPose, FootwearType, GarmentType, NamingLogic, Pose, PoseFraming, PoseViewAngle, PropBucket, ReferenceImageItem, ReferencePhotoshootMode, UGCScene, UGCShotType } from "@/lib/types";
+import type { AccessoryCategory, AccessoryItem, CustomPose, CustomPoseShotKind, FootwearType, GarmentType, InfographicFidelity, InfographicPlan, InfographicPoseConfig, InfographicTextMode, InfographicTextPoint, NamingLogic, Pose, PoseFraming, PoseViewAngle, PropBucket, ReferenceImageItem, ReferencePhotoshootMode, UGCScene, UGCShotType } from "@/lib/types";
+import { customPoseIsInfographic, customPoseNeedsModel, customPoseShotKind } from "@/lib/custom-pose";
 import type { VTONStore } from "@/store/vton-store";
 import { GLOBAL_ACCESSORY_POSE_ID } from "@/store/vton-store";
 import { importReferenceFolders } from "@/lib/reference-folder-import";
+import { analyzeInfographicReference } from "@/lib/gemini";
 import { ImageUploadZone } from "./image-upload-zone";
 import { Layers } from "lucide-react";
 
@@ -795,20 +797,369 @@ function PropBucketManager({
 /* ------------------------------------------------------------------ */
 /*  Custom Pose Card                                                    */
 /* ------------------------------------------------------------------ */
+/** Actions + analysis state the infographic shot kind needs, bundled to avoid prop sprawl. */
+type InfographicCardApi = {
+  setShotKind: (poseId: string, kind: CustomPoseShotKind) => void;
+  updateConfig: (poseId: string, update: Partial<InfographicPoseConfig>) => void;
+  setPlan: (poseId: string, plan: InfographicPlan | undefined) => void;
+  addPoint: (poseId: string) => void;
+  updatePoint: (
+    poseId: string,
+    pointId: string,
+    update: Partial<Omit<InfographicTextPoint, "id">>
+  ) => void;
+  removePoint: (poseId: string, pointId: string) => void;
+  setBrandLogo: (poseId: string, file: File) => void;
+  clearBrandLogo: (poseId: string) => void;
+  analyzing: Record<string, boolean>;
+  errors: Record<string, string>;
+  onAnalyze: (pose: CustomPose) => void;
+  /** Bulk mode analyses are product-agnostic and re-specialised per product at generate time. */
+  isBulk: boolean;
+};
+
+const INFOGRAPHIC_TEXT_MODES: {
+  value: InfographicTextMode;
+  label: string;
+  hint: string;
+  placeholder: string;
+}[] = [
+  {
+    value: "exact",
+    label: "Exact Text",
+    hint: "Your wording is printed verbatim — split into callouts, never reworded.",
+    placeholder:
+      "Paste the exact copy to print, one callout per line — e.g.\nBreathable Knit Upper\nOrtholite® Insole\nRubber Traction Outsole",
+  },
+  {
+    value: "describe",
+    label: "Describe Content",
+    hint: "You say what the copy should convey; the AI writes it at callout length.",
+    placeholder:
+      "Describe what the text should get across — e.g. 'call out the cushioning tech, the breathable upper, and the grip on the outsole'...",
+  },
+  {
+    value: "creative",
+    label: "Creative Direction",
+    hint: "A loose direction is expanded into explicit, product-grounded points.",
+    placeholder:
+      "Give a rough creative direction — e.g. 'premium everyday comfort, understated performance'. The AI derives concrete callouts from your product.",
+  },
+];
+
+/* ------------------------------------------------------------------ */
+/*  Infographic panel (shown inside CustomPoseCard)                     */
+/* ------------------------------------------------------------------ */
+function InfographicPanel({
+  pose,
+  api,
+}: {
+  pose: CustomPose;
+  api: InfographicCardApi;
+}) {
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const config = pose.infographic;
+  const plan = config?.plan;
+  const isAnalyzing = api.analyzing[pose.id] === true;
+  const error = api.errors[pose.id];
+  const hasReference = pose.referenceImages.length > 0;
+  const textMode = config?.textMode ?? "creative";
+  const activeMode =
+    INFOGRAPHIC_TEXT_MODES.find((m) => m.value === textMode) ?? INFOGRAPHIC_TEXT_MODES[2];
+
+  const setFidelity = (fidelity: InfographicFidelity) =>
+    api.updateConfig(pose.id, { fidelity });
+
+  return (
+    <>
+      {/* Fidelity */}
+      <div>
+        <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+          Fidelity
+        </label>
+        <div className="mt-1 flex gap-2">
+          <button
+            onClick={() => setFidelity("layout-lock")}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors",
+              (config?.fidelity ?? "layout-lock") === "layout-lock"
+                ? "bg-violet-500/10 border-violet-500 text-violet-700 dark:text-violet-400"
+                : "bg-card border-border text-muted-foreground hover:border-violet-500/30 hover:text-foreground"
+            )}
+          >
+            <Lock className="w-4 h-4" />
+            Layout Lock
+          </button>
+          <button
+            onClick={() => setFidelity("inspiration")}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors",
+              config?.fidelity === "inspiration"
+                ? "bg-amber-500/10 border-amber-500 text-amber-700 dark:text-amber-400"
+                : "bg-card border-border text-muted-foreground hover:border-amber-500/30 hover:text-foreground"
+            )}
+          >
+            <Sparkles className="w-4 h-4" />
+            Loose Inspiration
+          </button>
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-1">
+          {(config?.fidelity ?? "layout-lock") === "layout-lock"
+            ? "The template's grid, callout placement and typographic hierarchy are copied precisely. The reference is also shown to the image model as a wireframe — never its product, copy or branding."
+            : "The template informs style only — the layout is rebuilt around your product. The image model never sees the reference."}
+        </p>
+      </div>
+
+      {/* Infographic Text */}
+      <div>
+        <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+          Infographic Text
+        </label>
+        <div className="mt-1 flex gap-2">
+          {INFOGRAPHIC_TEXT_MODES.map((m) => (
+            <button
+              key={m.value}
+              onClick={() => api.updateConfig(pose.id, { textMode: m.value })}
+              className={cn(
+                "flex-1 px-2 py-2 rounded-lg text-xs font-medium border transition-colors",
+                textMode === m.value
+                  ? "bg-violet-500/10 border-violet-500 text-violet-700 dark:text-violet-400"
+                  : "bg-card border-border text-muted-foreground hover:border-violet-500/30 hover:text-foreground"
+              )}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <textarea
+          value={config?.textInput ?? ""}
+          onChange={(e) => api.updateConfig(pose.id, { textInput: e.target.value })}
+          placeholder={activeMode.placeholder}
+          className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-violet-500/30 resize-none"
+          rows={3}
+        />
+        <p className="text-[11px] text-muted-foreground mt-1">{activeMode.hint}</p>
+      </div>
+
+      {/* Brand Logo */}
+      <div>
+        <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+          Brand Logo <span className="text-muted-foreground/50 normal-case">(optional)</span>
+        </label>
+        <div className="mt-1 flex items-start gap-2">
+          {config?.brandLogo ? (
+            <div className="group relative w-16 h-16 rounded-lg overflow-hidden border border-border bg-muted shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={config.brandLogo.preview}
+                alt="Brand logo"
+                className="w-full h-full object-contain"
+              />
+              <button
+                onClick={() => api.clearBrandLogo(pose.id)}
+                className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <X className="w-4 h-4 text-white" />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => logoInputRef.current?.click()}
+              className="w-16 h-16 shrink-0 rounded-lg border border-dashed border-violet-500/30 bg-muted flex flex-col items-center justify-center gap-0.5 text-violet-500/60 hover:text-violet-500 hover:border-violet-500/50 hover:bg-violet-500/10 transition-colors"
+            >
+              <Upload className="w-4 h-4" />
+              <span className="text-[8px] font-medium">Logo</span>
+            </button>
+          )}
+          <input
+            value={config?.brandPlacementInstructions ?? ""}
+            onChange={(e) =>
+              api.updateConfig(pose.id, {
+                brandPlacementInstructions: e.target.value || undefined,
+              })
+            }
+            placeholder="Placement guidance — e.g. 'top-left header, small'"
+            className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+          />
+        </div>
+        <input
+          ref={logoInputRef}
+          type="file"
+          accept="image/*"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) api.setBrandLogo(pose.id, file);
+            if (logoInputRef.current) logoInputRef.current.value = "";
+          }}
+          className="hidden"
+        />
+      </div>
+
+      {/* Analysis — the review step */}
+      <div className="rounded-lg border border-violet-500/20 bg-violet-500/[0.03] p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+            Text Points
+          </label>
+          <button
+            onClick={() => api.onAnalyze(pose)}
+            disabled={!hasReference || isAnalyzing}
+            className={cn(
+              "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors",
+              !hasReference || isAnalyzing
+                ? "border-border text-muted-foreground/50 cursor-not-allowed"
+                : "border-violet-500 bg-violet-500/10 text-violet-700 dark:text-violet-400 hover:bg-violet-500/20"
+            )}
+          >
+            {isAnalyzing ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Analyzing...
+              </>
+            ) : plan ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5" />
+                Re-analyze
+              </>
+            ) : (
+              <>
+                <Wand2 className="w-3.5 h-3.5" />
+                Analyze reference
+              </>
+            )}
+          </button>
+        </div>
+
+        {!hasReference && (
+          <p className="text-[11px] text-muted-foreground">
+            Attach an infographic reference above to enable analysis.
+          </p>
+        )}
+
+        {error && (
+          <div className="flex items-start gap-1.5 text-[11px] text-red-500">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {hasReference && !plan && !isAnalyzing && !error && (
+          <div className="flex items-start gap-1.5 text-[11px] text-amber-600 dark:text-amber-500">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+            <span>
+              Analyze this reference before generating — generation stays disabled until the
+              text points are reviewed.
+            </span>
+          </div>
+        )}
+
+        {plan && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge
+                variant="secondary"
+                className={cn(
+                  "text-[10px]",
+                  plan.includesModel
+                    ? "bg-primary/10 text-primary border-primary/30"
+                    : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30"
+                )}
+              >
+                {plan.includesModel ? "AI decided: with model" : "AI decided: product only"}
+              </Badge>
+              {api.isBulk && (
+                <Badge variant="secondary" className="text-[10px]">
+                  Re-specialized per product
+                </Badge>
+              )}
+              {plan.editedSinceAnalysis && (
+                <Badge variant="secondary" className="text-[10px]">
+                  Edited
+                </Badge>
+              )}
+            </div>
+
+            {plan.layoutSummary && (
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                {plan.layoutSummary}
+              </p>
+            )}
+
+            <div className="space-y-1.5">
+              {plan.points.map((pt, i) => (
+                <div key={pt.id} className="flex items-start gap-1.5">
+                  <span className="text-[11px] text-muted-foreground/60 w-4 shrink-0 pt-2 text-right">
+                    {i + 1}
+                  </span>
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <input
+                      value={pt.text}
+                      onChange={(e) =>
+                        api.updatePoint(pose.id, pt.id, { text: e.target.value })
+                      }
+                      placeholder="On-image copy..."
+                      className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                    />
+                    <input
+                      value={pt.anchor ?? ""}
+                      onChange={(e) =>
+                        api.updatePoint(pose.id, pt.id, {
+                          anchor: e.target.value || undefined,
+                        })
+                      }
+                      placeholder="Points to... (e.g. the midsole sidewall)"
+                      className="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-[11px] text-muted-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                    />
+                  </div>
+                  <button
+                    onClick={() => api.removePoint(pose.id, pt.id)}
+                    className="shrink-0 p-1 mt-1 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={() => api.addPoint(pose.id)}
+              className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-md border border-dashed border-violet-500/30 text-[11px] font-medium text-violet-600 dark:text-violet-400 hover:bg-violet-500/10 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add point
+            </button>
+
+            {plan.editedSinceAnalysis && (
+              <p className="text-[11px] text-muted-foreground">
+                Edited copy is locked verbatim and the composition is re-derived at generation
+                time.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function CustomPoseCard({
   pose,
   onUpdate,
   onRemove,
   onAddImage,
   onRemoveImage,
+  infographicApi,
 }: {
   pose: CustomPose;
   onUpdate: (id: string, update: Partial<Omit<CustomPose, "id">>) => void;
   onRemove: (id: string) => void;
   onAddImage: (poseId: string, file: File) => void;
   onRemoveImage: (poseId: string, imageId: string) => void;
+  infographicApi: InfographicCardApi;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const shotKind = customPoseShotKind(pose);
+  const isInfographic = shotKind === "infographic";
 
   const handleFiles = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -822,18 +1173,32 @@ function CustomPoseCard({
   );
 
   return (
-    <div className="rounded-lg border border-primary/20 bg-card p-4 space-y-3 shadow-sm">
+    <div
+      className={cn(
+        "rounded-lg border bg-card p-4 space-y-3 shadow-sm",
+        isInfographic ? "border-violet-500/30" : "border-primary/20"
+      )}
+    >
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-            <Sparkles className="w-4 h-4 text-primary" />
+          <div
+            className={cn(
+              "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
+              isInfographic ? "bg-violet-500/10" : "bg-primary/10"
+            )}
+          >
+            {isInfographic ? (
+              <BarChart3 className="w-4 h-4 text-violet-600 dark:text-violet-400" />
+            ) : (
+              <Sparkles className="w-4 h-4 text-primary" />
+            )}
           </div>
           <input
             type="text"
             value={pose.name}
             onChange={(e) => onUpdate(pose.id, { name: e.target.value })}
-            placeholder="Pose name..."
+            placeholder={isInfographic ? "Infographic name..." : "Pose name..."}
             className="text-sm font-semibold bg-transparent border-none outline-none text-foreground placeholder:text-muted-foreground/50 min-w-0 flex-1"
           />
         </div>
@@ -845,17 +1210,17 @@ function CustomPoseCard({
         </button>
       </div>
 
-      {/* Model Shot / Product Shot Toggle */}
+      {/* Shot Type — Model / Product / Infographic */}
       <div>
         <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
           Shot Type
         </label>
         <div className="mt-1 flex gap-2">
           <button
-            onClick={() => onUpdate(pose.id, { isModelShot: true })}
+            onClick={() => infographicApi.setShotKind(pose.id, "model")}
             className={cn(
-              "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors",
-              pose.isModelShot
+              "flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg text-xs font-medium border transition-colors",
+              shotKind === "model"
                 ? "bg-primary/10 border-primary text-primary"
                 : "bg-card border-border text-muted-foreground hover:border-primary/30 hover:text-foreground"
             )}
@@ -864,10 +1229,10 @@ function CustomPoseCard({
             Model Shot
           </button>
           <button
-            onClick={() => onUpdate(pose.id, { isModelShot: false })}
+            onClick={() => infographicApi.setShotKind(pose.id, "product")}
             className={cn(
-              "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors",
-              !pose.isModelShot
+              "flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg text-xs font-medium border transition-colors",
+              shotKind === "product"
                 ? "bg-emerald-500/10 border-emerald-500 text-emerald-700 dark:text-emerald-400"
                 : "bg-card border-border text-muted-foreground hover:border-emerald-500/30 hover:text-foreground"
             )}
@@ -875,25 +1240,50 @@ function CustomPoseCard({
             <Package className="w-4 h-4" />
             Product Shot
           </button>
+          <button
+            onClick={() => infographicApi.setShotKind(pose.id, "infographic")}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg text-xs font-medium border transition-colors",
+              shotKind === "infographic"
+                ? "bg-violet-500/10 border-violet-500 text-violet-700 dark:text-violet-400"
+                : "bg-card border-border text-muted-foreground hover:border-violet-500/30 hover:text-foreground"
+            )}
+          >
+            <BarChart3 className="w-4 h-4" />
+            Infographic
+          </button>
         </div>
         <p className="text-[11px] text-muted-foreground mt-1">
-          {pose.isModelShot
+          {shotKind === "model"
             ? "Human model will be included in the generated image"
-            : "Only the product will be shown — no human model"}
+            : shotKind === "product"
+              ? "Only the product will be shown — no human model"
+              : "A finished marketing asset with text baked in. Model presence, garment staging and background are decided from the reference and product."}
         </p>
       </div>
 
-      {/* Text Description */}
+      {/* Description / Composition Notes */}
       <div>
         <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
-          Pose Description
+          {isInfographic ? (
+            <>
+              Composition Notes{" "}
+              <span className="text-muted-foreground/50 normal-case">(optional)</span>
+            </>
+          ) : (
+            "Pose Description"
+          )}
         </label>
         <textarea
           value={pose.description}
           onChange={(e) => onUpdate(pose.id, { description: e.target.value })}
-          placeholder="Describe the pose in detail — body position, angle, stance, arm placement, weight distribution, mood..."
+          placeholder={
+            isInfographic
+              ? "Anything the layout must honour — e.g. 'keep the shoe angled toe-left', 'leave room for a headline across the top'..."
+              : "Describe the pose in detail — body position, angle, stance, arm placement, weight distribution, mood..."
+          }
           className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 resize-none"
-          rows={3}
+          rows={isInfographic ? 2 : 3}
         />
       </div>
 
@@ -911,48 +1301,62 @@ function CustomPoseCard({
         />
       </div>
 
-      {/* Reference Mode — only meaningful when at least one reference image is attached */}
-      <div>
-        <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
-          Reference Mode
-        </label>
-        <div className="mt-1 flex gap-2">
-          <button
-            onClick={() => onUpdate(pose.id, { referenceMode: "pose" })}
-            className={cn(
-              "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors",
-              (pose.referenceMode ?? "pose") === "pose"
-                ? "bg-primary/10 border-primary text-primary"
-                : "bg-card border-border text-muted-foreground hover:border-primary/30 hover:text-foreground"
-            )}
-          >
-            <Sparkles className="w-4 h-4" />
-            Pose Reference
-          </button>
-          <button
-            onClick={() => onUpdate(pose.id, { referenceMode: "image" })}
-            className={cn(
-              "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors",
-              pose.referenceMode === "image"
-                ? "bg-amber-500/10 border-amber-500 text-amber-700 dark:text-amber-400"
-                : "bg-card border-border text-muted-foreground hover:border-amber-500/30 hover:text-foreground"
-            )}
-          >
-            <ImageIcon className="w-4 h-4" />
-            Image Reference
-          </button>
+      {/* Reference Mode — replaced by the Fidelity toggle for infographics */}
+      {!isInfographic && (
+        <div>
+          <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+            Reference Mode
+          </label>
+          <div className="mt-1 flex gap-2">
+            <button
+              onClick={() => onUpdate(pose.id, { referenceMode: "pose" })}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors",
+                (pose.referenceMode ?? "pose") === "pose"
+                  ? "bg-primary/10 border-primary text-primary"
+                  : "bg-card border-border text-muted-foreground hover:border-primary/30 hover:text-foreground"
+              )}
+            >
+              <Sparkles className="w-4 h-4" />
+              Pose Reference
+            </button>
+            <button
+              onClick={() => onUpdate(pose.id, { referenceMode: "image" })}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors",
+                pose.referenceMode === "image"
+                  ? "bg-amber-500/10 border-amber-500 text-amber-700 dark:text-amber-400"
+                  : "bg-card border-border text-muted-foreground hover:border-amber-500/30 hover:text-foreground"
+              )}
+            >
+              <ImageIcon className="w-4 h-4" />
+              Image Reference
+            </button>
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-1">
+            {(pose.referenceMode ?? "pose") === "pose"
+              ? "Strict pose reference — only body geometry, camera angle, and image framing are copied. Background, accessories, garments, and model identity are ignored."
+              : "Holistic inspiration — pose, scene, lighting, and mood are extracted in a product-agnostic manner. Background colors are adapted to contrast with and highlight your product."}
+          </p>
         </div>
-        <p className="text-[11px] text-muted-foreground mt-1">
-          {(pose.referenceMode ?? "pose") === "pose"
-            ? "Strict pose reference — only body geometry, camera angle, and image framing are copied. Background, accessories, garments, and model identity are ignored."
-            : "Holistic inspiration — pose, scene, lighting, and mood are extracted in a product-agnostic manner. Background colors are adapted to contrast with and highlight your product."}
-        </p>
-      </div>
+      )}
 
       {/* Reference Images */}
       <div>
         <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
-          Reference Images <span className="text-muted-foreground/50 normal-case">(optional)</span>
+          {isInfographic ? (
+            <>
+              Infographic Reference{" "}
+              <span className="text-muted-foreground/50 normal-case">
+                (template / inspiration — required)
+              </span>
+            </>
+          ) : (
+            <>
+              Reference Images{" "}
+              <span className="text-muted-foreground/50 normal-case">(optional)</span>
+            </>
+          )}
         </label>
         <div className="mt-1 flex flex-wrap gap-2">
           {pose.referenceImages.map((img) => (
@@ -963,7 +1367,7 @@ function CustomPoseCard({
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={img.preview}
-                alt="Pose reference"
+                alt={isInfographic ? "Infographic reference" : "Pose reference"}
                 className="w-full h-full object-cover"
               />
               <button
@@ -976,7 +1380,12 @@ function CustomPoseCard({
           ))}
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="w-16 h-16 rounded-lg border border-dashed border-primary/30 bg-muted flex flex-col items-center justify-center gap-0.5 text-primary/60 hover:text-primary hover:border-primary/50 hover:bg-primary/10 transition-colors"
+            className={cn(
+              "w-16 h-16 rounded-lg border border-dashed bg-muted flex flex-col items-center justify-center gap-0.5 transition-colors",
+              isInfographic
+                ? "border-violet-500/30 text-violet-500/60 hover:text-violet-500 hover:border-violet-500/50 hover:bg-violet-500/10"
+                : "border-primary/30 text-primary/60 hover:text-primary hover:border-primary/50 hover:bg-primary/10"
+            )}
           >
             <Upload className="w-4 h-4" />
             <span className="text-[8px] font-medium">Add</span>
@@ -991,6 +1400,8 @@ function CustomPoseCard({
           className="hidden"
         />
       </div>
+
+      {isInfographic && <InfographicPanel pose={pose} api={infographicApi} />}
     </div>
   );
 }
@@ -1005,6 +1416,7 @@ function CustomPosesSection({
   updateCustomPose,
   addCustomPoseImage,
   removeCustomPoseImage,
+  infographicApi,
 }: {
   customPoses: CustomPose[];
   addCustomPose: (pose: CustomPose) => void;
@@ -1012,6 +1424,7 @@ function CustomPosesSection({
   updateCustomPose: (id: string, update: Partial<Omit<CustomPose, "id">>) => void;
   addCustomPoseImage: (poseId: string, file: File) => void;
   removeCustomPoseImage: (poseId: string, imageId: string) => void;
+  infographicApi: InfographicCardApi;
 }) {
   const handleAddCustomPose = useCallback(() => {
     addCustomPose({
@@ -1019,6 +1432,7 @@ function CustomPosesSection({
       name: "",
       description: "",
       isModelShot: true,
+      shotKind: "model",
       referenceMode: "pose",
       referenceImages: [],
     });
@@ -1036,7 +1450,7 @@ function CustomPosesSection({
           )}
         </div>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Create your own poses with text descriptions and optional reference images. These are sent to the AI alongside preset poses.
+          Create your own poses with text descriptions and optional reference images. These are sent to the AI alongside preset poses. Switch a card to <span className="font-medium text-violet-600 dark:text-violet-400">Infographic</span> to turn an uploaded infographic into a template for a finished marketing asset.
         </p>
       </div>
 
@@ -1051,6 +1465,7 @@ function CustomPosesSection({
               onRemove={removeCustomPose}
               onAddImage={addCustomPoseImage}
               onRemoveImage={removeCustomPoseImage}
+              infographicApi={infographicApi}
             />
           ))}
         </div>
@@ -2389,6 +2804,22 @@ export function StepOutput({ store }: StepOutputProps) {
     updateCustomPose,
     addCustomPoseImage,
     removeCustomPoseImage,
+    setCustomPoseShotKind,
+    updateCustomPoseInfographic,
+    setInfographicPlan,
+    addInfographicPoint,
+    updateInfographicPoint,
+    removeInfographicPoint,
+    setCustomPoseBrandLogo,
+    clearCustomPoseBrandLogo,
+    infographicAnalyzing,
+    setInfographicAnalyzingFor,
+    infographicAnalysisError,
+    setInfographicAnalysisErrorFor,
+    apiKey,
+    textGenModel,
+    garmentImages,
+    productInfo,
     productCategory,
     garmentType,
     footwearType,
@@ -2422,6 +2853,96 @@ export function StepOutput({ store }: StepOutputProps) {
   } = store;
   const [showAllPoses, setShowAllPoses] = useState(false);
   const isModelSwap = featureMode === "model-swap";
+
+  /**
+   * Step 1 of the infographic pipeline — run from the card so the operator reviews and edits
+   * the derived text points before any image is rendered.
+   *
+   * In bulk mode the plan is deliberately product-agnostic (no garment images attached): one
+   * review surface covers the whole batch, and `generateCustomPoseInfographicPrompt` then
+   * re-specialises it against each product folder's own images at generation time.
+   */
+  const handleAnalyzeInfographic = useCallback(
+    async (pose: CustomPose) => {
+      const config = pose.infographic;
+      if (!config || pose.referenceImages.length === 0) return;
+
+      setInfographicAnalysisErrorFor(pose.id, undefined);
+      setInfographicAnalyzingFor(pose.id, true);
+      try {
+        const isBulk = mode === "bulk";
+        const { plan } = await analyzeInfographicReference({
+          apiKey,
+          textGenModel,
+          referenceImages: pose.referenceImages.map((img) => ({ file: img.file })),
+          garmentImages: isBulk ? [] : garmentImages.map((g) => ({ file: g.file })),
+          productCategory,
+          productInfo,
+          poseName: pose.name,
+          compositionNotes: pose.description,
+          customBackground: pose.customBackground,
+          textMode: config.textMode,
+          textInput: config.textInput,
+          fidelity: config.fidelity,
+          aspectRatio,
+          brandLogoPresent: !!config.brandLogo,
+          brandPlacementInstructions: config.brandPlacementInstructions,
+          productAgnostic: isBulk,
+        });
+        setInfographicPlan(pose.id, plan);
+      } catch (err) {
+        setInfographicAnalysisErrorFor(
+          pose.id,
+          err instanceof Error ? err.message : "Analysis failed — please try again."
+        );
+      } finally {
+        setInfographicAnalyzingFor(pose.id, false);
+      }
+    },
+    [
+      apiKey,
+      textGenModel,
+      garmentImages,
+      productCategory,
+      productInfo,
+      aspectRatio,
+      mode,
+      setInfographicPlan,
+      setInfographicAnalyzingFor,
+      setInfographicAnalysisErrorFor,
+    ]
+  );
+
+  const infographicApi = useMemo<InfographicCardApi>(
+    () => ({
+      setShotKind: setCustomPoseShotKind,
+      updateConfig: updateCustomPoseInfographic,
+      setPlan: setInfographicPlan,
+      addPoint: addInfographicPoint,
+      updatePoint: updateInfographicPoint,
+      removePoint: removeInfographicPoint,
+      setBrandLogo: setCustomPoseBrandLogo,
+      clearBrandLogo: clearCustomPoseBrandLogo,
+      analyzing: infographicAnalyzing,
+      errors: infographicAnalysisError,
+      onAnalyze: handleAnalyzeInfographic,
+      isBulk: mode === "bulk",
+    }),
+    [
+      setCustomPoseShotKind,
+      updateCustomPoseInfographic,
+      setInfographicPlan,
+      addInfographicPoint,
+      updateInfographicPoint,
+      removeInfographicPoint,
+      setCustomPoseBrandLogo,
+      clearCustomPoseBrandLogo,
+      infographicAnalyzing,
+      infographicAnalysisError,
+      handleAnalyzeInfographic,
+      mode,
+    ]
+  );
 
   const isFootwear = productCategory === "footwear";
   const activeType = isFootwear ? footwearType : garmentType;
@@ -2600,7 +3121,7 @@ export function StepOutput({ store }: StepOutputProps) {
         </div>
 
         {/* Warning if model-shot poses selected without model */}
-        {!hasModel && (selectedPoses.some((p) => p.requiresModel !== false) || customPoses.some((cp) => cp.isModelShot)) && (
+        {!hasModel && (selectedPoses.some((p) => p.requiresModel !== false) || customPoses.some(customPoseNeedsModel)) && (
           <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-500/8 border border-amber-500/20 text-sm text-amber-700 dark:text-amber-400">
             <AlertCircle className="w-4 h-4 shrink-0" />
             <span>Some selected poses require an AI model. Go back to Styling to select or upload one, or switch model-shot poses to product shots.</span>
@@ -2665,6 +3186,7 @@ export function StepOutput({ store }: StepOutputProps) {
         updateCustomPose={updateCustomPose}
         addCustomPoseImage={addCustomPoseImage}
         removeCustomPoseImage={removeCustomPoseImage}
+        infographicApi={infographicApi}
       />
 
       {/* Reference-Driven Photoshoot (evolved custom pose) */}
@@ -2681,7 +3203,7 @@ export function StepOutput({ store }: StepOutputProps) {
       />
 
       {/* Per-Pose Accessories - only for on-model / model-shot poses */}
-      {(selectedPoses.filter((p) => p.requiresModel !== false).length > 0 || customPoses.filter((cp) => cp.isModelShot).length > 0) && (
+      {(selectedPoses.filter((p) => p.requiresModel !== false).length > 0 || customPoses.filter(customPoseNeedsModel).length > 0) && (
         <div className="space-y-4">
           <div>
             <div className="flex items-center gap-2">
@@ -2700,7 +3222,7 @@ export function StepOutput({ store }: StepOutputProps) {
           </div>
 
           {/* Apply to all poses toggle */}
-          {(selectedPoses.filter((p) => p.requiresModel !== false).length + customPoses.filter((cp) => cp.isModelShot).length) > 1 && (
+          {(selectedPoses.filter((p) => p.requiresModel !== false).length + customPoses.filter(customPoseNeedsModel).length) > 1 && (
             <button
               onClick={() => setApplyAccessoriesToAllPoses(!applyAccessoriesToAllPoses)}
               className={cn(
@@ -2783,7 +3305,9 @@ export function StepOutput({ store }: StepOutputProps) {
               />
             ))}
             {customPoses
-              .filter((cp) => cp.isModelShot)
+              // Infographics compose their own asset from the reference layout, so accessories
+              // are not forwarded to their render — don't offer a control that does nothing.
+              .filter((cp) => customPoseNeedsModel(cp) && !customPoseIsInfographic(cp))
               .map((cp) => (
               <PoseAccessoriesPanel
                 key={cp.id}

@@ -49,6 +49,11 @@ import {
   RoomStyle,
   ProductShape,
   ReferencePhotoshootMode,
+  CompositionReferenceMode,
+  InfographicFidelity,
+  InfographicPlan,
+  InfographicTextMode,
+  InfographicTextPoint,
 } from "./types";
 import {
   ACCESSORY_CATEGORIES,
@@ -2936,6 +2941,7 @@ export async function buildVTONImageContentParts({
   background,
   sceneReferenceImage,
   compositionReference,
+  brandLogo,
   isOnModelGarment = false,
   garmentDescription,
   productCategory = "clothing",
@@ -2980,9 +2986,14 @@ export async function buildVTONImageContentParts({
    */
   compositionReference?: {
     file: File;
-    mode: ReferencePhotoshootMode;
+    mode: CompositionReferenceMode;
     replicateFootwearAccessories: boolean;
   };
+  /**
+   * Optional brand logo baked into the render (infographic custom poses). Mirrors the
+   * BRAND LOGO REFERENCE block used by {@link buildInfographicImageContentParts}.
+   */
+  brandLogo?: { file: File; placementInstructions?: string };
   /** True when the garment images are ON-MODEL (worn by a stand-in) — triggers the ignore-wearer directive. */
   isOnModelGarment?: boolean;
   /** Optional garment-only description (from describeGarmentFromImages) attached alongside on-model garment images. */
@@ -3294,12 +3305,42 @@ export async function buildVTONImageContentParts({
     });
   }
 
+  // ═══ BRAND LOGO (infographic custom poses) ═══
+  if (brandLogo) {
+    parts.push({
+      text:
+        `\n\n═══ BRAND LOGO REFERENCE ═══\n` +
+        `The image below is the brand logo. Place it tastefully in the composition, preserving its exact proportions and keeping it clearly legible against whatever sits behind it. Reproduce it exactly — do NOT redraw, restyle, recolour, or add wording to it.${brandLogo.placementInstructions?.trim() ? ` Placement guidance: ${brandLogo.placementInstructions.trim()}` : ""}`,
+    });
+    const logoBase64 = await fileToBase64(brandLogo.file);
+    parts.push({
+      inlineData: { mimeType: brandLogo.file.type, data: logoBase64 },
+    });
+  }
+
+  // ═══ INFOGRAPHIC LAYOUT REFERENCE (infographic custom-pose channel) ═══
+  // Unlike the reference-photoshoot channel below, this one applies to product-only
+  // renders too — an infographic frequently has no human model at all, and dropping the
+  // layout reference there would silently defeat Layout Lock.
+  if (compositionReference && compositionReference.mode === "infographic-layout") {
+    parts.push({
+      text:
+        `\n\n═══ INFOGRAPHIC LAYOUT REFERENCE (gemini-3.1-flash-image) ═══\n` +
+        `The image below is the AUTHORITATIVE LAYOUT TEMPLATE for this infographic. Replicate its STRUCTURE: the canvas division and grid, the placement and reading order of every headline / callout / label zone, the leader-line and pointer treatment, the icon style and size relationships, the typographic hierarchy (relative sizes, weights, casing, alignment), the whitespace rhythm, and the palette RELATIONSHIPS (how many colours, how they are distributed between background, product and text). The output must read as the same template, re-laid-out for a different product.\n` +
+        `DO NOT COPY from this image: (1) the PRODUCT shown in it — the product comes SOLELY from the ${isFootwear ? "FOOTWEAR" : "GARMENT"} SOURCE images; (2) any of its TEXT — every word in the output comes SOLELY from the composition description above, reproduced verbatim; (3) its BRANDING, logos or watermarks; (4) its exact colour values where they would fight the product — adapt hues so the product stays the hero. Treat this image as a wireframe, not as content.`,
+    });
+    const layoutBase64 = await fileToBase64(compositionReference.file);
+    parts.push({
+      inlineData: { mimeType: compositionReference.file.type, data: layoutBase64 },
+    });
+  }
+
   // ═══ COMPOSITION & FRAMING REFERENCE (reference-photoshoot framing channel) ═══
   // Attached LAST (recency anchor) so gemini-3.1-flash-image reads it as the
   // authoritative composition signal. Per Nano Banana guidance: role-label the image,
   // positive framing ("replicate / match / preserve"), and sequence the operation
   // (lock framing → keep footwear/accessories → swap in the configured model + garment).
-  if (compositionReference && !isProductOnlyShot) {
+  if (compositionReference && compositionReference.mode !== "infographic-layout" && !isProductOnlyShot) {
     const m = compositionReference.mode;
     const poseLine =
       m === "variation"
@@ -3344,6 +3385,7 @@ export async function generateVTONImage({
   background,
   sceneReferenceImage,
   compositionReference,
+  brandLogo,
   isOnModelGarment = false,
   garmentDescription,
   aspectRatio,
@@ -3373,9 +3415,11 @@ export async function generateVTONImage({
   /** Reference image attached as a COMPOSITION & FRAMING reference (see buildVTONImageContentParts). */
   compositionReference?: {
     file: File;
-    mode: ReferencePhotoshootMode;
+    mode: CompositionReferenceMode;
     replicateFootwearAccessories: boolean;
   };
+  /** Optional brand logo baked into the render (see buildVTONImageContentParts). */
+  brandLogo?: { file: File; placementInstructions?: string };
   /** On-model garment source → triggers the ignore-wearer directive (see buildVTONImageContentParts). */
   isOnModelGarment?: boolean;
   /** Garment-only description attached alongside on-model garment images. */
@@ -3401,6 +3445,7 @@ export async function generateVTONImage({
     background,
     sceneReferenceImage,
     compositionReference,
+    brandLogo,
     isOnModelGarment,
     garmentDescription,
     productCategory,
@@ -6541,6 +6586,402 @@ export async function generateInfographicImage({
  * tightly-scoped edit instruction; Step B replays the original multi-turn context and applies
  * only that edit, keeping everything else pixel-identical.
  */
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║        CUSTOM-POSE INFOGRAPHIC (VTON Step 3 shot kind)             ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+//
+// A two-step pipeline reachable from the Custom Pose card, distinct from the standalone
+// Infographic wizard above:
+//   Step 1  analyzeInfographicReference          — run from the card, user reviews the points
+//   Step 1′ generateCustomPoseInfographicPrompt  — re-projects the approved plan onto a
+//                                                  concrete product (edits / bulk only)
+//   Step 2  generateVTONImage(Routed)            — renders, with the reference forwarded as an
+//                                                  "infographic-layout" compositionReference
+//                                                  under Layout Lock
+// Unlike a normal custom pose, the reference here is a TEMPLATE: its layout is the payload and
+// its product/copy/branding are contaminants that must never survive into the output.
+
+/** Shared separation clause — the single most important rule in both steps. */
+const INFOGRAPHIC_REFERENCE_SEPARATION = `═══ REFERENCE SEPARATION (non-negotiable) ═══
+The attached infographic reference is a LAYOUT TEMPLATE, not content. From it you take ONLY: canvas division and grid, the placement and reading order of headline / callout / label zones, leader-line and pointer treatment, icon style, typographic hierarchy (relative size, weight, casing, alignment), whitespace rhythm, and palette RELATIONSHIPS.
+You take NOTHING ELSE from it. Specifically, NEVER carry over: the product it shows, its wording or claims, its brand names, logos or watermarks, or any colour value that would fight the user's actual product. The product, its real features, and its true colourway come SOLELY from the product images and product information. If the reference and the product disagree about anything, the product wins.`;
+
+/** Builds the text-derivation directive for the chosen {@link InfographicTextMode}. */
+function buildInfographicTextDirective(textMode: InfographicTextMode, textInput: string): string {
+  const input = textInput.trim();
+
+  if (textMode === "exact") {
+    return `═══ TEXT — EXACT COPY (verbatim) ═══
+The operator has supplied the EXACT wording that must appear in the image:
+
+"""
+${input}
+"""
+
+Split this into discrete callouts along its natural boundaries (lines, bullets, sentences, or "label — detail" pairs). Reproduce every word CHARACTER-FOR-CHARACTER, including capitalisation, punctuation, symbols (®, ™, °, %) and any deliberate styling. You may decide only WHERE each piece sits and WHICH part of the product it points to — never WHAT it says. Do not add, drop, merge, translate, pluralise, expand abbreviations, or "improve" a single word. Do not invent extra callouts beyond what this text contains.`;
+  }
+
+  if (textMode === "describe") {
+    return `═══ TEXT — DESCRIBED CONTENT ═══
+The operator has described what the copy should CONVEY (not its exact wording):
+
+"""
+${input}
+"""
+
+Write the actual on-image copy that delivers this meaning. Keep each callout tight and scannable — a short label of roughly 2–5 words, optionally with one brief supporting clause. Every claim must be supportable by what is visibly true of the product or stated in the product information; never invent a spec, material, technology name, measurement, certification or performance number that is not evidenced. Prefer the operator's own vocabulary where they used a specific term.`;
+  }
+
+  return `═══ TEXT — CREATIVE DIRECTION (expand into explicit points) ═══
+The operator has given only a loose creative direction${input ? `:
+
+"""
+${input}
+"""` : " (none supplied — derive everything from the product itself)."}
+
+Your job is to turn this into CONCRETE, EXPLICIT callout points. Study the product images closely and derive points that are factually supportable by what you can actually see (construction, materials, silhouette, closure, sole/outsole, stitching, panelling, hardware, finish) plus anything stated in the product information. Each point becomes one short, scannable callout label of roughly 2–5 words, written in confident retail-marketing voice consistent with the operator's direction. Never invent a spec, technology name, material, measurement, certification or performance claim you cannot ground in the images or the supplied information — where the direction implies a claim you cannot evidence, reframe it as an observable design attribute instead.`;
+}
+
+/** Builds the fidelity directive for how literally the reference layout is reproduced. */
+function buildInfographicFidelityDirective(fidelity: InfographicFidelity): string {
+  return fidelity === "layout-lock"
+    ? `═══ FIDELITY — LAYOUT LOCK ═══
+Reproduce the reference's layout STRICTLY and reproducibly. Match its zone geometry, callout count and positions, leader-line routing, icon placement, alignment grid and typographic hierarchy as closely as the product's own proportions allow. Describe positions concretely (e.g. "upper-left quadrant, baseline aligned with the product's heel") so the render is repeatable. Depart from the template ONLY where the product's silhouette makes an exact match physically impossible, and say so explicitly when you do.
+NOTE: under Layout Lock the reference image is ALSO shown to the image model as a wireframe, so your description must AGREE with it rather than contradict it.`
+    : `═══ FIDELITY — LOOSE INSPIRATION ═══
+Treat the reference as stylistic inspiration only. Borrow its design language — its overall mood, typographic feel, callout treatment, icon vocabulary and palette relationships — but RECOMPOSE the layout around this specific product's silhouette, orientation and proportions, and around the number of points the copy actually needs. The result should feel like it came from the same design system, not like the same file with the product swapped.
+NOTE: under Loose Inspiration the image model never sees the reference, so your description is the ONLY channel carrying it — be concrete and self-contained.`;
+}
+
+/**
+ * Extracts the JSON object from a model response that may be fenced or prefaced with prose.
+ * Uses the same defensive idiom as the swatch analyzer: match the outermost `{…}` and parse.
+ */
+function parseInfographicPlanJson(raw: string): {
+  includesModel?: unknown;
+  layoutSummary?: unknown;
+  composition?: unknown;
+  points?: unknown;
+} {
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) {
+    throw new Error("Infographic analysis did not return a JSON object");
+  }
+  try {
+    return JSON.parse(match[0]);
+  } catch {
+    throw new Error("Infographic analysis returned malformed JSON");
+  }
+}
+
+/** Normalises the model's raw `points` array into {@link InfographicTextPoint}s with stable ids. */
+function coerceInfographicPoints(raw: unknown): InfographicTextPoint[] {
+  if (!Array.isArray(raw)) return [];
+  const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  return raw
+    .map((entry, i) => {
+      const row = (entry ?? {}) as { text?: unknown; anchor?: unknown };
+      const text = typeof row.text === "string" ? row.text.trim() : "";
+      const anchor = typeof row.anchor === "string" ? row.anchor.trim() : "";
+      return { id: `ig-pt-${stamp}-${i}`, text, anchor: anchor || undefined };
+    })
+    .filter((p) => p.text.length > 0);
+}
+
+/**
+ * Step 1 — Analyse an infographic reference against the product and the operator's text intent,
+ * and return a reviewable {@link InfographicPlan}: the explicit callout copy, the layout summary,
+ * a contextual model/product-only decision, and the full composition contract.
+ *
+ * Run from the Custom Pose card so the operator can edit the derived points BEFORE any image is
+ * rendered. In bulk mode pass `productAgnostic: true` with no garment images — the plan is then
+ * written to fit any product in the batch and re-specialised per product at generation time by
+ * {@link generateCustomPoseInfographicPrompt}.
+ */
+export async function analyzeInfographicReference({
+  apiKey,
+  textGenModel = "gemini",
+  referenceImages,
+  garmentImages = [],
+  productCategory = "clothing",
+  productInfo,
+  poseName,
+  compositionNotes,
+  customBackground,
+  textMode,
+  textInput,
+  fidelity,
+  aspectRatio,
+  brandLogoPresent = false,
+  brandPlacementInstructions,
+  productAgnostic = false,
+  abortSignal,
+}: {
+  apiKey: string;
+  textGenModel?: TextGenModel;
+  /** The uploaded infographic template(s). At least one is required. */
+  referenceImages: { file: File }[];
+  /** The product being marketed. Empty when `productAgnostic`. */
+  garmentImages?: { file: File }[];
+  productCategory?: ProductCategory;
+  productInfo?: string;
+  poseName?: string;
+  /** Free-form composition notes from the card's description field. */
+  compositionNotes?: string;
+  /** Per-pose background override, if the operator set one. */
+  customBackground?: string;
+  textMode: InfographicTextMode;
+  textInput: string;
+  fidelity: InfographicFidelity;
+  aspectRatio: AspectRatio;
+  brandLogoPresent?: boolean;
+  brandPlacementInstructions?: string;
+  /** Bulk mode: write a plan that any product in the batch can inherit. */
+  productAgnostic?: boolean;
+  abortSignal?: AbortSignal;
+}): Promise<{ plan: InfographicPlan; cost: StepCost }> {
+  if (referenceImages.length === 0) {
+    throw new Error("An infographic reference image is required before analysis");
+  }
+
+  const ai = getTextClient(textGenModel);
+  const productNoun = productCategory === "footwear" ? "footwear" : "garment";
+
+  const systemPrompt = `You are an expert e-commerce art director and product-infographic designer. You are given an infographic REFERENCE TEMPLATE${productAgnostic ? "" : ` and the reference photo(s) of a single ${productNoun} product`}. Your task is to author a complete, reviewable INFOGRAPHIC PLAN: the explicit text points that will be printed on the image, and one precise, deterministic, self-contained IMAGE-COMPOSITION DESCRIPTION that an image-generation model will follow.
+
+${INFOGRAPHIC_PROMPTING_PRINCIPLES}
+
+${INFOGRAPHIC_REFERENCE_SEPARATION}
+
+═══ STEP A — READ THE TEMPLATE ═══
+Analyse the attached reference infographic and describe its structure to yourself: canvas orientation and grid, how many callout/label zones there are and where they sit, the reading order, leader-line and icon treatment, the typographic hierarchy, and how colour is distributed between background, product and text. This becomes \`layoutSummary\` — a compact but concrete restatement someone could rebuild the wireframe from.
+
+${buildInfographicFidelityDirective(fidelity)}
+
+═══ STEP B — DERIVE THE TEXT ═══
+${buildInfographicTextDirective(textMode, textInput)}
+
+For each point emit \`text\` (the exact string to print) and \`anchor\` (which region or feature of the product it points to, in plain words — e.g. "the midsole sidewall", "the collar and placket"). Keep the number of points consistent with what the template's layout can hold gracefully${fidelity === "layout-lock" ? " — under Layout Lock, match the template's own callout count unless the copy genuinely demands otherwise" : ""}.
+
+═══ STEP C — DECIDE THE SUBJECT ═══
+Decide whether the finished asset shows a HUMAN MODEL wearing the ${productNoun}, or the ${productNoun} alone as a product-only render. Base this on the reference template's own treatment (does it stage a person or an isolated product?), the product category, and what best serves the callouts — a callout pointing at fit, drape or styling argues for a model; one pointing at construction, sole or material detail argues for an isolated product. Return the decision as \`includesModel\` (boolean) and justify it in one clause inside the composition.
+
+═══ STEP D — WRITE THE COMPOSITION ═══
+Author the composition description as flowing, well-structured prose (short labelled lines are fine). It MUST explicitly specify, so the result is reproducible:
+1. The canvas: target aspect ratio ${aspectRatio}, and its orientation.
+2. The ${productNoun}: its exact placement, orientation, angle and scale in the frame${productAgnostic ? " (described structurally, so it holds for any product in the batch)" : ", faithful to the attached product images"}.
+3. Whether a human model is present (matching \`includesModel\`), and if so their framing, crop and pose — described only as far as the layout requires.
+4. Each callout: its exact quoted text, the product region it points to, its leader line and icon, and its position in the frame.
+5. The background${customBackground?.trim() ? ` — the operator requires: ${customBackground.trim()}` : ""}, with concrete hex colours and the light/gradient direction, chosen to contrast with and elevate the product.
+6. The contact-shadow direction and softness, kept in sync with the lighting and any background gradient.
+7. The typographic treatment: hierarchy, weights, casing and alignment.
+${brandLogoPresent ? `8. The brand-logo placement — a logo image is attached to the render request; specify where and how it sits, at a tasteful size, proportions preserved, clearly legible.${brandPlacementInstructions?.trim() ? ` Follow this guidance: ${brandPlacementInstructions.trim()}` : ""}\n` : ""}
+CRITICAL: the composition must quote every callout string EXACTLY as it appears in \`points\`. The two must never disagree.
+${productAgnostic ? `\n═══ BULK MODE — PRODUCT-AGNOSTIC PLAN ═══\nNo product images are attached. Write the plan so it holds for ANY product in this batch: describe layout, typography, palette strategy and callout intent structurally, and keep copy generic enough to remain true across the batch. It will be re-specialised against each concrete product before rendering. Do NOT invent product-specific details you cannot know.\n` : ""}${poseName?.trim() ? `\n═══ OPERATOR'S NAME FOR THIS ASSET ═══\n${poseName.trim()}\n` : ""}${compositionNotes?.trim() ? `\n═══ OPERATOR'S COMPOSITION NOTES (honour these) ═══\n${compositionNotes.trim()}\n` : ""}${productInfo?.trim() ? `\n═══ PRODUCT INFORMATION ═══\n${productInfo.trim()}\n\nIf the information above is a long paragraph, FIRST summarise it into concise bullet points, then derive callout copy from those bullets only.\n` : ""}
+═══ OUTPUT FORMAT ═══
+Respond with a SINGLE JSON object and nothing else — no preamble, no commentary, no markdown fence:
+{
+  "includesModel": boolean,
+  "layoutSummary": "compact restatement of the template's structure",
+  "points": [ { "text": "exact on-image copy", "anchor": "product region it points to" } ],
+  "composition": "the full composition description from STEP D"
+}`;
+
+  const contents: ContentPart[] = [{ text: systemPrompt }];
+
+  contents.push({
+    text: `\n═══ INFOGRAPHIC REFERENCE TEMPLATE (${referenceImages.length} image(s)) — LAYOUT ONLY ═══`,
+  });
+  for (const img of referenceImages) {
+    contents.push({
+      inlineData: { mimeType: img.file.type, data: await fileToBase64(img.file) },
+    });
+  }
+
+  if (!productAgnostic && garmentImages.length > 0) {
+    contents.push({
+      text: `\n═══ PRODUCT IMAGES — THE ACTUAL ${productNoun.toUpperCase()} TO MARKET ═══\nEverything about the product — silhouette, materials, colourway, construction, existing branding — comes from these images and these images only.`,
+    });
+    for (const img of garmentImages) {
+      contents.push({
+        inlineData: { mimeType: img.file.type, data: await fileToBase64(img.file) },
+      });
+    }
+  }
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+      abortSignal,
+    },
+  });
+
+  const text = response.text;
+  if (!text) {
+    throw new Error("No infographic analysis returned from Gemini 3.1 Pro");
+  }
+
+  const parsed = parseInfographicPlanJson(text);
+  const composition = typeof parsed.composition === "string" ? parsed.composition.trim() : "";
+  if (!composition) {
+    throw new Error("Infographic analysis returned no composition description");
+  }
+
+  const points = coerceInfographicPoints(parsed.points);
+  if (points.length === 0) {
+    throw new Error("Infographic analysis returned no text points — try a more specific text input");
+  }
+
+  const cost = computeStepCost(
+    textCostModel(textGenModel),
+    "Infographic Analysis (Gemini 3.1 Pro)",
+    extractTokenUsage(response)
+  );
+
+  return {
+    plan: {
+      points,
+      composition,
+      includesModel: parsed.includesModel === true,
+      layoutSummary:
+        typeof parsed.layoutSummary === "string" ? parsed.layoutSummary.trim() : undefined,
+      approved: true,
+      editedSinceAnalysis: false,
+    },
+    cost,
+  };
+}
+
+/**
+ * Step 1′ — Re-project an approved {@link InfographicPlan} onto a concrete product, locking the
+ * operator-approved callout copy verbatim while re-grounding product geometry, materials,
+ * colourway and background in this product's actual images.
+ *
+ * Only needed when the plan cannot be used as-authored:
+ *  - single mode where the operator EDITED the points after analysis, or
+ *  - bulk mode, where the card's plan is deliberately product-agnostic and must be specialised
+ *    once per product.
+ * Otherwise the caller renders `plan.composition` directly, keeping the pipeline at two calls.
+ */
+export async function generateCustomPoseInfographicPrompt({
+  apiKey,
+  textGenModel = "gemini",
+  plan,
+  referenceImages,
+  garmentImages,
+  productCategory = "clothing",
+  productInfo,
+  compositionNotes,
+  customBackground,
+  fidelity,
+  aspectRatio,
+  brandLogoPresent = false,
+  brandPlacementInstructions,
+  abortSignal,
+}: {
+  apiKey: string;
+  textGenModel?: TextGenModel;
+  /** The operator-approved plan (post-edit). */
+  plan: InfographicPlan;
+  referenceImages: { file: File }[];
+  /** THIS product's images — the specialisation target. */
+  garmentImages: { file: File }[];
+  productCategory?: ProductCategory;
+  productInfo?: string;
+  compositionNotes?: string;
+  customBackground?: string;
+  fidelity: InfographicFidelity;
+  aspectRatio: AspectRatio;
+  brandLogoPresent?: boolean;
+  brandPlacementInstructions?: string;
+  abortSignal?: AbortSignal;
+}): Promise<{ text: string; cost: StepCost }> {
+  const ai = getTextClient(textGenModel);
+  const productNoun = productCategory === "footwear" ? "footwear" : "garment";
+
+  const approvedCopy = plan.points
+    .map((p, i) => `${i + 1}. "${p.text}"${p.anchor ? `  →  points to: ${p.anchor}` : ""}`)
+    .join("\n");
+
+  const systemPrompt = `You are an expert e-commerce art director finalising a product infographic. An approved plan already exists — your job is to re-project it onto the specific ${productNoun} shown in the attached product images and emit the final IMAGE-COMPOSITION DESCRIPTION.
+
+${INFOGRAPHIC_PROMPTING_PRINCIPLES}
+
+${INFOGRAPHIC_REFERENCE_SEPARATION}
+
+${buildInfographicFidelityDirective(fidelity)}
+
+═══ APPROVED CALLOUT COPY — LOCKED ═══
+These strings have been reviewed and approved by the operator. Reproduce each one CHARACTER-FOR-CHARACTER in your composition, inside quotes, exactly as written — same wording, capitalisation, punctuation and symbols. Do NOT reword, reorder the wording, merge, split, translate, add, or drop any of them. The set below is complete and closed: the finished image contains these callouts and no others.
+
+${approvedCopy}
+
+═══ APPROVED LAYOUT ═══
+${plan.layoutSummary?.trim() || "(no separate layout summary — follow the approved composition below and the attached reference)"}
+
+═══ APPROVED COMPOSITION (the plan to specialise) ═══
+${plan.composition}
+
+═══ SUBJECT ═══
+The approved plan renders this asset ${plan.includesModel ? "WITH a human model wearing the product" : "as a PRODUCT-ONLY render with no human model, no mannequin, and no body parts"}. Keep that decision — do not change it.
+
+═══ YOUR TASK ═══
+Rewrite the approved composition into a single, final, self-contained composition description for THIS product:
+- Re-ground every product description in the attached product images: real silhouette, proportions, materials, stitching, colourway, sole/outsole pattern and any branding that genuinely exists on it. Suppress world knowledge about what this product "should" look like — trust only these pixels.
+- Re-target each approved callout's anchor to the region where that feature actually lives on THIS product. If an approved anchor does not exist on this product, point the callout at the nearest genuinely relevant region rather than changing its text.
+- Keep the layout, typography, palette strategy, aspect ratio (${aspectRatio}) and subject decision from the approved plan.
+- Keep the background${customBackground?.trim() ? ` — the operator requires: ${customBackground.trim()}` : ""} consistent with the plan, adjusting only the concrete hex values needed to stay in contrast with this product's actual colourway.
+${brandLogoPresent ? `- Keep the brand-logo placement from the plan; a logo image is attached to the render request.${brandPlacementInstructions?.trim() ? ` Placement guidance: ${brandPlacementInstructions.trim()}` : ""}\n` : ""}${compositionNotes?.trim() ? `- Honour the operator's composition notes: ${compositionNotes.trim()}\n` : ""}${productInfo?.trim() ? `\n═══ PRODUCT INFORMATION ═══\n${productInfo.trim()}\n` : ""}
+═══ OUTPUT FORMAT ═══
+Output ONLY the final composition description as flowing, well-structured prose (short labelled lines are fine). No preamble, no commentary, no closing remarks, no JSON.`;
+
+  const contents: ContentPart[] = [{ text: systemPrompt }];
+
+  if (referenceImages.length > 0) {
+    contents.push({
+      text: `\n═══ INFOGRAPHIC REFERENCE TEMPLATE — LAYOUT ONLY ═══`,
+    });
+    for (const img of referenceImages) {
+      contents.push({
+        inlineData: { mimeType: img.file.type, data: await fileToBase64(img.file) },
+      });
+    }
+  }
+
+  contents.push({
+    text: `\n═══ PRODUCT IMAGES — THE ACTUAL ${productNoun.toUpperCase()} TO MARKET ═══\nEverything about the product comes from these images and these images only.`,
+  });
+  for (const img of garmentImages) {
+    contents.push({
+      inlineData: { mimeType: img.file.type, data: await fileToBase64(img.file) },
+    });
+  }
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+      abortSignal,
+    },
+  });
+
+  const text = response.text;
+  if (!text) {
+    throw new Error("No infographic composition returned from Gemini 3.1 Pro");
+  }
+
+  const cost = computeStepCost(
+    textCostModel(textGenModel),
+    "Infographic Composition (Gemini 3.1 Pro)",
+    extractTokenUsage(response)
+  );
+
+  return { text: text.trim(), cost };
+}
+
 // ╔═══════════════════════════════════════════════════════════════════╗
 // ║                    AI MODEL CREATION                               ║
 // ╚═══════════════════════════════════════════════════════════════════╝

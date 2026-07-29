@@ -274,12 +274,96 @@ export interface Pose {
 
 export type CustomPoseReferenceMode = "pose" | "image";
 
+/**
+ * Which kind of output a custom pose produces. `"model"` / `"product"` mirror the
+ * legacy {@link CustomPose.isModelShot} boolean; `"infographic"` turns the pose into
+ * a marketing-asset render driven by an uploaded infographic template — see
+ * {@link InfographicPoseConfig}. Use the `customPose*` helpers in `@/lib/custom-pose`
+ * rather than reading the raw fields.
+ */
+export type CustomPoseShotKind = "model" | "product" | "infographic";
+
+/**
+ * How the user's text input for an infographic pose is interpreted by the analysis step:
+ * - `"exact"`: the input IS the on-image copy — split into callouts, never reworded
+ * - `"describe"`: the input states what the copy should convey — rewritten to callout length
+ * - `"creative"`: a vague creative direction — expanded into concrete, product-grounded points
+ */
+export type InfographicTextMode = "exact" | "describe" | "creative";
+
+/**
+ * How literally the uploaded infographic reference is reproduced:
+ * - `"layout-lock"`: the reference's layout grid, callout geometry and typographic hierarchy
+ *   are copied precisely, and the reference is ALSO forwarded to the image model as a
+ *   composition reference (layout only — never its product, copy, or branding)
+ * - `"inspiration"`: the reference informs style only; the composition is rebuilt around the
+ *   product and the image model never sees the reference (text-only channel, as with poses)
+ */
+export type InfographicFidelity = "layout-lock" | "inspiration";
+
+/** One callout on an infographic — the user-reviewable unit of on-image copy. */
+export interface InfographicTextPoint {
+  id: string;
+  /** Exact on-image copy. Locked verbatim at render time. */
+  text: string;
+  /** Which product region/feature this callout points to. */
+  anchor?: string;
+}
+
+/**
+ * Output of the Step-1 analysis (`analyzeInfographicReference`) — the review surface the
+ * user edits in the custom-pose card before generation is allowed to run.
+ */
+export interface InfographicPlan {
+  /** Derived, user-editable callout copy. */
+  points: InfographicTextPoint[];
+  /** Full composition contract authored by Gemini 3.1 Pro; fed to the image model. */
+  composition: string;
+  /**
+   * Contextual decision from the analysis: does a human model appear in the asset?
+   * Drives `poseIsProductOnly` at generation time in place of `isModelShot`.
+   */
+  includesModel: boolean;
+  /** The reference's layout restated in words (zones, grid, typography, palette). */
+  layoutSummary?: string;
+  /** Set once the analysis has returned and the user has seen the points — gates Generate. */
+  approved: boolean;
+  /**
+   * True after the user edits/adds/removes a point. Forces a composition re-projection at
+   * render time so the edited copy actually reaches the image model.
+   */
+  editedSinceAnalysis?: boolean;
+}
+
+/** Per-pose infographic configuration. Present only when `shotKind === "infographic"`. */
+export interface InfographicPoseConfig {
+  textMode: InfographicTextMode;
+  /** Free-form text whose meaning depends on {@link textMode}. */
+  textInput: string;
+  fidelity: InfographicFidelity;
+  /** Optional brand logo baked into the render. */
+  brandLogo?: ReferenceImageItem;
+  /** Free-form brand-logo placement guidance. */
+  brandPlacementInstructions?: string;
+  /** Populated by the Analyze step; absent until the user runs it. */
+  plan?: InfographicPlan;
+}
+
 export interface CustomPose {
   id: string;
   name: string;
   description: string;
-  /** true = Model Shot (human model included), false = Product Shot (product only, no model) */
+  /**
+   * true = Model Shot (human model included), false = Product Shot (product only, no model).
+   * Legacy storage for the model/product choice — for "does this output need a human model?"
+   * always use `customPoseNeedsModel()` from `@/lib/custom-pose`, which also handles the
+   * infographic shot kind (where model presence is decided by the analysis, not the user).
+   */
   isModelShot: boolean;
+  /** Absent on legacy poses ⇒ derived from {@link isModelShot}. */
+  shotKind?: CustomPoseShotKind;
+  /** Infographic configuration — meaningful only when `shotKind === "infographic"`. */
+  infographic?: InfographicPoseConfig;
   /**
    * Controls how attached reference images are interpreted by the AI:
    * - "pose" (default): images are STRICT pose references — only body geometry, camera angle, and image framing are extracted; background, accessories, model identity, garments/footwear, and other product-specific elements are ignored
@@ -312,6 +396,14 @@ export interface CustomPose {
  *   garment (always replaced), and accessories come from configuration.
  */
 export type ReferencePhotoshootMode = "variation" | "pose-lock" | "replication";
+
+/**
+ * Mode governing how a composition-reference image attached to the IMAGE MODEL is read.
+ * Extends {@link ReferencePhotoshootMode} with the infographic layout channel, in which the
+ * reference supplies layout geometry, callout placement and typographic hierarchy ONLY —
+ * never its own product, copy, or branding.
+ */
+export type CompositionReferenceMode = ReferencePhotoshootMode | "infographic-layout";
 
 /** A single uploaded reference or background image kept as File + object-URL preview. */
 export interface ReferenceImageItem {
