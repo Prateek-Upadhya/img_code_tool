@@ -19,6 +19,10 @@ import {
   BulkPoseOverride,
   ComplementaryImage,
   CustomPose,
+  CustomPoseShotKind,
+  InfographicPlan,
+  InfographicPoseConfig,
+  InfographicTextPoint,
   PropBucket,
   FeatureMode,
   FitType,
@@ -104,6 +108,7 @@ import {
   ModelReferenceViewKind,
 } from "@/lib/types";
 import { MAX_CAMERA_MOVEMENTS, MAX_MODEL_MOVEMENTS } from "@/lib/constants";
+import { customPoseNeedsModel } from "@/lib/custom-pose";
 import { saveModel } from "@/lib/model-library";
 import { dataUrlToFile } from "@/lib/model-creation-client";
 
@@ -272,6 +277,10 @@ export function useVTONStore() {
   const [googleBackend, setGoogleBackend] = useState<GoogleBackend>("vertex");
   const [selectedPoses, setSelectedPoses] = useState<Pose[]>([]);
   const [customPoses, setCustomPoses] = useState<CustomPose[]>([]);
+  /** Per-pose in-flight flag for the infographic Step-1 analysis (keyed by custom-pose id). */
+  const [infographicAnalyzing, setInfographicAnalyzing] = useState<Record<string, boolean>>({});
+  /** Per-pose error message from the last failed infographic analysis. */
+  const [infographicAnalysisError, setInfographicAnalysisError] = useState<Record<string, string>>({});
   const [namingLogic, setNamingLogic] = useState<NamingLogic>("folder-name-sequential");
   const [singleDownloadPrefix, setSingleDownloadPrefix] = useState("product");
   // Comma-separated list of suffix numbers to skip when generating sequential
@@ -922,7 +931,14 @@ export function useVTONStore() {
   }, []);
 
   const addCustomPose = useCallback((pose: CustomPose) => {
-    setCustomPoses((prev) => [...prev, { ...pose, isModelShot: pose.isModelShot ?? true }]);
+    setCustomPoses((prev) => [
+      ...prev,
+      {
+        ...pose,
+        isModelShot: pose.isModelShot ?? true,
+        shotKind: pose.shotKind ?? (pose.isModelShot === false ? "product" : "model"),
+      },
+    ]);
   }, []);
 
   const removeCustomPose = useCallback((id: string) => {
@@ -930,11 +946,22 @@ export function useVTONStore() {
       const removed = prev.find((p) => p.id === id);
       if (removed) {
         removed.referenceImages.forEach((img) => URL.revokeObjectURL(img.preview));
+        if (removed.infographic?.brandLogo) {
+          URL.revokeObjectURL(removed.infographic.brandLogo.preview);
+        }
       }
       return prev.filter((p) => p.id !== id);
     });
     setPoseAccessories((prevAccs) => {
       const { [id]: _, ...rest } = prevAccs;
+      return rest;
+    });
+    setInfographicAnalyzing((prev) => {
+      const { [id]: _, ...rest } = prev;
+      return rest;
+    });
+    setInfographicAnalysisError((prev) => {
+      const { [id]: _, ...rest } = prev;
       return rest;
     });
   }, []);
@@ -968,6 +995,159 @@ export function useVTONStore() {
         return { ...p, referenceImages: p.referenceImages.filter((i) => i.id !== imageId) };
       })
     );
+  }, []);
+
+  // --- Infographic Custom-Pose Actions ---
+
+  /**
+   * Switches a custom pose between Model / Product / Infographic. `isModelShot` is kept in
+   * sync for the two legacy kinds; for infographic it is left untouched because model
+   * presence is decided by the analysis (see `customPoseNeedsModel`). Selecting Infographic
+   * seeds a default config so the card always has something to render.
+   */
+  const setCustomPoseShotKind = useCallback((poseId: string, kind: CustomPoseShotKind) => {
+    setCustomPoses((prev) =>
+      prev.map((p) => {
+        if (p.id !== poseId) return p;
+        if (kind === "infographic") {
+          return {
+            ...p,
+            shotKind: kind,
+            infographic: p.infographic ?? {
+              textMode: "creative",
+              textInput: "",
+              fidelity: "layout-lock",
+            },
+          };
+        }
+        return { ...p, shotKind: kind, isModelShot: kind === "model" };
+      })
+    );
+  }, []);
+
+  const updateCustomPoseInfographic = useCallback(
+    (poseId: string, update: Partial<InfographicPoseConfig>) => {
+      setCustomPoses((prev) =>
+        prev.map((p) => {
+          if (p.id !== poseId) return p;
+          const base: InfographicPoseConfig = p.infographic ?? {
+            textMode: "creative",
+            textInput: "",
+            fidelity: "layout-lock",
+          };
+          return { ...p, infographic: { ...base, ...update } };
+        })
+      );
+    },
+    []
+  );
+
+  const setInfographicPlan = useCallback((poseId: string, plan: InfographicPlan | undefined) => {
+    setCustomPoses((prev) =>
+      prev.map((p) => {
+        if (p.id !== poseId || !p.infographic) return p;
+        return { ...p, infographic: { ...p.infographic, plan } };
+      })
+    );
+  }, []);
+
+  /**
+   * Mutates the plan's points. Any edit flags `editedSinceAnalysis`, which forces a
+   * composition re-projection at render time so the edited copy actually reaches the
+   * image model instead of the stale composition authored during analysis.
+   */
+  const mutateInfographicPoints = useCallback(
+    (poseId: string, fn: (points: InfographicTextPoint[]) => InfographicTextPoint[]) => {
+      setCustomPoses((prev) =>
+        prev.map((p) => {
+          if (p.id !== poseId || !p.infographic?.plan) return p;
+          const plan = p.infographic.plan;
+          return {
+            ...p,
+            infographic: {
+              ...p.infographic,
+              plan: { ...plan, points: fn(plan.points), editedSinceAnalysis: true },
+            },
+          };
+        })
+      );
+    },
+    []
+  );
+
+  const addInfographicPoint = useCallback(
+    (poseId: string) => {
+      mutateInfographicPoints(poseId, (points) => [
+        ...points,
+        { id: `ig-pt-${Date.now()}-${Math.random().toString(36).slice(2)}`, text: "" },
+      ]);
+    },
+    [mutateInfographicPoints]
+  );
+
+  const updateInfographicPoint = useCallback(
+    (poseId: string, pointId: string, update: Partial<Omit<InfographicTextPoint, "id">>) => {
+      mutateInfographicPoints(poseId, (points) =>
+        points.map((pt) => (pt.id === pointId ? { ...pt, ...update } : pt))
+      );
+    },
+    [mutateInfographicPoints]
+  );
+
+  const removeInfographicPoint = useCallback(
+    (poseId: string, pointId: string) => {
+      mutateInfographicPoints(poseId, (points) => points.filter((pt) => pt.id !== pointId));
+    },
+    [mutateInfographicPoints]
+  );
+
+  const setCustomPoseBrandLogo = useCallback((poseId: string, file: File) => {
+    setCustomPoses((prev) =>
+      prev.map((p) => {
+        if (p.id !== poseId) return p;
+        const base: InfographicPoseConfig = p.infographic ?? {
+          textMode: "creative",
+          textInput: "",
+          fidelity: "layout-lock",
+        };
+        if (base.brandLogo) URL.revokeObjectURL(base.brandLogo.preview);
+        return {
+          ...p,
+          infographic: {
+            ...base,
+            brandLogo: {
+              id: `ig-logo-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              file,
+              preview: URL.createObjectURL(file),
+            },
+          },
+        };
+      })
+    );
+  }, []);
+
+  const clearCustomPoseBrandLogo = useCallback((poseId: string) => {
+    setCustomPoses((prev) =>
+      prev.map((p) => {
+        if (p.id !== poseId || !p.infographic) return p;
+        if (p.infographic.brandLogo) URL.revokeObjectURL(p.infographic.brandLogo.preview);
+        return { ...p, infographic: { ...p.infographic, brandLogo: undefined } };
+      })
+    );
+  }, []);
+
+  const setInfographicAnalyzingFor = useCallback((poseId: string, analyzing: boolean) => {
+    setInfographicAnalyzing((prev) => ({ ...prev, [poseId]: analyzing }));
+  }, []);
+
+  const setInfographicAnalysisErrorFor = useCallback((poseId: string, error?: string) => {
+    setInfographicAnalysisError((prev) => {
+      if (!error) {
+        const { [poseId]: _, ...rest } = prev;
+        return rest;
+      }
+      return { ...prev, [poseId]: error };
+    });
   }, []);
 
   // --- Reference-Driven Photoshoot Actions ---
@@ -2328,7 +2508,7 @@ export function useVTONStore() {
       // Reference-driven photoshoot outputs are model shots → require a model.
       const hasReferences = singleReferenceImages.length > 0;
       const anyPresetPoseNeedsModel = selectedPoses.some((p) => p.requiresModel !== false);
-      const anyCustomPoseNeedsModel = customPoses.some((cp) => cp.isModelShot);
+      const anyCustomPoseNeedsModel = customPoses.some(customPoseNeedsModel);
       const anyPoseNeedsModel = anyPresetPoseNeedsModel || anyCustomPoseNeedsModel || hasReferences;
       const hasPoses =
         selectedPoses.length > 0 || customPoses.length > 0 || ugcScenes.length > 0 || hasReferences;
@@ -2467,6 +2647,19 @@ export function useVTONStore() {
     updateCustomPose,
     addCustomPoseImage,
     removeCustomPoseImage,
+    // Infographic custom poses
+    setCustomPoseShotKind,
+    updateCustomPoseInfographic,
+    setInfographicPlan,
+    addInfographicPoint,
+    updateInfographicPoint,
+    removeInfographicPoint,
+    setCustomPoseBrandLogo,
+    clearCustomPoseBrandLogo,
+    infographicAnalyzing,
+    setInfographicAnalyzingFor,
+    infographicAnalysisError,
+    setInfographicAnalysisErrorFor,
     // Reference-driven photoshoot (evolved custom pose)
     referencePhotoshootMode,
     setReferencePhotoshootMode,

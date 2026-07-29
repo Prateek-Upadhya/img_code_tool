@@ -37,7 +37,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn, buildDynamicPoseSeed, pickBucketImage } from "@/lib/utils";
-import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene, analyzeReferenceScene, describeGarmentFromImages } from "@/lib/gemini";
+import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene, analyzeReferenceScene, describeGarmentFromImages, generateCustomPoseInfographicPrompt } from "@/lib/gemini";
+import { customPoseIsInfographic, customPoseIsProductOnly, customPoseNeedsModel, customPoseShotKindLabel, customPoseIsReadyToGenerate } from "@/lib/custom-pose";
 import { generateVTONImageAzure } from "@/lib/azure-image";
 import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS } from "@/lib/constants";
 import { ModelComboPicker } from "./model-combo-picker";
@@ -77,6 +78,99 @@ function getFramingShortLabel(framing: PoseFraming): string {
 /** The inspiration-image File of a background config, or undefined (text/default backgrounds). */
 function inspirationFileOf(bg: BackgroundConfig | undefined | null): File | undefined {
   return bg && bg.mode === "inspiration" && bg.inspirationImage ? bg.inspirationImage.file : undefined;
+}
+
+/**
+ * Resolves the infographic pipeline for one custom pose: the composition prompt plus the
+ * image-model extras. Shared by single mode, bulk mode, and the retry paths.
+ *
+ * The Step-1 analysis already produced a full composition, so the common single-mode case
+ * reuses it verbatim and the pipeline stays at two model calls (analysis + render). A
+ * re-projection call is spent only when the composition can no longer be trusted as-authored:
+ * the operator edited the approved points, or we are in bulk mode where the card's plan is
+ * deliberately product-agnostic and must be specialised against this product's own images.
+ */
+async function resolveInfographicRender({
+  customPose,
+  apiKey,
+  textGenModel,
+  garmentImages,
+  productCategory,
+  productInfo,
+  aspectRatio,
+  forceRespecialize,
+  abortSignal,
+}: {
+  customPose: CustomPose;
+  apiKey: string;
+  textGenModel: Parameters<typeof generateCustomPoseInfographicPrompt>[0]["textGenModel"];
+  garmentImages: GarmentImage[];
+  productCategory: Parameters<typeof generateCustomPoseInfographicPrompt>[0]["productCategory"];
+  productInfo?: string;
+  aspectRatio: Parameters<typeof generateCustomPoseInfographicPrompt>[0]["aspectRatio"];
+  /** True in bulk mode — the card's plan is product-agnostic and must be specialised. */
+  forceRespecialize: boolean;
+  abortSignal?: AbortSignal;
+}): Promise<{
+  prompt: string;
+  cost?: StepCost;
+  compositionReference?: Parameters<typeof generateVTONImage>[0]["compositionReference"];
+  brandLogo?: { file: File; placementInstructions?: string };
+}> {
+  const config = customPose.infographic;
+  const plan = config?.plan;
+  if (!config || !plan) {
+    throw new Error(
+      `"${customPose.name || "Infographic"}" has not been analyzed — run "Analyze reference" on the pose card first.`
+    );
+  }
+
+  let prompt = plan.composition;
+  let cost: StepCost | undefined;
+  if (forceRespecialize || plan.editedSinceAnalysis) {
+    const res = await generateCustomPoseInfographicPrompt({
+      apiKey,
+      textGenModel,
+      plan,
+      referenceImages: customPose.referenceImages.map((img) => ({ file: img.file })),
+      garmentImages: garmentImages.map((g) => ({ file: g.file })),
+      productCategory,
+      productInfo,
+      compositionNotes: customPose.description,
+      customBackground: customPose.customBackground,
+      fidelity: config.fidelity,
+      aspectRatio,
+      brandLogoPresent: !!config.brandLogo,
+      brandPlacementInstructions: config.brandPlacementInstructions,
+      abortSignal,
+    });
+    prompt = res.text;
+    cost = res.cost;
+  }
+
+  // Layout Lock also shows the template to the image model as a wireframe; Loose
+  // Inspiration keeps the text-only channel used by every other custom pose.
+  const layoutRef = customPose.referenceImages[0];
+  const compositionReference =
+    config.fidelity === "layout-lock" && layoutRef
+      ? {
+          file: layoutRef.file,
+          mode: "infographic-layout" as const,
+          replicateFootwearAccessories: false,
+        }
+      : undefined;
+
+  return {
+    prompt,
+    cost,
+    compositionReference,
+    brandLogo: config.brandLogo
+      ? {
+          file: config.brandLogo.file,
+          placementInstructions: config.brandPlacementInstructions,
+        }
+      : undefined,
+  };
 }
 
 function getBgShortLabel(bg: BackgroundConfig): string {
@@ -611,6 +705,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
           aspectRatio: args.aspectRatio,
           imageSize: args.imageSize ?? "2K",
           isProductOnlyShot: args.isProductOnlyShot,
+          // Infographic Layout Lock — Gemini gets this as a labelled composition
+          // reference; Azure takes it as a trailing positional image.
+          layoutReference:
+            args.compositionReference?.mode === "infographic-layout"
+              ? args.compositionReference.file
+              : undefined,
+          brandLogo: args.brandLogo,
         });
       }
       return generateVTONImage(args);
@@ -807,16 +908,27 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
   const overrideCount = bulkPoseOverrides.length;
 
+  /**
+   * Infographic poses whose text points have not been analyzed/reviewed yet. Generation is
+   * hard-blocked on this being empty so approved copy is never bypassed.
+   */
+  const unanalyzedInfographicPoses = useMemo(
+    () => customPoses.filter((cp) => !customPoseIsReadyToGenerate(cp)),
+    [customPoses]
+  );
+
   // ======================================================================
   // SINGLE MODE GENERATION
   // ======================================================================
   const handleGenerate = useCallback(async () => {
     const anyPresetNeedsModel = selectedPoses.some((p) => p.requiresModel !== false);
-    const anyCustomNeedsModel = customPoses.some((cp) => cp.isModelShot);
+    const anyCustomNeedsModel = customPoses.some(customPoseNeedsModel);
     // Reference-driven photoshoot outputs are model shots by default → need a model.
     const anyReferenceNeedsModel = singleReferenceImages.length > 0;
     const anyPoseNeedsModel = anyPresetNeedsModel || anyCustomNeedsModel || anyReferenceNeedsModel;
     if (anyPoseNeedsModel && !selectedModel && !modelImage) return;
+    // Infographic poses must be analyzed and their text points reviewed before rendering.
+    if (!customPoses.every(customPoseIsReadyToGenerate)) return;
     if (
       (selectedPoses.length === 0 &&
         customPoses.length === 0 &&
@@ -1018,6 +1130,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           name: "Reference",
           description: "",
           isModelShot: true,
+          shotKind: "model",
           referenceImages: [{ id: refImg.id, file: refImg.file, preview: refImg.preview }],
         };
         referenceResults.push({
@@ -1083,7 +1196,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       // sees the drawn props.
       const accessories = materializeAccessories(poseAccessories[result.pose.id] || [], "single");
       const poseIsProductOnly = result.customPose
-        ? !result.customPose.isModelShot
+        ? customPoseIsProductOnly(result.customPose)
         : result.pose.requiresModel === false;
       const poseIsGhostMannequin = result.pose.framing === "ghost-mannequin";
       const collectedCosts: StepCost[] = [];
@@ -1110,6 +1223,62 @@ export function StepGenerate({ store }: StepGenerateProps) {
           : undefined;
         // Persist the exact frozen scene + scene image so a HARD retry reproduces them.
         updateResult(result.id, { frozenSceneUsed: effFrozenScene, sceneReferenceFile: sceneRefFile, garmentDescriptionUsed: garmentDescription });
+
+        // ── Infographic custom pose: its own two-step pipeline, bypassing generateVTONPrompt.
+        const igPose = result.customPose && customPoseIsInfographic(result.customPose)
+          ? result.customPose
+          : undefined;
+        if (igPose) {
+          const ig = await resolveInfographicRender({
+            customPose: igPose,
+            apiKey,
+            textGenModel,
+            garmentImages,
+            productCategory,
+            productInfo,
+            aspectRatio,
+            forceRespecialize: false,
+            abortSignal: signal,
+          });
+          if (ig.cost) collectedCosts.push(ig.cost);
+
+          updateResult(result.id, { prompt: ig.prompt, status: "generating-image" });
+
+          const igImage = await generateVTONImageRouted({
+            apiKey,
+            prompt: ig.prompt,
+            garmentImages,
+            complementaryImages,
+            accessories: [],
+            modelImage: poseIsProductOnly ? null : modelImage,
+            modelViews: poseIsProductOnly ? undefined : activeModelViews,
+            background: effBackground,
+            compositionReference: ig.compositionReference,
+            brandLogo: ig.brandLogo,
+            isOnModelGarment: onModelGarment,
+            garmentDescription,
+            aspectRatio,
+            productCategory,
+            isProductOnlyShot: poseIsProductOnly,
+            imageSize: imageQuality,
+            abortSignal: signal,
+          });
+          collectedCosts.push(igImage.cost);
+
+          const igTotal = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
+          const igRetry = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
+          updateResult(result.id, {
+            imageData: igImage.imageData,
+            status: "completed",
+            // Validation compares the render against the garment images; an infographic is a
+            // composed marketing asset with text and layout, so that check does not apply.
+            validationStatus: "skipped",
+            imageGenResponseContent: igImage.responseContent,
+            editHistory: [],
+            costBreakdown: { steps: [...collectedCosts], totalCost: igTotal + igRetry, retrySteps },
+          });
+          return;
+        }
 
         const promptResult = await generateVTONPrompt({
           apiKey,
@@ -1422,6 +1591,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
     const hasUgc = ugcScenes.length > 0;
     const hasReferences = referenceFolders.some((f) => f.matchedFolderId && f.referenceImages.length > 0);
     if (bulkCombinations.length === 0 || (!hasAnyPoses && !hasUgc && !hasReferences) || !apiKey) return;
+    // Infographic poses must be analyzed and their text points reviewed before rendering.
+    if (!customPoses.every(customPoseIsReadyToGenerate)) return;
 
     // Clear any leftover cancelled / errored results before kicking off a fresh batch.
     setBulkResults([]);
@@ -1654,6 +1825,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
               name: "Reference",
               description: "",
               isModelShot: true,
+              shotKind: "model",
               referenceImages: [{ id: refImg.id, file: refImg.file, preview: refImg.preview }],
             };
             allResults.push({
@@ -1740,7 +1912,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       ];
 
       const poseIsProductOnly = result.customPose
-        ? !result.customPose.isModelShot
+        ? customPoseIsProductOnly(result.customPose)
         : result.pose.requiresModel === false;
       const poseIsGhostMannequin = result.pose.framing === "ghost-mannequin";
 
@@ -1778,6 +1950,63 @@ export function StepGenerate({ store }: StepGenerateProps) {
           poseAccessories[result.pose.id] || [],
           combo.primaryFolder.id
         );
+
+        // ── Infographic custom pose. The card's plan is product-agnostic in bulk, so it is
+        // always re-specialised against THIS folder's product images before rendering.
+        const igPose = result.customPose && customPoseIsInfographic(result.customPose)
+          ? result.customPose
+          : undefined;
+        if (igPose) {
+          const ig = await resolveInfographicRender({
+            customPose: igPose,
+            apiKey,
+            textGenModel,
+            garmentImages: pgImages,
+            productCategory,
+            productInfo,
+            aspectRatio,
+            forceRespecialize: true,
+            abortSignal: signal,
+          });
+          if (ig.cost) collectedCosts.push(ig.cost);
+
+          updateBulkResult(result.id, { prompt: ig.prompt, status: "generating-image" });
+
+          const igImage = await generateVTONImageRouted({
+            apiKey,
+            prompt: ig.prompt,
+            garmentImages: pgImages,
+            complementaryImages: cgImages,
+            accessories: [],
+            modelImage: poseIsProductOnly ? null : bulkModelImg,
+            modelViews: poseIsProductOnly ? undefined : bulkModelViews,
+            background: effBackground,
+            compositionReference: ig.compositionReference,
+            brandLogo: ig.brandLogo,
+            isOnModelGarment: folderOnModel,
+            garmentDescription: folderGarmentDesc,
+            aspectRatio,
+            productCategory,
+            isProductOnlyShot: poseIsProductOnly,
+            imageSize: imageQuality,
+            abortSignal: signal,
+          });
+          collectedCosts.push(igImage.cost);
+
+          const igTotal = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
+          const igRetry = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
+          updateBulkResult(result.id, {
+            imageData: igImage.imageData,
+            status: "completed",
+            // See the single-mode branch: validation compares against the garment images,
+            // which does not apply to a composed marketing asset.
+            validationStatus: "skipped",
+            imageGenResponseContent: igImage.responseContent,
+            editHistory: [],
+            costBreakdown: { steps: [...collectedCosts], totalCost: igTotal + igRetry, retrySteps },
+          });
+          return;
+        }
 
         const promptResult = await generateVTONPrompt({
           apiKey,
@@ -2120,7 +2349,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     async (result: GeneratedResult) => {
       if (result.status === "pending" || !apiKey) return;
       const poseIsProductOnly = result.customPose
-        ? !result.customPose.isModelShot
+        ? customPoseIsProductOnly(result.customPose)
         : result.pose.requiresModel === false;
       const poseIsGhostMannequin = result.pose.framing === "ghost-mannequin";
       if (!poseIsProductOnly && !selectedModel && !modelImage) return;
@@ -2147,6 +2376,59 @@ export function StepGenerate({ store }: StepGenerateProps) {
         const compRef = refCtx && result.compositionReferenceFile
           ? { file: result.compositionReferenceFile, mode: refCtx.mode, replicateFootwearAccessories: garmentType === "complete-outfit" }
           : undefined;
+
+        // ── Infographic custom pose: re-render through its own pipeline so a retry
+        // reproduces the asset rather than degrading to a plain VTON shot.
+        const igPose = result.customPose && customPoseIsInfographic(result.customPose)
+          ? result.customPose
+          : undefined;
+        if (igPose) {
+          const ig = await resolveInfographicRender({
+            customPose: igPose,
+            apiKey,
+            textGenModel,
+            garmentImages,
+            productCategory,
+            productInfo,
+            aspectRatio,
+            forceRespecialize: false,
+          });
+          if (ig.cost) collectedCosts.push(ig.cost);
+          updateResult(result.id, { prompt: ig.prompt, status: "generating-image" });
+
+          const igImage = await generateVTONImageRouted({
+            apiKey,
+            prompt: ig.prompt,
+            garmentImages,
+            complementaryImages,
+            accessories: [],
+            modelImage: poseIsProductOnly ? null : modelImage,
+            modelViews: poseIsProductOnly ? undefined : activeModelViews,
+            background: effBackground,
+            compositionReference: ig.compositionReference,
+            brandLogo: ig.brandLogo,
+            isOnModelGarment: onModelGarment,
+            garmentDescription: result.garmentDescriptionUsed,
+            aspectRatio,
+            productCategory,
+            isProductOnlyShot: poseIsProductOnly,
+            imageSize: imageQuality,
+          });
+          collectedCosts.push(igImage.cost);
+
+          const igTotal = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
+          const igRetry = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
+          updateResult(result.id, {
+            imageData: igImage.imageData,
+            status: "completed",
+            validationStatus: "skipped",
+            validationMessage: undefined,
+            imageGenResponseContent: igImage.responseContent,
+            editHistory: [],
+            costBreakdown: { steps: [...collectedCosts], totalCost: igTotal + igRetry, retrySteps },
+          });
+          return;
+        }
 
         const promptResult = await generateVTONPrompt({
           apiKey,
@@ -2320,7 +2602,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       ];
 
       const poseIsProductOnly = result.customPose
-        ? !result.customPose.isModelShot
+        ? customPoseIsProductOnly(result.customPose)
         : result.pose.requiresModel === false;
       const poseIsGhostMannequin = result.pose.framing === "ghost-mannequin";
 
@@ -2349,6 +2631,58 @@ export function StepGenerate({ store }: StepGenerateProps) {
         const compRef = refCtx && result.compositionReferenceFile
           ? { file: result.compositionReferenceFile, mode: refCtx.mode, replicateFootwearAccessories: garmentType === "complete-outfit" }
           : undefined;
+
+        // ── Infographic custom pose: re-render through its own pipeline, re-specialised
+        // against this product folder's images (the card's bulk plan is product-agnostic).
+        const igPose = result.customPose && customPoseIsInfographic(result.customPose)
+          ? result.customPose
+          : undefined;
+        if (igPose) {
+          const ig = await resolveInfographicRender({
+            customPose: igPose,
+            apiKey,
+            textGenModel,
+            garmentImages: pgImages,
+            productCategory,
+            productInfo,
+            aspectRatio,
+            forceRespecialize: true,
+          });
+          if (ig.cost) collectedCosts.push(ig.cost);
+          updateBulkResult(result.id, { prompt: ig.prompt, status: "generating-image" });
+
+          const igImage = await generateVTONImageRouted({
+            apiKey,
+            prompt: ig.prompt,
+            garmentImages: pgImages,
+            complementaryImages: cgImages,
+            accessories: [],
+            modelImage: poseIsProductOnly ? null : bulkModelImg,
+            modelViews: poseIsProductOnly ? undefined : bulkModelViews,
+            background: effBackground,
+            compositionReference: ig.compositionReference,
+            brandLogo: ig.brandLogo,
+            garmentDescription: result.garmentDescriptionUsed,
+            aspectRatio,
+            productCategory,
+            isProductOnlyShot: poseIsProductOnly,
+            imageSize: imageQuality,
+          });
+          collectedCosts.push(igImage.cost);
+
+          const igTotal = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
+          const igRetry = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
+          updateBulkResult(result.id, {
+            imageData: igImage.imageData,
+            status: "completed",
+            validationStatus: "skipped",
+            validationMessage: undefined,
+            imageGenResponseContent: igImage.responseContent,
+            editHistory: [],
+            costBreakdown: { steps: [...collectedCosts], totalCost: igTotal + igRetry, retrySteps },
+          });
+          return;
+        }
 
         const promptResult = await generateVTONPrompt({
           apiKey,
@@ -2530,7 +2864,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     async (result: GeneratedResult, editInstruction: string) => {
       if (!result.imageGenResponseContent || !apiKey) return;
       const poseIsProductOnly = result.customPose
-        ? !result.customPose.isModelShot
+        ? customPoseIsProductOnly(result.customPose)
         : result.pose.requiresModel === false;
       const poseIsGhostMannequin = result.pose.framing === "ghost-mannequin";
 
@@ -2621,7 +2955,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         ...(effectiveModel.backHead ? [{ kind: "back-head" as const, ...effectiveModel.backHead }] : []),
       ];
 
-      const poseIsProductOnly = result.customPose ? !result.customPose.isModelShot : result.pose.requiresModel === false;
+      const poseIsProductOnly = result.customPose ? customPoseIsProductOnly(result.customPose) : result.pose.requiresModel === false;
       const poseIsGhostMannequin = result.pose.framing === "ghost-mannequin";
 
       updateBulkResult(result.id, { status: "editing", error: undefined });
@@ -5327,7 +5661,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
               {bulkCombinations.map((combo, comboIdx) => {
                 const allPoses = [
                   ...selectedPoses.map((p) => ({ id: p.id, name: p.name, icon: p.icon, label: `${p.icon} ${p.name}`, framing: p.framing, isCustom: false as const })),
-                  ...customPoses.map((cp) => ({ id: cp.id, name: cp.name || "Custom Pose", icon: "\u2728", label: `\u2728 ${cp.name || "Custom Pose"}`, framing: cp.isModelShot ? "full-body" as const : "product-only" as const, isCustom: true as const })),
+                  ...customPoses.map((cp) => ({ id: cp.id, name: cp.name || "Custom Pose", icon: "\u2728", label: `\u2728 ${cp.name || "Custom Pose"}`, framing: customPoseNeedsModel(cp) ? "full-body" as const : "product-only" as const, isCustom: true as const })),
                 ];
                 const productOverrides = bulkPoseOverrides.filter((o) => o.productFolderId === combo.primaryFolder.id);
 
@@ -5542,9 +5876,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
                 </Badge>
               ))}
               {customPoses.map((cp) => (
-                <Badge key={cp.id} variant="secondary" className={cn("text-xs", cp.isModelShot ? "bg-primary/10 text-primary dark:text-primary border-primary/30" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30")}>
+                <Badge key={cp.id} variant="secondary" className={cn("text-xs", customPoseIsInfographic(cp) ? "bg-violet-500/10 text-violet-700 dark:text-violet-400 border-violet-500/30" : customPoseNeedsModel(cp) ? "bg-primary/10 text-primary dark:text-primary border-primary/30" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30")}>
                   &#x2728; {cp.name || "Custom Pose"}
-                  <span className="ml-1 opacity-60">&middot; {cp.isModelShot ? "Model" : "Product"}</span>
+                  <span className="ml-1 opacity-60">&middot; {customPoseShotKindLabel(cp)}</span>
                   {cp.referenceImages.length > 0 && (
                     <span className="ml-1 opacity-60">&middot; {cp.referenceImages.length} ref</span>
                   )}
@@ -5574,11 +5908,24 @@ export function StepGenerate({ store }: StepGenerateProps) {
           )}
         </div>
 
+        {/* Infographic poses must be analyzed before they can be rendered. */}
+        {bulkResults.length === 0 && !isIngestingScene && unanalyzedInfographicPoses.length > 0 && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+            <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-500 shrink-0 mt-0.5" />
+            <p className="text-sm text-amber-700 dark:text-amber-400">
+              {unanalyzedInfographicPoses.map((cp) => `"${cp.name || "Infographic"}"`).join(", ")}{" "}
+              {unanalyzedInfographicPoses.length === 1 ? "needs" : "need"} analysis before
+              generating — go back to Output and run <strong>Analyze reference</strong> on the pose
+              card, then review the text points.
+            </p>
+          </div>
+        )}
+
         {/* Generate Button */}
         {bulkResults.length === 0 && ugcResults.length === 0 && !isIngestingScene && (
           <Button
             onClick={handleBulkGenerate}
-            disabled={isGenerating || !apiKey || (totalPoses === 0 && ugcScenes.length === 0 && totalReferenceImages === 0) || bulkCombinations.length === 0}
+            disabled={isGenerating || !apiKey || (totalPoses === 0 && ugcScenes.length === 0 && totalReferenceImages === 0) || bulkCombinations.length === 0 || unanalyzedInfographicPoses.length > 0}
             className="w-full h-14 text-base font-semibold rounded-xl gap-2 bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground shadow-sm transition-colors duration-200"
             size="lg"
           >
@@ -6152,9 +6499,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
               </Badge>
             ))}
             {customPoses.map((cp) => (
-              <Badge key={cp.id} variant="secondary" className={cn("text-xs", cp.isModelShot ? "bg-primary/10 text-primary dark:text-primary border-primary/30" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30")}>
+              <Badge key={cp.id} variant="secondary" className={cn("text-xs", customPoseIsInfographic(cp) ? "bg-violet-500/10 text-violet-700 dark:text-violet-400 border-violet-500/30" : customPoseNeedsModel(cp) ? "bg-primary/10 text-primary dark:text-primary border-primary/30" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30")}>
                 &#x2728; {cp.name || "Custom Pose"}
-                <span className="ml-1 opacity-60">&middot; {cp.isModelShot ? "Model" : "Product"}</span>
+                <span className="ml-1 opacity-60">&middot; {customPoseShotKindLabel(cp)}</span>
                 {cp.referenceImages.length > 0 && (
                   <span className="ml-1 opacity-60">&middot; {cp.referenceImages.length} ref</span>
                 )}
@@ -6180,6 +6527,19 @@ export function StepGenerate({ store }: StepGenerateProps) {
         )}
       </div>
 
+      {/* Infographic poses must be analyzed before they can be rendered. */}
+      {results.length === 0 && !isIngestingScene && unanalyzedInfographicPoses.length > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+          <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-500 shrink-0 mt-0.5" />
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            {unanalyzedInfographicPoses.map((cp) => `"${cp.name || "Infographic"}"`).join(", ")}{" "}
+            {unanalyzedInfographicPoses.length === 1 ? "needs" : "need"} analysis before
+            generating — go back to Output and run <strong>Analyze reference</strong> on the pose
+            card, then review the text points.
+          </p>
+        </div>
+      )}
+
       {/* Generate Button */}
       {results.length === 0 && ugcResults.length === 0 && !isIngestingScene && (
         <Button
@@ -6188,7 +6548,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
             isGenerating ||
             !apiKey ||
             (selectedPoses.length === 0 && customPoses.length === 0 && ugcScenes.length === 0 && singleReferenceImages.length === 0) ||
-            ((selectedPoses.some((p) => p.requiresModel !== false) || customPoses.some((cp) => cp.isModelShot) || singleReferenceImages.length > 0) && !hasModel)
+            ((selectedPoses.some((p) => p.requiresModel !== false) || customPoses.some(customPoseNeedsModel) || singleReferenceImages.length > 0) && !hasModel) ||
+            unanalyzedInfographicPoses.length > 0
           }
           className="w-full h-14 text-base font-semibold rounded-xl gap-2 bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground shadow-sm transition-colors duration-200"
           size="lg"
@@ -6319,7 +6680,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                       variant="outline"
                       size="sm"
                       onClick={() => handleRetrySingle(result)}
-                      disabled={!apiKey || (!(result.customPose ? !result.customPose.isModelShot : result.pose.requiresModel === false) && !selectedModel && !modelImage)}
+                      disabled={!apiKey || (!(result.customPose ? customPoseIsProductOnly(result.customPose) : result.pose.requiresModel === false) && !selectedModel && !modelImage)}
                       className="rounded-lg gap-1.5"
                     >
                       <RefreshCw className="w-4 h-4" />

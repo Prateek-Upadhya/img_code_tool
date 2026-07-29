@@ -138,6 +138,14 @@ export interface AzureVTONImageArgs {
   aspectRatio: AspectRatio;
   imageSize: "1K" | "2K" | "4K";
   isProductOnlyShot?: boolean;
+  /**
+   * Infographic Layout Lock: the reference template, appended as a trailing `image[]`
+   * reference and named by order in the prompt prose (gpt-image-2 has no image labels).
+   * Supplies layout geometry only — never its product, copy, or branding.
+   */
+  layoutReference?: File;
+  /** Optional brand logo, appended after the layout reference and named in the prose. */
+  brandLogo?: { file: File; placementInstructions?: string };
 }
 
 /** Prose sentence naming the model views by their `image[]` order. */
@@ -174,6 +182,8 @@ export async function generateVTONImageAzure({
   aspectRatio,
   imageSize,
   isProductOnlyShot = false,
+  layoutReference,
+  brandLogo,
 }: AzureVTONImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
   const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
 
@@ -181,11 +191,19 @@ export async function generateVTONImageAzure({
 
   // gpt-image-2 has no per-image labels, so name the model views by order in
   // the prompt prose. Product images come first, then the model view(s).
-  const promptText = useMultiView
+  let promptText = useMultiView
     ? `${prompt}\n\nMODEL REFERENCE IMAGES: after the product image(s), ${modelViews!.length} images depict the SAME person from multiple angles — ${modelViews!
         .map((v, i) => `image ${i + 1} is ${AZURE_VIEW_LABEL[v.kind]}`)
         .join(", ")}. Reproduce this exact person (face, skin tone, hair front and back, body type) and do not copy any clothing or background from them.`
     : prompt;
+
+  // Trailing references, named by position since gpt-image-2 cannot label images.
+  if (layoutReference) {
+    promptText += `\n\nINFOGRAPHIC LAYOUT REFERENCE: the ${brandLogo ? "second-to-last" : "last"} attached image is a LAYOUT TEMPLATE. Replicate its structure — canvas grid, the placement and reading order of headline/callout zones, leader-line and icon treatment, typographic hierarchy, and palette relationships. Do NOT copy its product, any of its text, or its branding; the product comes solely from the product image(s) and every word comes solely from this prompt.`;
+  }
+  if (brandLogo) {
+    promptText += `\n\nBRAND LOGO: the last attached image is the brand logo. Place it tastefully, preserving its proportions and keeping it legible. Do not redraw, restyle, or recolour it.${brandLogo.placementInstructions?.trim() ? ` Placement guidance: ${brandLogo.placementInstructions.trim()}` : ""}`;
+  }
 
   const form = new FormData();
   form.append("prompt", promptText);
@@ -205,6 +223,9 @@ export async function generateVTONImageAzure({
   for (const acc of accessories) {
     if (acc.image?.file) imageFiles.push(acc.image.file);
   }
+  // Order matters — the prose above refers to these by position.
+  if (layoutReference) imageFiles.push(layoutReference);
+  if (brandLogo) imageFiles.push(brandLogo.file);
 
   for (const file of imageFiles) {
     form.append("image[]", file, file.name);
