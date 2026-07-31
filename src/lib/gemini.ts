@@ -1,7 +1,8 @@
 import { HarmBlockThreshold, HarmCategory, ThinkingLevel } from "@google/genai";
+import type { PartMediaResolutionLevel } from "@google/genai";
 import { getGeminiClient } from "./gemini-client";
 import { getTextClient } from "./text-client";
-import { fileToBase64Cached } from "./image-downscale";
+import { fileToBase64Cached, fileToBase64HiResCached } from "./image-downscale";
 import { buildPropInteractionCue } from "./utils";
 import {
   AccessoryItem,
@@ -127,6 +128,20 @@ export function computeImageGenCost(label: string, tokens: TokenUsage, imageSize
 // shared across the prompt-gen + image-gen requests. See src/lib/image-downscale.ts.
 function fileToBase64(file: File): Promise<string> {
   return fileToBase64Cached(file);
+}
+
+/**
+ * As {@link fileToBase64} but at the higher product-reference cap (3072px).
+ *
+ * Reserved for PRODUCT/GARMENT reference images — the ones whose fine detail (logo
+ * and wordmark glyphs, weave and knit structure, stitching) is the thing the identity
+ * lock then asks the model to reproduce character-for-character. Every other reference
+ * class (model, background, composition, accessory, prop) stays on the standard cap,
+ * because their job is geometry/mood rather than micro-detail and the payload budget
+ * is better spent on the product.
+ */
+function fileToBase64HiRes(file: File): Promise<string> {
+  return fileToBase64HiResCached(file);
 }
 
 // ╔═══════════════════════════════════════════════════════════════════╗
@@ -421,6 +436,104 @@ THE BALANCE TO STRIKE: the complexion is CLEAR and EVEN, not RETOUCHED. Keep the
 `;
 
 /**
+ * The fabric counterpart to {@link CLEAR_SKIN_ANCHOR}: one verbatim sentence forcing
+ * the garment's cloth to render as a photographed textile with resolvable structure
+ * rather than a smooth fill of colour.
+ *
+ * Why this exists: the pipeline had a three-layer anchor protecting SKIN micro-detail
+ * and nothing at all protecting FABRIC. Cloth was covered by a single analysis bullet
+ * ("describe the fabric type, weight, and texture"), which the meta-prompter satisfies
+ * with a category noun ("soft cotton jersey") that carries no structure — and the image
+ * model's default for an unqualified textile is a flat, even, vector-like surface. On a
+ * garment shot to be zoomed, that reads exactly as the complaint received: flat fabric.
+ *
+ * Two design decisions carried over from CLEAR_SKIN_DIRECTIVE because they are what
+ * makes that block work:
+ *   - POSITIVE-FIRST. The anchor describes the structure that IS present rather than
+ *     leading with negations, since Nano Banana / Gemini tend to render a negated noun.
+ *   - BAN THE WORDS AT THE META-PROMPTER. If Gemini 3.1 Pro never writes "smooth" or
+ *     "flat", the image model never receives the instruction that produces it. This is
+ *     the higher-leverage half of the fix.
+ *
+ * The third decision is specific to fabric and is the important one: this anchor is
+ * REPLICATION-ORIENTED, not descriptive. It does not ask for "detailed texture" in the
+ * abstract — that invites the model to invent a plausible generic weave. It designates
+ * the reference image as the source of truth for WHICH structure to render, so the
+ * output shows this product's actual knit rather than a convincing substitute.
+ */
+export const FABRIC_TEXTURE_ANCHOR = `The fabric is rendered as real photographed textile at full material resolution: the actual weave or knit structure visible in the reference images is reproduced at true scale, so that at 100% zoom the individual wales and courses of the knit, the loop formation of the jersey or interlock face, the diagonal twill line, the rib channels and their shadowed valleys, the raised relief of any jacquard or woven band, the stitch density and needle-drop along every seam, the slight pucker where panels are joined, the elastic recovery ripples at cuffs and bands, the cotton nap with its fine fiber halo catching the light, and the subtle sheen where elastane sits in the blend are all separately resolvable — each thread reading as a discrete photographed fiber under its own micro-shadow, with the cloth's surface relief modulating the light across every panel rather than carrying a single uniform tone.`;
+
+/**
+ * Verbatim-insertion contract wrapping {@link FABRIC_TEXTURE_ANCHOR}, mirroring the
+ * structure of {@link CLEAR_SKIN_DIRECTIVE} (anchor + forbidden vocabulary + preferred
+ * vocabulary + an explicit balance to strike).
+ */
+const FABRIC_TEXTURE_DIRECTIVE = `
+═══ FABRIC TEXTURE DIRECTIVE (MANDATORY — the garment must survive being zoomed into) ═══
+
+WHY THIS EXISTS: these are e-commerce product images that buyers zoom into to judge material quality before purchasing. A garment rendered as a smooth region of flat colour fails the shot no matter how accurate its shape and colour are. Material structure is a PRIMARY deliverable here, not a finishing detail.
+
+VERBATIM-INSERTION CONTRACT — NON-NEGOTIABLE:
+The output prompt you generate MUST contain the following anchor sentence WORD-FOR-WORD. Copy it exactly as written — do NOT paraphrase, do NOT summarise, do NOT split it into multiple sentences, do NOT omit it. Paraphrasing it collapses the fabric back to a flat fill and fails QA.
+
+FABRIC-TEXTURE ANCHOR (always include verbatim):
+"${FABRIC_TEXTURE_ANCHOR}"
+
+REPLICATION, NOT INVENTION — READ CAREFULLY:
+This anchor asks for the structure that is ACTUALLY PRESENT in the attached product reference images, reproduced faithfully. It is NOT licence to invent an attractive generic texture. Before writing your prompt, look at the product photographs and identify the real construction: is the face a flat jersey, a 1x1 or 2x2 rib, an interlock, a pique, a waffle, a mesh, a woven poplin, a twill? Is the waistband a printed elastic, a woven jacquard band with raised lettering, or a covered elastic? Then NAME that specific construction in your output prompt. A garment whose reference shows a fine 1x1 rib must not be rendered as a smooth jersey, and vice versa — the construction is part of the product's identity in exactly the way its colour and logo are.
+
+FORBIDDEN VOCABULARY (do NOT use any of these words to describe the garment or its material anywhere in the output prompt — naming flatness is precisely what renders it):
+flat, flat colour, flat color, matte fill, solid fill, uniform fill, uniform surface, featureless, smooth fabric, smooth surface, plain surface, clean surface, vector, illustration, graphic, rendered fabric, plastic-looking, seamless texture.
+EXCEPTION: "flat" remains permitted in its unrelated compositional senses (flat-lay arrangement, flat seam, flat-felled seam, flat knit as a named construction) — the ban is on describing the material's APPEARANCE as flat.
+
+PREFERRED VOCABULARY (use these when describing the material):
+wale, course, rib, ribbed channel, loop, loop definition, interlock, jersey, pique, waffle, mesh, slub, twill line, jacquard relief, woven band, nap, pile, fiber halo, micro-shadow, surface relief, stitch density, needle-drop, topstitch, seam pucker, elastic recovery, elastane sheen, dry hand, cotton hand.
+
+THE BALANCE TO STRIKE: the fabric is LEGIBLE, not NOISY. Structure comes from the cloth's own geometry and the way light rakes across it — never from added grain, sharpening halos, artificial fuzz, or an over-scaled weave pattern stamped across the garment. The weave reads at its TRUE physical scale relative to the garment: a fine rib on a waistband is fine, not enlarged into corduroy.
+`;
+
+/**
+ * Still-life craft rules for CLOTHING PRODUCT-ONLY shots (no human model): the garment
+ * laid, folded, or arranged on a surface — table-top, flat-lay, styled prop shot.
+ *
+ * Why this exists: product-only shots were the worst-served path in the pipeline. The
+ * camera/lens anchor (ANCHOR 6) lives inside {@link VTON_REALISM_DIRECTIVE}, which is
+ * gated OFF for `isProductOnlyShot` and ghost-mannequin shots because the rest of that
+ * block is about skin. The consequence was that the shots MOST dependent on
+ * photographic craft — where there is no face or pose to carry the image, only the
+ * object and the light on it — were the only ones generated with no lens, depth-of-field
+ * or micro-contrast guidance at all, and no language for the surface the product rests
+ * on or the shadow it casts there.
+ *
+ * Scope note: this is deliberately generic still-life craft rather than a hard-coded
+ * "table-top" preset. The user describes the specific surface, angle and styling in the
+ * custom-pose description; this block is what makes those descriptions render as a
+ * photographed object on a real surface instead of a cut-out floating on a backdrop.
+ */
+const PRODUCT_STILL_LIFE_DIRECTIVE = `
+═══ PRODUCT STILL-LIFE DIRECTIVE (MANDATORY — this output contains NO human model) ═══
+This is a still-life product photograph. There is no face, no pose and no styling on a body to carry the image: the entire result rests on the object, the surface it sits on, and the light between them. Treat the following as first-class subject matter, not background detail.
+
+CAMERA & LENS (state these explicitly in the output prompt — this shot has no other camera guidance):
+Name a concrete lens and aperture appropriate to product work — a full-frame mirrorless body with a macro or short-telephoto prime (60mm, 85mm or 100mm) stopped down to f/8–f/11 so the whole product carries sharp, even detail front to back, with the tactile micro-contrast and colour rendition of a real commercial product photograph. State the camera height and the angle of the lens axis relative to the surface in degrees (e.g., "lens 40° above the surface plane", "lens directly overhead at 90°"). Only the deepest background falls off, and only softly — the product itself never drifts out of focus.
+
+THE SURFACE IS A DESCRIBED ELEMENT:
+Name the surface material and render its own texture at the same fidelity as the product — the open grain and figure of oiled walnut, the cool matte porosity of honed stone or plaster, the slub and weave of washed linen, the fine tooth of matte paper. State its colour, its finish (matte, satin, waxed, polished) and how sharply that texture resolves. A surface rendered as a flat unbroken tone reads immediately as a backdrop rather than a table, and the product reads as pasted on top of it.
+
+CONTACT SHADOW & OCCLUSION — THE SINGLE STRONGEST CUE OF PHYSICAL PRESENCE:
+Describe how the product meets the surface. There is a dark, tight contact shadow exactly where fabric touches the surface, softening and spreading as the material lifts away; ambient occlusion darkens the crevices inside every fold, under every hem and along the inside of the waistband; the cast shadow falls in a direction consistent with the stated key light and carries the correct edge quality for that light (crisp for hard light, diffuse for soft). Where the fabric is thin the surface tone bleeds faintly through it. Without this the product floats and the shot fails, regardless of how well the product itself is rendered.
+
+ARRANGEMENT & FOLD GEOMETRY:
+Describe the arrangement concretely — how the garment is folded, laid, stacked, draped or propped; which panel faces the camera; where the fabric breaks and where it lies flat; how gravity settles the material and where it gathers. Fabric arranged by a human hand has intentional, asymmetric folds with soft rounded breaks; it is neither ironed geometrically flat nor crumpled at random. Any brand-carrying element — a waistband wordmark, a woven label, a printed logo — is turned to face the camera squarely, sits within the plane of focus, and is unobstructed by folds.
+
+LIGHT ON MATERIAL:
+State how light behaves differently across the product's materials: a matte knit face scatters light broadly with a soft even falloff; an elastic waistband with woven lettering catches a low directional sheen along the raised threads and throws micro-shadow into the recessed ones; any smooth or coated trim returns a small controlled specular highlight. These differences are what let a viewer feel the material through the screen.
+
+PROPS ANCHOR, THEY DO NOT COMPETE:
+Any prop is subordinate — it frames, supports, or gives scale to the product and is never larger, brighter, higher in contrast or more saturated than it. The product remains unambiguously the subject and stays fully unobstructed.
+`;
+
+/**
  * Custom lighting override — injected into the meta-prompt (via `bgInstruction`,
  * so it reaches BOTH the clothing and footwear meta-prompts) ONLY when the user
  * enables `background.evenLighting`. Forces flat, even, high-key, SHADOWLESS
@@ -615,11 +728,53 @@ DO NOT default to a generic "leaning against a wall in a studio" interaction unl
  * and self-contained because the downstream image generator never receives
  * the reference image — every relevant detail must be translated into text.
  */
+/**
+ * Noun used for the framed subject in the SUBJECT FILL contract field.
+ * Shared so the two mirrored contract texts cannot drift apart on wording.
+ */
+function subjectFillNoun(isProductOnlyShot: boolean): string {
+  return isProductOnlyShot
+    ? "main product silhouette"
+    : "subject's silhouette from top-of-head to lowest visible point";
+}
+
+/**
+ * The SUBJECT FILL line of the FRAMING & CROP CONTRACT.
+ *
+ * Default behaviour is unchanged: the value is EXTRACTED from the reference image.
+ * When the user has set `CustomPose.productFillPercent`, the field flips to an
+ * AUTHORITATIVE OVERRIDE and is asserted instead — mirroring how the garment length
+ * options override a length inferred from reference photos, and for the same reason:
+ * the reference cannot express the user's intent about how large the product should
+ * read in the final frame.
+ *
+ * The override deliberately also instructs the camera attributes to be RE-DERIVED to
+ * achieve the fill. Without that, the model honours the reference's framing and quietly
+ * treats the fill as unreachable — the two constraints conflict and framing wins.
+ */
+function buildSubjectFillContractLine(
+  isProductOnlyShot: boolean,
+  productFillPercent: number | undefined,
+  { terse = false }: { terse?: boolean } = {},
+): string {
+  const noun = subjectFillNoun(isProductOnlyShot);
+
+  if (productFillPercent == null) {
+    return terse
+      ? `   - SUBJECT FILL: percentage of FRAME HEIGHT occupied by the ${isProductOnlyShot ? "product silhouette" : "subject silhouette top-of-head to lowest visible point"}.`
+      : `   - SUBJECT FILL: percentage of the FRAME HEIGHT occupied by the ${noun} (e.g., "subject occupies ~78% of frame height", "product occupies ~55% of frame height").`;
+  }
+
+  return `   - SUBJECT FILL — FIXED BY THE USER (AUTHORITATIVE OVERRIDE — do NOT derive this from the reference image): the ${noun} occupies EXACTLY ~${productFillPercent}% of the FRAME HEIGHT. State this verbatim in the contract as "the ${noun} occupies ~${productFillPercent}% of frame height". This value OVERRIDES whatever fill the reference image happens to show — if the reference frames its subject loosely and this override says ${productFillPercent}%, the output is framed at ${productFillPercent}%, not at the reference's fill.
+     TO ACHIEVE IT, RE-DERIVE the CAMERA DISTANCE, FOCAL-LENGTH EQUIVALENT and the four CROP anchors so they are mutually consistent with ${productFillPercent}% fill — move the camera closer and/or tighten the crop until the product genuinely fills that share of the frame height. Every other locked attribute (camera height, dutch angle, subject placement) is preserved from the reference. Do NOT satisfy the number by upscaling, stretching, or distorting the product, and do NOT crop into the product itself: the ${noun} stays whole and in proportion, the FRAME closes in around it.`;
+}
+
 function buildCustomPoseImageReferenceExtractionBlock({
   isProductOnlyShot,
   referenceImageCount,
   productLabel,
   productNoun,
+  productFillPercent,
   imageModelName = "Nano Banana / gemini-3.1-flash-image",
 }: {
   isProductOnlyShot: boolean;
@@ -628,6 +783,8 @@ function buildCustomPoseImageReferenceExtractionBlock({
   productLabel: string;
   /** Generic product noun, e.g. "footwear", "garment" */
   productNoun: string;
+  /** User-asserted frame fill; when set, overrides the extracted SUBJECT FILL. */
+  productFillPercent?: number;
   /** Name of the downstream image model this prompt is written for. */
   imageModelName?: string;
 }): string {
@@ -661,7 +818,7 @@ ${isProductOnlyShot
    - CAMERA HEIGHT relative to the subject: name the reference plane (overhead / above-head / eye-level / chin-level / chest-level / hip-level / knee-level / ankle-level / ground-level) AND the lens tilt in degrees (e.g., "lens at chest-level, tilted up by 8°", "lens at knee-level, level / 0° tilt", "lens directly overhead, tilted straight down at 90°").
    - DUTCH ANGLE / ROLL: 0° for level horizon; otherwise specify the exact tilt in degrees and direction (e.g., "5° clockwise roll").
    - ASPECT-RATIO ORIENTATION: portrait / landscape / square (do NOT pick the numeric aspect ratio here — that is decided elsewhere; only describe whether the reference reads taller-than-wide, wider-than-tall, or 1:1).
-   - SUBJECT FILL: percentage of the FRAME HEIGHT occupied by the ${isProductOnlyShot ? "main product silhouette" : "subject's silhouette from top-of-head to lowest visible point"} (e.g., "subject occupies ~78% of frame height", "product occupies ~55% of frame height").
+${buildSubjectFillContractLine(isProductOnlyShot, productFillPercent)}
    - SUBJECT PLACEMENT: normalized rule-of-thirds coordinates of the subject's center of mass (x_center in 0.00–1.00 from left, y_center in 0.00–1.00 from top) plus a one-line caption (e.g., "x_center=0.50, y_center=0.55 — centered, slightly low"; "x_center=0.33, y_center=0.50 — left-third").
    - TOP CROP — ANATOMICAL ANCHOR (this is the line that stops framing drift): describe the EXACT vertical position where the top edge of the image cuts, pegged to a named ${isProductOnlyShot ? "product or scene" : "anatomical"} landmark, using the same imperative style this codebase already uses for preset framings. Examples (for shape only): "frame top sits ~4 cm above the model's crown leaving a thin band of headroom"; "frame top cuts mid-forehead, the hairline is fully visible but the crown is cropped"; "frame top is at the model's clavicle line, the head is entirely outside the frame"; "frame top is at the upper edge of the toe-cap with ~3 cm of empty backdrop above".
    - BOTTOM CROP — ANATOMICAL ANCHOR: same treatment for the bottom edge. Examples (for shape only): "frame bottom cuts ~2 cm above the patella, the knee is NOT visible"; "frame bottom cuts at mid-calf, the lower calf and feet are entirely cropped"; "frame bottom is at the toe-tip with ~5 cm of visible floor"; "frame bottom is just below the lower ribcage, strictly above the natural waistline".
@@ -730,6 +887,7 @@ function buildReferencePhotoshootExtractionBlock({
   referenceImageCount,
   productLabel,
   productNoun,
+  productFillPercent,
   replicateWornExtras = false,
   imageModelName = "Nano Banana / gemini-3.1-flash-image",
 }: {
@@ -738,6 +896,8 @@ function buildReferencePhotoshootExtractionBlock({
   referenceImageCount: number;
   productLabel: string;
   productNoun: string;
+  /** User-asserted frame fill; when set, overrides the extracted SUBJECT FILL. */
+  productFillPercent?: number;
   /**
    * Complete-Outfit mode: also extract & reproduce the footwear + accessories WORN in the
    * reference (only those visible in the crop). The hero garment and person identity stay excluded.
@@ -824,7 +984,7 @@ ${section1A}
    - CAMERA HEIGHT + lens tilt in degrees (e.g., "lens at chest-level, tilted up 8°").
    - DUTCH ANGLE / ROLL: 0° for level horizon, else exact degrees + direction.
    - ASPECT-RATIO ORIENTATION: portrait / landscape / square (describe only whether it reads taller-than-wide, wider-than-tall, or 1:1).
-   - SUBJECT FILL: percentage of FRAME HEIGHT occupied by the ${isProductOnlyShot ? "product silhouette" : "subject silhouette top-of-head to lowest visible point"}.
+${buildSubjectFillContractLine(isProductOnlyShot, productFillPercent, { terse: true })}
    - SUBJECT PLACEMENT: normalized coordinates (x_center 0.00–1.00 from left, y_center 0.00–1.00 from top) + a one-line caption.
    - TOP CROP — ANATOMICAL ANCHOR: the EXACT vertical position where the top edge cuts, pegged to a named ${isProductOnlyShot ? "product/scene" : "anatomical"} landmark (e.g., "frame top sits ~4 cm above the model's crown").
    - BOTTOM CROP — ANATOMICAL ANCHOR: same treatment for the bottom edge.
@@ -1067,12 +1227,11 @@ For ${garmentType === "complete-outfit" ? "EACH worn piece (upper, lower, one-pi
 
 Output 1–2 tight paragraphs of garment description ONLY — no preamble, no mention of any person, background, or scene.`;
 
-  const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
-    { text: systemPrompt },
-  ];
+  const parts: ContentPart[] = [{ text: systemPrompt }];
   for (const img of garmentImages) {
-    const b64 = await fileToBase64(img.file);
-    parts.push({ inlineData: { mimeType: img.file.type, data: b64 } });
+    // This spec is what downstream prompts reproduce the garment FROM, so the
+    // describer needs enough resolution to resolve weave and stitch detail.
+    parts.push(await productImagePart(img.file));
   }
 
   const response = await ai.models.generateContent({
@@ -1329,6 +1488,27 @@ export async function generateVTONPrompt({
    */
   const isReferencePhotoshoot =
     !!customPose && !!photoshootMode && customPose.referenceImages.length > 0;
+
+  /**
+   * Standalone PRODUCT FILL block for custom poses that receive NEITHER extraction
+   * block — i.e. plain pose-mode, or image-mode with no reference actually attached.
+   * Those paths never emit a FRAMING & CROP CONTRACT, so the SUBJECT FILL override
+   * built into that contract has nowhere to land and the user's fill would be silently
+   * dropped. This is the path a text-described table-top or flat-lay shot takes, which
+   * is exactly where the fill requirement matters most.
+   */
+  const standaloneProductFillBlock =
+    customPose?.productFillPercent != null &&
+    !isCustomPoseImageMode &&
+    !isReferencePhotoshoot
+      ? `
+═══ PRODUCT FILL — USER-SPECIFIED FRAMING REQUIREMENT (AUTHORITATIVE) ═══
+The ${subjectFillNoun(isProductOnlyShot)} MUST occupy approximately ${customPose.productFillPercent}% of the FRAME HEIGHT in the output image. This is a hard commercial requirement, not a stylistic preference: the product is physically small and has to read clearly as a thumbnail on a catalog grid.
+Your output prompt MUST state this explicitly and measurably — include the sentence "the ${subjectFillNoun(isProductOnlyShot)} occupies ~${customPose.productFillPercent}% of the frame height" and support it with a concrete, consistent camera specification: name the SHOT TYPE, the FOCAL-LENGTH EQUIVALENT (35 mm full-frame), the CAMERA DISTANCE in meters, and the TOP and BOTTOM crop anchors, all chosen so they are mutually consistent with ${customPose.productFillPercent}% fill.
+Achieve the fill by MOVING THE CAMERA CLOSER and tightening the crop around the product — never by upscaling, stretching, or distorting the product, and never by cropping into the product itself. The product stays whole and in correct proportion; the frame closes in around it.
+`
+      : "";
+
   const isVariationMode = isReferencePhotoshoot && photoshootMode === "variation";
   const isPoseLockMode = isReferencePhotoshoot && photoshootMode === "pose-lock";
   const isReplicationMode = isReferencePhotoshoot && photoshootMode === "replication";
@@ -2030,7 +2210,7 @@ REFERENCE MODE: ${referenceModeLabel}
 ${customPose.name ? `Name: "${customPose.name}"` : ""}
 Description: "${customPose.description}"
 ${customPose.referenceImages.length > 0 ? `${customPose.referenceImages.length} reference image${customPose.referenceImages.length > 1 ? "s" : ""} provided below (for YOUR analysis only — not forwarded to the image generator).` : ""}
-
+${standaloneProductFillBlock}
 ${isReferencePhotoshoot
   ? buildReferencePhotoshootExtractionBlock({
       photoshootMode: photoshootMode!,
@@ -2038,6 +2218,7 @@ ${isReferencePhotoshoot
       referenceImageCount: customPose.referenceImages.length,
       productLabel: `${fwLabel} (footwear)`,
       productNoun: "footwear",
+      productFillPercent: customPose.productFillPercent,
       imageModelName: modelAudienceShort,
     })
   : isCustomPoseImageMode
@@ -2046,6 +2227,7 @@ ${isReferencePhotoshoot
       referenceImageCount: customPose.referenceImages.length,
       productLabel: `${fwLabel} (footwear)`,
       productNoun: "footwear",
+      productFillPercent: customPose.productFillPercent,
       imageModelName: modelAudienceShort,
     })
   : `═══ CRITICAL: POSE EXTRACTION RULES ═══
@@ -2205,7 +2387,7 @@ ${customPose.name ? `${isProductOnlyShot ? "Arrangement" : "Pose"} Name: "${cust
 ${isProductOnlyShot ? "Product Arrangement" : "Pose"} Description: "${customPose.description}"
 REFERENCE MODE: ${referenceModeLabel}
 ${customPose.referenceImages.length > 0 ? `\n${customPose.referenceImages.length} reference image${customPose.referenceImages.length > 1 ? "s are" : " is"} provided below for YOUR analysis only — they are NOT forwarded to the image generator.` : ""}
-
+${standaloneProductFillBlock}
 ${isReferencePhotoshoot
   ? buildReferencePhotoshootExtractionBlock({
       photoshootMode: photoshootMode!,
@@ -2213,6 +2395,7 @@ ${isReferencePhotoshoot
       referenceImageCount: customPose.referenceImages.length,
       productLabel: `${garmentType || "topwear"} garment`,
       productNoun: "garment",
+      productFillPercent: customPose.productFillPercent,
       replicateWornExtras: garmentType === "complete-outfit",
       imageModelName: modelAudienceShort,
     })
@@ -2222,6 +2405,7 @@ ${isReferencePhotoshoot
       referenceImageCount: customPose.referenceImages.length,
       productLabel: `${garmentType || "topwear"} garment`,
       productNoun: "garment",
+      productFillPercent: customPose.productFillPercent,
       imageModelName: modelAudienceShort,
     })
   : `${customPose.referenceImages.length > 0 ? `Reference images for this custom ${isProductOnlyShot ? "arrangement" : "pose"} are provided below. Analyze them carefully to understand the exact ${isProductOnlyShot ? "product placement, styling, camera angle, and composition" : "body position, camera angle, framing, and composition"} the user wants. Replicate the ${isProductOnlyShot ? "arrangement" : "pose"} from the reference images as closely as possible.
@@ -2316,6 +2500,10 @@ Do NOT mention specific lighting equipment names (softbox, octabox, reflector, s
 
 ${!isProductOnlyShot && !isGhostMannequin ? VTON_REALISM_DIRECTIVE : ""}
 
+${FABRIC_TEXTURE_DIRECTIVE}
+
+${isProductOnlyShot && !isGhostMannequin ? PRODUCT_STILL_LIFE_DIRECTIVE : ""}
+
 ${!isProductOnlyShot && !isGhostMannequin ? CLOTHING_VTON_POSING_DIRECTIVE : ""}
 
 ${!isProductOnlyShot && pose.id === "front-lifestyle-interaction-mid" ? LIFESTYLE_INTERACTION_DIRECTIVE : ""}
@@ -2371,6 +2559,10 @@ Shadow behavior must be USER-DRIVEN: include shadow language in the output promp
 Do NOT mention specific lighting equipment names (softbox, octabox, reflector, strobe, ring light, beauty dish, etc.) — describe ONLY the resulting light quality.
 
 ${!isProductOnlyShot && !isGhostMannequin ? VTON_REALISM_DIRECTIVE : ""}
+
+${FABRIC_TEXTURE_DIRECTIVE}
+
+${isProductOnlyShot && !isGhostMannequin ? PRODUCT_STILL_LIFE_DIRECTIVE : ""}
 
 ${fit ? `The prompt MUST instruct the image generator to faithfully reproduce every visual detail from the provided garment images (sleeve length, neckline, color, pattern, fabric texture, construction details). However, the FIT/SIZING of the garment on the model's body MUST follow the user's selection of "${fit}" fit, NOT your visual interpretation of the images. The garment images are flat-lay or mannequin shots - you cannot reliably determine intended body fit from them. Always use the user-specified fit: "${fit}".` : `The prompt MUST instruct the image generator to faithfully reproduce every detail from the provided garment images. Emphasize that the garment details must match the reference images exactly - no modifications to sleeve length, neckline, color, pattern, or any construction detail. For the fit, use your best judgment based on what you observe in the garment images.`}
 ${lengthOverridesBlock ? `\nLENGTH OVERRIDE REMINDER: The user-specified garment length(s) listed in the AUTHORITATIVE GARMENT LENGTH OVERRIDES block above are MANDATORY. The output prompt MUST describe each user-specified length using the exact phrase and the anatomical-anchor sentence given for that length. The garment reference images are typically flat-lay / dress-form / shot on a different body — they CANNOT be used to override the user's length selection. Do NOT use any conflicting length descriptor anywhere in the output.\n` : ""}
@@ -2484,13 +2676,10 @@ The garment images are ON-MODEL: worn by a THROWAWAY STAND-IN person. Describe O
           : "\n[ADDITIONAL ANGLE — unlabeled reference]:";
       parts.push({ text: sideLabel });
     }
-    const base64 = await fileToBase64(img.file);
-    parts.push({
-      inlineData: {
-        mimeType: img.file.type,
-        data: base64,
-      },
-    });
+    // Hi-res + ultra-high tokenization: the meta-prompter can only describe weave,
+    // stitch structure and wordmark glyphs it can actually resolve, and its text is
+    // the only channel carrying those details to the image model on several paths.
+    parts.push(await productImagePart(img.file));
   }
 
   // Add complementary images if any (skip for ghost mannequin — only the hero garment is shown)
@@ -2803,6 +2992,7 @@ Shot Type: ${isProductOnlyShot ? "PRODUCT ONLY (no human model)" : "ON-MODEL"}
 ${!isProductOnlyShot ? (model ? `Model: ${model.name} - ${model.description}` : modelImage ? "Model: Use the provided model reference image (EXACT same person)" : `Model: Select a ${gender === "unisex" ? "model" : gender + " model"}`) : ""}
 Pose: ${poseDescription}
 ${!isCustomPose ? `Framing: ${framingLabel} (${pose.framing})` : ""}
+${customPose?.productFillPercent != null ? `Product Frame Fill (USER OVERRIDE — AUTHORITATIVE): the ${subjectFillNoun(isProductOnlyShot)} occupies ~${customPose.productFillPercent}% of the FRAME HEIGHT. State this measurably in the output prompt and choose the shot type, focal length, camera distance and crop anchors to be consistent with it. Achieve it by moving the camera closer / tightening the crop — never by scaling or distorting the product. Do NOT infer the framing scale from the reference image.` : ""}
 Aspect Ratio: ${aspectRatio}
 ${bgInstruction}
 ${accessoriesSummary}
@@ -2850,6 +3040,7 @@ ${!isProductOnlyShot ? (model ? `AI Model: ${model.name} - ${model.description}`
 ${!isProductOnlyShot && modelImage ? "Model Reference Image: PROVIDED (use the EXACT person from the reference photo - same face, skin tone, hair, body type)" : ""}
 Pose: ${clothingPoseDescription}
 ${!isCustomPose ? `Framing: ${framingLabel} (${pose.framing})` : ""}
+${customPose?.productFillPercent != null ? `Product Frame Fill (USER OVERRIDE — AUTHORITATIVE): the ${subjectFillNoun(isProductOnlyShot)} occupies ~${customPose.productFillPercent}% of the FRAME HEIGHT. State this measurably in the output prompt and choose the shot type, focal length, camera distance and crop anchors to be consistent with it. Achieve it by moving the camera closer / tightening the crop — never by scaling or distorting the product. Do NOT infer the framing scale from the reference image.` : ""}
 Aspect Ratio: ${aspectRatio}
 ${bgInstruction}
 ${accessoriesSummary}
@@ -2899,7 +3090,50 @@ Now write the ${isGhostMannequin ? "ghost mannequin" : isProductOnlyShot ? "prod
 /**
  * Step 2: Use Nano Banana 2 (gemini-3.1-flash-image) to generate the VTON image
  */
-type ContentPart = { text: string } | { inlineData: { mimeType: string; data: string } };
+/**
+ * Per-part media resolution (Gemini 3+). Governs how many tokens the model spends
+ * tokenizing THIS image, and with it how much fine detail survives — Google documents
+ * the higher levels as improving the model's ability to read fine text and identify
+ * small details.
+ *
+ * We set it only on product/garment references (see {@link PRODUCT_IMAGE_MEDIA_RESOLUTION}),
+ * never globally: it raises input token cost per image, and the payoff is specific to
+ * images whose micro-detail is being reproduced.
+ */
+type PartMediaResolution = { level: PartMediaResolutionLevel };
+
+type ContentPart =
+  | { text: string }
+  | {
+      inlineData: { mimeType: string; data: string };
+      mediaResolution?: PartMediaResolution;
+    };
+
+/**
+ * Media resolution applied to product/garment reference images.
+ *
+ * The level is a string literal asserted to the SDK's enum rather than an enum import:
+ * these parts travel as plain JSON through `/api/gemini/generate` (which forwards the
+ * parsed body verbatim), so the wire value is what matters, and a type-only import
+ * keeps this out of the client bundle.
+ */
+const PRODUCT_IMAGE_MEDIA_RESOLUTION: PartMediaResolution = {
+  level: "MEDIA_RESOLUTION_ULTRA_HIGH" as PartMediaResolutionLevel,
+};
+
+/**
+ * Build an inline image part for a PRODUCT/GARMENT reference: encoded at the hi-res
+ * cap and tagged for ultra-high tokenization. Use this for the images carrying the
+ * product's identity; `fileToBase64` + a bare `inlineData` part remains correct for
+ * every other reference class.
+ */
+async function productImagePart(file: File): Promise<ContentPart> {
+  const data = await fileToBase64HiRes(file);
+  return {
+    inlineData: { mimeType: file.type, data },
+    mediaResolution: PRODUCT_IMAGE_MEDIA_RESOLUTION,
+  };
+}
 
 /** Human label for one model reference view, used in the prompt parts. */
 const MODEL_VIEW_LABEL: Record<LabeledModelView["kind"], string> = {
@@ -3081,8 +3315,7 @@ export async function buildVTONImageContentParts({
             : "\n[ADDITIONAL ANGLE — unlabeled reference]:";
         parts.push({ text: sideLabel });
       }
-      const base64 = await fileToBase64(img.file);
-      parts.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+      parts.push(await productImagePart(img.file));
     }
     parts.push({
       text: `═══ END PRODUCT REFERENCE — everything above defines the product identity ═══`,
@@ -3235,11 +3468,17 @@ export async function buildVTONImageContentParts({
         `\n\n═══ GARMENT REFERENCE — PIXEL-PERFECT IDENTITY LOCK (MANDATORY) ═══\n` +
         (isProductOnlyShot || isGhostMannequin
           ? GARMENT_IDENTITY_LOCK_PRODUCT_ONLY
-          : GARMENT_IDENTITY_LOCK_ANCHOR),
+          : GARMENT_IDENTITY_LOCK_ANCHOR) +
+        // Second delivery of the fabric anchor, adjacent to the garment pixels — same
+        // reasoning as the identity lock above: the meta-prompter's copy can be
+        // paraphrased away, and this is the only layer that reads the anchor with the
+        // actual weave in view. The reference images follow immediately below.
+        `\n\n═══ GARMENT REFERENCE — MATERIAL TEXTURE LOCK (MANDATORY) ═══\n` +
+        `${FABRIC_TEXTURE_ANCHOR}\n\n` +
+        `The construction shown in the reference images below is the source of truth for WHICH structure to render — read the actual knit or weave off these photographs (rib vs jersey vs interlock vs pique vs waffle vs mesh vs woven) and reproduce THAT construction at its true physical scale. Do not substitute a generic or smoother textile, and do not enlarge the weave beyond its real scale relative to the garment.`,
     });
     for (const img of orderedImages) {
-      const base64 = await fileToBase64(img.file);
-      parts.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+      parts.push(await productImagePart(img.file));
     }
     if (!isGhostMannequin) {
       for (const img of complementaryImages) {

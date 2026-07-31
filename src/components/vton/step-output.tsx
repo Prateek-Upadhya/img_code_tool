@@ -4,7 +4,7 @@ import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, BarChart3, Camera, Check, CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, Filter, GripVertical, ImageIcon, Loader2, Lock, Package, Plus, RefreshCw, ShieldCheck, ShieldOff, Sparkles, Trash2, Upload, User, Wand2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ACCESSORY_CATEGORIES, ASPECT_RATIOS, FRAMING_OPTIONS, POSES, FOOTWEAR_POSES, UGC_SHOT_TYPE_OPTIONS, UGC_SCENE_PRESETS } from "@/lib/constants";
+import { ACCESSORY_CATEGORIES, ASPECT_RATIOS, DEFAULT_PRODUCT_FILL_PERCENT, FRAMING_OPTIONS, POSES, FOOTWEAR_POSES, PRODUCT_FILL_PERCENT_MAX, PRODUCT_FILL_PERCENT_MIN, UGC_SHOT_TYPE_OPTIONS, UGC_SCENE_PRESETS } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -1300,6 +1300,58 @@ function CustomPoseCard({
           rows={2}
         />
       </div>
+
+      {/* Product Frame Fill — authoritative override of the SUBJECT FILL contract field.
+          Hidden for infographics, whose composition comes from the approved layout plan. */}
+      {!isInfographic && (
+        <div>
+          <div className="flex items-center justify-between gap-3">
+            <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+              Product Frame Fill{" "}
+              <span className="text-muted-foreground/50 normal-case">
+                (share of frame height the product fills)
+              </span>
+            </label>
+            <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
+              <input
+                type="checkbox"
+                checked={pose.productFillPercent == null}
+                onChange={(e) =>
+                  onUpdate(pose.id, {
+                    productFillPercent: e.target.checked
+                      ? undefined
+                      : DEFAULT_PRODUCT_FILL_PERCENT,
+                  })
+                }
+                className="h-3 w-3 accent-emerald-500"
+              />
+              Lifestyle — no constraint
+            </label>
+          </div>
+          {pose.productFillPercent == null ? (
+            <p className="mt-1 text-[11px] text-muted-foreground/60">
+              Framing is left to the pose description and reference image.
+            </p>
+          ) : (
+            <div className="mt-2 flex items-center gap-3">
+              <input
+                type="range"
+                min={PRODUCT_FILL_PERCENT_MIN}
+                max={PRODUCT_FILL_PERCENT_MAX}
+                step={5}
+                value={pose.productFillPercent}
+                onChange={(e) =>
+                  onUpdate(pose.id, { productFillPercent: Number(e.target.value) })
+                }
+                className="flex-1 accent-emerald-500"
+              />
+              <span className="w-10 text-right text-sm font-medium tabular-nums text-foreground">
+                {pose.productFillPercent}%
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Reference Mode — replaced by the Fidelity toggle for infographics */}
       {!isInfographic && (

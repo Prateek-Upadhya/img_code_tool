@@ -2025,6 +2025,19 @@ export const ACCESSORY_CATEGORIES: {
   { value: "hair-accessory", label: "Hair Accessory", icon: "🎀", description: "Headband, clips, scrunchie, tiara" },
 ];
 
+/**
+ * Default share of frame height a product occupies on a new custom pose.
+ *
+ * 70% is the catalog convention for physically small products (innerwear, accessories):
+ * loose framing makes them unreadable at thumbnail size on a product grid. Lifestyle
+ * shots opt out entirely by clearing `CustomPose.productFillPercent`.
+ */
+export const DEFAULT_PRODUCT_FILL_PERCENT = 70;
+
+/** Slider bounds for `CustomPose.productFillPercent`. */
+export const PRODUCT_FILL_PERCENT_MIN = 30;
+export const PRODUCT_FILL_PERCENT_MAX = 95;
+
 export const ASPECT_RATIOS: { value: AspectRatio; label: string; description: string }[] = [
   { value: "1:1", label: "1:1", description: "Square" },
   { value: "2:3", label: "2:3", description: "Portrait" },

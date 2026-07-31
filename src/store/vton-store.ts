@@ -107,7 +107,11 @@ import {
   LabeledModelView,
   ModelReferenceViewKind,
 } from "@/lib/types";
-import { MAX_CAMERA_MOVEMENTS, MAX_MODEL_MOVEMENTS } from "@/lib/constants";
+import {
+  DEFAULT_PRODUCT_FILL_PERCENT,
+  MAX_CAMERA_MOVEMENTS,
+  MAX_MODEL_MOVEMENTS,
+} from "@/lib/constants";
 import { customPoseNeedsModel } from "@/lib/custom-pose";
 import { saveModel } from "@/lib/model-library";
 import { dataUrlToFile } from "@/lib/model-creation-client";
@@ -937,6 +941,9 @@ export function useVTONStore() {
         ...pose,
         isModelShot: pose.isModelShot ?? true,
         shotKind: pose.shotKind ?? (pose.isModelShot === false ? "product" : "model"),
+        // Constrain frame fill by default — small products framed loosely are the
+        // common catalog failure. Lifestyle shots clear this explicitly in the UI.
+        productFillPercent: pose.productFillPercent ?? DEFAULT_PRODUCT_FILL_PERCENT,
       },
     ]);
   }, []);

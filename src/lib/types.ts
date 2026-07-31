@@ -372,6 +372,20 @@ export interface CustomPose {
   referenceMode?: CustomPoseReferenceMode;
   /** Optional per-pose background/environment description that overrides the global background */
   customBackground?: string;
+  /**
+   * How much of the frame HEIGHT the product must occupy, as a percentage.
+   *
+   * Set: an AUTHORITATIVE user override of the `SUBJECT FILL` field in the FRAMING &
+   * CROP CONTRACT, which is otherwise derived from the attached reference image. This
+   * exists because small products (innerwear, accessories) are routinely framed too
+   * loosely to read on a catalog grid, and the reference cannot express the intent —
+   * the same override reasoning as the garment length options, which are authoritative
+   * for the same reason.
+   *
+   * Absent/undefined: no fill constraint — the correct setting for lifestyle shots,
+   * where the product is deliberately part of a wider scene.
+   */
+  productFillPercent?: number;
   referenceImages: {
     id: string;
     file: File;
