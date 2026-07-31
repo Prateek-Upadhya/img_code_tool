@@ -43,14 +43,16 @@ export function customPoseIsProductOnly(pose: CustomPose): boolean {
 
 /**
  * True when this pose is ready to generate. Non-infographic poses are always ready;
- * an infographic needs a reference image and an approved analysis plan.
+ * an infographic needs an approved analysis plan.
+ *
+ * A reference template is NOT required. When none is attached the operator briefs the
+ * layout directly — composition notes, background and callout text — and the analysis
+ * authors the art direction from scratch. The approved plan remains the gate either way,
+ * because that is what actually carries the composition to the image model.
  */
 export function customPoseIsReadyToGenerate(pose: CustomPose): boolean {
   if (!customPoseIsInfographic(pose)) return true;
-  return (
-    pose.referenceImages.length > 0 &&
-    pose.infographic?.plan?.approved === true
-  );
+  return pose.infographic?.plan?.approved === true;
 }
 
 /** Human-readable label for the Shot Type, used in badges and warnings. */

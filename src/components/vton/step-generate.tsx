@@ -5924,8 +5924,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
             <p className="text-sm text-amber-700 dark:text-amber-400">
               {unanalyzedInfographicPoses.map((cp) => `"${cp.name || "Infographic"}"`).join(", ")}{" "}
               {unanalyzedInfographicPoses.length === 1 ? "needs" : "need"} analysis before
-              generating — go back to Output and run <strong>Analyze reference</strong> on the pose
-              card, then review the text points.
+              generating — go back to Output and run <strong>Analyze reference</strong> (or{" "}
+              <strong>Design layout</strong>, if no template is attached) on the pose card, then
+              review the text points.
             </p>
           </div>
         )}
@@ -6543,8 +6544,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
           <p className="text-sm text-amber-700 dark:text-amber-400">
             {unanalyzedInfographicPoses.map((cp) => `"${cp.name || "Infographic"}"`).join(", ")}{" "}
             {unanalyzedInfographicPoses.length === 1 ? "needs" : "need"} analysis before
-            generating — go back to Output and run <strong>Analyze reference</strong> on the pose
-            card, then review the text points.
+            generating — go back to Output and run <strong>Analyze reference</strong> (or{" "}
+            <strong>Design layout</strong>, if no template is attached) on the pose card, then
+            review the text points.
           </p>
         </div>
       )}

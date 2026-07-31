@@ -6949,8 +6949,27 @@ NON-LOCALIZED CLAIMS: some true statements have no position on the product — c
 
 GROUNDING: every callout must trace back to something visible in the product images or stated in the operator's text / product information. If you cannot point to the evidence, do not print the claim.`;
 
-/** Builds the fidelity directive for how literally the reference layout is reproduced. */
-function buildInfographicFidelityDirective(fidelity: InfographicFidelity): string {
+/**
+ * Builds the fidelity directive for how literally the reference layout is reproduced.
+ *
+ * `hasReference: false` is the no-template path: the operator supplies position notes,
+ * a background and the callout text but no example infographic, so there is no layout to
+ * be faithful TO and both fidelity modes are meaningless. In that case the art direction
+ * has to be authored from scratch, which needs its own instructions rather than a
+ * degraded version of "copy the reference".
+ */
+function buildInfographicFidelityDirective(
+  fidelity: InfographicFidelity,
+  hasReference: boolean = true,
+): string {
+  if (!hasReference) {
+    return `═══ LAYOUT — AUTHORED FROM SCRATCH (no reference template supplied) ═══
+No reference infographic was provided. You are the art director: design the layout yourself, driven by the operator's composition notes, the background they specified, the callout copy, and the product's own silhouette and orientation.
+Build it on sound product-infographic conventions: give the product the dominant visual weight and place it so its called-out features are unobstructed; distribute callout zones around the product so no leader line crosses another or crosses the product; keep one clear reading order; hold a single consistent type hierarchy (one headline weight, one callout weight, one supporting weight) and one alignment grid; leave generous, even margins and let whitespace separate zones instead of rules or boxes.
+Because there is no template to inherit from, your composition description is the ONLY specification of the layout — be concrete and exhaustive. State the canvas grid you chose, the exact frame position of the product, the exact position of every text zone, the leader-line routing, and the type treatment. Two runs of this description must produce the same arrangement, so avoid vague placement language ("nicely arranged", "balanced") and give positions instead.
+Honour the operator's composition notes as art direction wherever they speak to layout — they take precedence over the conventions above.`;
+  }
+
   return fidelity === "layout-lock"
     ? `═══ FIDELITY — LAYOUT LOCK ═══
 Reproduce the reference's layout STRICTLY and reproducibly. Match its zone geometry, callout count and positions, leader-line routing, icon placement, alignment grid and typographic hierarchy as closely as the product's own proportions allow. Describe positions concretely (e.g. "upper-left quadrant, baseline aligned with the product's heel") so the render is repeatable. Depart from the template ONLY where the product's silhouette makes an exact match physically impossible, and say so explicitly when you do.
@@ -7067,23 +7086,29 @@ export async function analyzeInfographicReference({
   productAgnostic?: boolean;
   abortSignal?: AbortSignal;
 }): Promise<{ plan: InfographicPlan; cost: StepCost }> {
-  if (referenceImages.length === 0) {
-    throw new Error("An infographic reference image is required before analysis");
-  }
-
   const ai = getTextClient(textGenModel);
   const productNoun = productCategory === "footwear" ? "footwear" : "garment";
+  /**
+   * A reference template is OPTIONAL. Without one the operator is briefing the layout
+   * directly — via composition notes, a background description and the callout text — and
+   * the analysis authors the art direction from scratch instead of reading it off an
+   * example. Every reference-dependent section below is gated on this.
+   */
+  const hasReference = referenceImages.length > 0;
 
-  const systemPrompt = `You are an expert e-commerce art director and product-infographic designer. You are given an infographic REFERENCE TEMPLATE${productAgnostic ? "" : ` and the reference photo(s) of a single ${productNoun} product`}. Your task is to author a complete, reviewable INFOGRAPHIC PLAN: the explicit text points that will be printed on the image, and one precise, deterministic, self-contained IMAGE-COMPOSITION DESCRIPTION that an image-generation model will follow.
+  const systemPrompt = `You are an expert e-commerce art director and product-infographic designer. You are given ${hasReference ? "an infographic REFERENCE TEMPLATE" : "a written brief"}${productAgnostic ? "" : ` and the reference photo(s) of a single ${productNoun} product`}. Your task is to author a complete, reviewable INFOGRAPHIC PLAN: the explicit text points that will be printed on the image, and one precise, deterministic, self-contained IMAGE-COMPOSITION DESCRIPTION that an image-generation model will follow.
 
 ${INFOGRAPHIC_PROMPTING_PRINCIPLES}
-
+${hasReference ? `
 ${INFOGRAPHIC_REFERENCE_SEPARATION}
 
 ═══ STEP A — READ THE TEMPLATE ═══
 Analyse the attached reference infographic and describe its structure to yourself: canvas orientation and grid, how many callout/label zones there are and where they sit, the reading order, leader-line and icon treatment, the typographic hierarchy, and how colour is distributed between background, product and text. This becomes \`layoutSummary\` — a compact but concrete restatement someone could rebuild the wireframe from.
-
-${buildInfographicFidelityDirective(fidelity)}
+` : `
+═══ STEP A — DESIGN THE LAYOUT ═══
+No reference template was supplied. Design the wireframe yourself from the operator's brief below (their composition notes, background requirement and callout text) together with the product's own shape and proportions. Decide the canvas grid, how many callout zones there are and where they sit, the reading order, the leader-line and icon treatment, the typographic hierarchy, and how colour is distributed between background, product and text. Record that decision as \`layoutSummary\` — a compact but concrete restatement someone could rebuild the wireframe from.
+`}
+${buildInfographicFidelityDirective(fidelity, hasReference)}
 
 ═══ STEP B — DERIVE THE TEXT ═══
 ${buildInfographicTextDirective(textMode, textInput)}
@@ -7118,13 +7143,15 @@ Respond with a SINGLE JSON object and nothing else — no preamble, no commentar
 
   const contents: ContentPart[] = [{ text: systemPrompt }];
 
-  contents.push({
-    text: `\n═══ INFOGRAPHIC REFERENCE TEMPLATE (${referenceImages.length} image(s)) — LAYOUT ONLY ═══`,
-  });
-  for (const img of referenceImages) {
+  if (hasReference) {
     contents.push({
-      inlineData: { mimeType: img.file.type, data: await fileToBase64(img.file) },
+      text: `\n═══ INFOGRAPHIC REFERENCE TEMPLATE (${referenceImages.length} image(s)) — LAYOUT ONLY ═══`,
     });
+    for (const img of referenceImages) {
+      contents.push({
+        inlineData: { mimeType: img.file.type, data: await fileToBase64(img.file) },
+      });
+    }
   }
 
   if (!productAgnostic && garmentImages.length > 0) {
@@ -7246,9 +7273,8 @@ export async function generateCustomPoseInfographicPrompt({
 
 ${INFOGRAPHIC_PROMPTING_PRINCIPLES}
 
-${INFOGRAPHIC_REFERENCE_SEPARATION}
-
-${buildInfographicFidelityDirective(fidelity)}
+${referenceImages.length > 0 ? `${INFOGRAPHIC_REFERENCE_SEPARATION}\n` : ""}
+${buildInfographicFidelityDirective(fidelity, referenceImages.length > 0)}
 
 ═══ APPROVED CALLOUT COPY — LOCKED ═══
 These strings have been reviewed and approved by the operator. Reproduce each one CHARACTER-FOR-CHARACTER in your composition, inside quotes, exactly as written — same wording, capitalisation, punctuation and symbols. Do NOT reword, reorder the wording, merge, split, translate, add, or drop any of them. The set below is complete and closed: the finished image contains these callouts and no others.
@@ -7256,7 +7282,7 @@ These strings have been reviewed and approved by the operator. Reproduce each on
 ${approvedCopy}
 
 ═══ APPROVED LAYOUT ═══
-${plan.layoutSummary?.trim() || "(no separate layout summary — follow the approved composition below and the attached reference)"}
+${plan.layoutSummary?.trim() || (referenceImages.length > 0 ? "(no separate layout summary — follow the approved composition below and the attached reference)" : "(no separate layout summary — follow the approved composition below, which is the complete specification of the layout)")}
 
 ═══ APPROVED COMPOSITION (the plan to specialise) ═══
 ${plan.composition}

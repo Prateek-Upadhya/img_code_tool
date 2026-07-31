@@ -872,7 +872,10 @@ function InfographicPanel({
 
   return (
     <>
-      {/* Fidelity */}
+      {/* Fidelity — only meaningful when there is a template to be faithful TO.
+          With no reference the layout is authored from the operator's brief, so both
+          modes would describe a relationship that does not exist. */}
+      {hasReference && (
       <div>
         <label className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
           Fidelity
@@ -909,6 +912,7 @@ function InfographicPanel({
             : "The template informs style only — the layout is rebuilt around your product. The image model never sees the reference."}
         </p>
       </div>
+      )}
 
       {/* Infographic Text */}
       <div>
@@ -1003,10 +1007,10 @@ function InfographicPanel({
           </label>
           <button
             onClick={() => api.onAnalyze(pose)}
-            disabled={!hasReference || isAnalyzing}
+            disabled={isAnalyzing}
             className={cn(
               "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors",
-              !hasReference || isAnalyzing
+              isAnalyzing
                 ? "border-border text-muted-foreground/50 cursor-not-allowed"
                 : "border-violet-500 bg-violet-500/10 text-violet-700 dark:text-violet-400 hover:bg-violet-500/20"
             )}
@@ -1024,7 +1028,7 @@ function InfographicPanel({
             ) : (
               <>
                 <Wand2 className="w-3.5 h-3.5" />
-                Analyze reference
+                {hasReference ? "Analyze reference" : "Design layout"}
               </>
             )}
           </button>
@@ -1032,7 +1036,8 @@ function InfographicPanel({
 
         {!hasReference && (
           <p className="text-[11px] text-muted-foreground">
-            Attach an infographic reference above to enable analysis.
+            No reference attached — the layout will be designed from your position notes,
+            background and infographic text. Attach one above to follow an existing design.
           </p>
         )}
 
@@ -1043,12 +1048,12 @@ function InfographicPanel({
           </div>
         )}
 
-        {hasReference && !plan && !isAnalyzing && !error && (
+        {!plan && !isAnalyzing && !error && (
           <div className="flex items-start gap-1.5 text-[11px] text-amber-600 dark:text-amber-500">
             <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
             <span>
-              Analyze this reference before generating — generation stays disabled until the
-              text points are reviewed.
+              {hasReference ? "Analyze this reference" : "Run “Design layout”"} before
+              generating — generation stays disabled until the text points are reviewed.
             </span>
           </div>
         )}
@@ -1416,7 +1421,7 @@ function CustomPoseCard({
             <>
               Infographic Reference{" "}
               <span className="text-muted-foreground/50 normal-case">
-                (template / inspiration — required)
+                (template / inspiration — optional)
               </span>
             </>
           ) : (
@@ -2933,7 +2938,9 @@ export function StepOutput({ store }: StepOutputProps) {
   const handleAnalyzeInfographic = useCallback(
     async (pose: CustomPose) => {
       const config = pose.infographic;
-      if (!config || pose.referenceImages.length === 0) return;
+      // No reference-image requirement: without one the analysis designs the layout from
+      // the operator's notes, background and callout text instead of reading a template.
+      if (!config) return;
 
       setInfographicAnalysisErrorFor(pose.id, undefined);
       setInfographicAnalyzingFor(pose.id, true);
