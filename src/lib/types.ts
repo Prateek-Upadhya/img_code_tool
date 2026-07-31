@@ -27,7 +27,32 @@ export type GoogleBackend = "vertex" | "gemini";
 
 export type Gender = "male" | "female" | "unisex";
 
-export type GarmentType = "topwear" | "bottomwear" | "onepiece" | "complete-outfit";
+export type GarmentType = "topwear" | "bottomwear" | "onepiece" | "complete-outfit" | "innerwear";
+
+/**
+ * Product form for {@link GarmentType} `"innerwear"`.
+ *
+ * Innerwear is split out from bottomwear/topwear because its construction vocabulary is
+ * genuinely different — rise, gusset, pouch, leg opening, seamless vs side-seam — and
+ * because the elastic waistband, not the body of the garment, is where the brand lives
+ * and where buyers judge quality. Covers the adjacent lounge/thermal forms too, which
+ * share the same construction language and the same catalog treatment.
+ */
+export type InnerwearSubtype =
+  // Bottoms
+  | "brief"
+  | "trunk"
+  | "boxer-brief"
+  | "boxer"
+  // Tops
+  | "vest"
+  | "undershirt-crew"
+  | "undershirt-vneck"
+  // Loungewear / thermals
+  | "lounge-shorts"
+  | "lounge-pants"
+  | "thermal-top"
+  | "thermal-bottom";
 
 export type FootwearType =
   | "casual-shoes"
@@ -306,8 +331,19 @@ export interface InfographicTextPoint {
   id: string;
   /** Exact on-image copy. Locked verbatim at render time. */
   text: string;
-  /** Which product region/feature this callout points to. */
+  /**
+   * Which product region/feature this callout points to — a specific, visible feature
+   * ("the jacquard-woven waistband"), not a generic restatement ("the product").
+   * The literal string `"unanchored"` marks a claim with no position on the product
+   * (care, pack size, certification); those render as a badge or footer item with no
+   * leader line rather than being pointed at somewhere arbitrary.
+   */
   anchor?: string;
+  /**
+   * Normalized canvas position the leader line terminates on, x/y in 0–1 from the
+   * top-left. Absent for `"unanchored"` points.
+   */
+  anchorPoint?: { x: number; y: number };
 }
 
 /**
@@ -459,6 +495,12 @@ export interface VTONConfig {
   topwearLength: TopwearLength | null;
   /** Outseam length override for bottomwear / lower portion of onepiece. `null` = AI auto-detect. */
   bottomwearLength: BottomwearLength | null;
+  /**
+   * Product form when `garmentType === "innerwear"`. `null` = AI infers from images.
+   * Carries the hem/opening anchor that the bottomwear outseam options carry for pants —
+   * those options are meaningless here and are suppressed for this garment type.
+   */
+  innerwearSubtype: InnerwearSubtype | null;
   complementaryImages: ComplementaryImage[];
   /** Accessories keyed by pose ID — each pose can have its own set of accessories */
   poseAccessories: Record<string, AccessoryItem[]>;

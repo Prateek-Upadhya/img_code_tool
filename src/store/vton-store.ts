@@ -10,6 +10,7 @@ import {
   BULK_SPREADSHEET_FILTER_ALL,
   BackgroundConfig,
   BottomwearLength,
+  InnerwearSubtype,
   BulkBackground,
   BulkSpreadsheetSession,
   BulkBgAssignmentMode,
@@ -145,6 +146,7 @@ export function useVTONStore() {
   const [sleeveLength, setSleeveLength] = useState<SleeveLength | null>(null);
   const [topwearLength, setTopwearLength] = useState<TopwearLength | null>(null);
   const [bottomwearLength, setBottomwearLength] = useState<BottomwearLength | null>(null);
+  const [innerwearSubtype, setInnerwearSubtype] = useState<InnerwearSubtype | null>(null);
   const [complementaryImages, setComplementaryImages] = useState<ComplementaryImage[]>([]);
   const [poseAccessories, setPoseAccessories] = useState<Record<string, AccessoryItem[]>>({});
   // User-created prop buckets. Each bucket holds multiple interchangeable
@@ -2586,6 +2588,8 @@ export function useVTONStore() {
     setTopwearLength,
     bottomwearLength,
     setBottomwearLength,
+    innerwearSubtype,
+    setInnerwearSubtype,
     addGarmentImage,
     removeGarmentImage,
     toggleGarmentBackView,

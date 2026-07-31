@@ -36,6 +36,7 @@ import {
 } from "@/lib/bulk-spreadsheet-import";
 import {
   BOTTOMWEAR_LENGTH_OPTIONS,
+  INNERWEAR_SUBTYPE_OPTIONS,
   FIT_OPTIONS,
   FOOTWEAR_TYPE_OPTIONS,
   GENDER_OPTIONS,
@@ -153,6 +154,7 @@ const GARMENT_TYPES: { value: GarmentType; label: string; icon: React.ReactNode 
   { value: "bottomwear", label: "Bottom Wear", icon: <Scissors className="w-4 h-4" /> },
   { value: "onepiece", label: "One Piece", icon: <Shirt className="w-4 h-4" /> },
   { value: "complete-outfit", label: "Complete Outfit", icon: <Shirt className="w-4 h-4" /> },
+  { value: "innerwear", label: "Innerwear", icon: <Shirt className="w-4 h-4" /> },
 ];
 
 /** Which per-product override dimension is shown in the folder card tab strip */
@@ -1643,6 +1645,8 @@ export function StepGarments({ store }: StepGarmentsProps) {
     setTopwearLength,
     bottomwearLength,
     setBottomwearLength,
+    innerwearSubtype,
+    setInnerwearSubtype,
     addGarmentImage,
     removeGarmentImage,
     toggleGarmentBackView,
@@ -2120,6 +2124,67 @@ export function StepGarments({ store }: StepGarmentsProps) {
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Innerwear product form. Replaces the outseam length control, whose options
+          (ankle / capri / shorts) are meaningless for this category — the hem or leg
+          opening is pinned by the subtype's own anatomical anchor instead. */}
+      {!isFootwear && garmentType === "innerwear" && (
+        <div className="space-y-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-foreground">Innerwear Type</h3>
+              <Badge variant="outline" className="text-xs">
+                Optional
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Lock the product form so the cut and leg/sleeve opening cannot drift between generations. Leave unselected (Auto-Detect) to let AI infer it from the garment images.
+            </p>
+          </div>
+          {(["Bottoms", "Tops", "Loungewear & Thermals"] as const).map((group) => (
+            <div key={group} className="space-y-2">
+              <p className="text-[11px] text-muted-foreground uppercase tracking-wider font-medium">
+                {group}
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {INNERWEAR_SUBTYPE_OPTIONS.filter((o) => o.group === group).map((option) => (
+                  <button
+                    key={option.value}
+                    onClick={() =>
+                      setInnerwearSubtype(
+                        innerwearSubtype === option.value ? null : option.value,
+                      )
+                    }
+                    className={cn(
+                      "relative flex flex-col items-start gap-0.5 px-3.5 py-3 rounded-lg text-left transition-colors duration-200 border",
+                      innerwearSubtype === option.value
+                        ? "bg-card border-primary shadow-sm"
+                        : "bg-card border-border hover:border-primary/50 hover:shadow-sm",
+                    )}
+                  >
+                    {innerwearSubtype === option.value && (
+                      <div className="absolute top-2 right-2 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
+                        <Check className="w-2.5 h-2.5 text-primary-foreground" />
+                      </div>
+                    )}
+                    <p
+                      className={cn(
+                        "text-sm font-medium",
+                        innerwearSubtype === option.value ? "text-primary" : "text-foreground",
+                      )}
+                    >
+                      {option.label}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground leading-tight pr-4">
+                      {option.description}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </>

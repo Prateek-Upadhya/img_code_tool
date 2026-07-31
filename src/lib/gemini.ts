@@ -10,6 +10,7 @@ import {
   AspectRatio,
   BackgroundConfig,
   BottomwearLength,
+  InnerwearSubtype,
   ComplementaryImage,
   CustomPose,
   EditHistoryEntry,
@@ -60,6 +61,7 @@ import {
   ACCESSORY_CATEGORIES,
   BOTTOMWEAR_LENGTH_OPTIONS,
   FIT_OPTIONS,
+  INNERWEAR_SUBTYPE_OPTIONS,
   FOOTWEAR_TYPE_OPTIONS,
   SLEEVE_LENGTH_OPTIONS,
   TOPWEAR_LENGTH_OPTIONS,
@@ -1374,6 +1376,7 @@ export async function generateVTONPrompt({
   sleeveLength = null,
   topwearLength = null,
   bottomwearLength = null,
+  innerwearSubtype = null,
   complementaryImages,
   accessories,
   background,
@@ -1405,6 +1408,7 @@ export async function generateVTONPrompt({
   sleeveLength?: SleeveLength | null;
   topwearLength?: TopwearLength | null;
   bottomwearLength?: BottomwearLength | null;
+  innerwearSubtype?: InnerwearSubtype | null;
   complementaryImages: ComplementaryImage[];
   accessories: AccessoryItem[];
   background: BackgroundConfig;
@@ -2087,6 +2091,41 @@ The hero garment is a BOTTOM (pants, jeans, trousers, skirt, shorts, etc.). Your
 - Fabric texture, weight, and any distressing or wash detail
 - Seam construction (flat-felled, side seams, inseam detail)
 Any topwear visible in the frame is secondary/complementary - describe it briefly but do NOT make it the focus.`;
+  } else if (garmentType === "innerwear") {
+    const sub = innerwearSubtype
+      ? INNERWEAR_SUBTYPE_OPTIONS.find((o) => o.value === innerwearSubtype)
+      : undefined;
+    const isInnerwearTop =
+      sub?.group === "Tops" ||
+      innerwearSubtype === "thermal-top";
+    garmentTypeInstruction = `
+GARMENT TYPE EMPHASIS (INNERWEAR — a small, close-fitting garment where construction detail IS the product):
+The hero garment is INNERWEAR${sub ? ` — specifically a ${sub.promptLabel}` : ""}. This category is judged almost entirely on material quality and construction detail, because there is very little garment to look at: the buyer is inspecting the knit, the seams, the binding and the branded band. Give MAXIMUM detail to:
+${sub ? `- PRODUCT FORM (USER-SPECIFIED — AUTHORITATIVE): this is a ${sub.promptLabel}. Your output prompt MUST describe it as a "${sub.promptLabel}" and MUST contain a verbatim positive anatomical-anchor sentence stating that ${sub.anatomicalAnchor}. Do NOT substitute a neighbouring form — a brief is not a trunk, a trunk is not a boxer brief, a vest is not a crew undershirt. This OVERRIDES any form you might infer from the reference images, which are often flat-lay or shot on a different body.\n` : `- PRODUCT FORM: determine the exact form from the reference images (brief / trunk / boxer brief / loose boxer for bottoms; vest / crew / V-neck for tops) and state it explicitly, pinning the leg or sleeve opening to a named body landmark.\n`}
+═══ THE WAISTBAND / BAND IS THE HERO ELEMENT ═══
+${isInnerwearTop
+  ? `For an innerwear top the equivalent hero elements are the NECK BINDING and ARMHOLE BINDING. Describe: binding width, whether it is ribbed / flat-bound / coverstitched, how it is joined at the shoulder, the stitch line that secures it, and any contrast colour. These edges are where fit and quality are read.`
+  : `On a men's innerwear bottom, the elastic waistband carries the brand and is the single most scrutinised part of the product. Describe it as a distinct, foregrounded element in its own sentence:
+- BAND HEIGHT in proportion to the garment, and whether it is exposed elastic, covered/encased, or folded-over
+- THE WORDMARK: for a jacquard-woven band, the lettering is WOVEN INTO the elastic as raised thread, not printed on top — reproduce the exact letterforms, capitalisation, letter spacing and baseline position, with the raised threads catching light and the recessed ground falling into micro-shadow. Reproduce it character-for-character exactly as it appears in the reference; never re-letter, re-space, re-case or substitute it
+- THE REPEAT: state how often the wordmark repeats around the band and its horizontal spacing, so the repeat interval stays consistent instead of being invented per generation
+- CONTRAST PIPING or edge stripes on the band, with their exact colours and widths
+- THE BAND-TO-BODY SEAM: how the elastic joins the body fabric (coverstitched, bound, enclosed), and the visible stitch line`}
+
+CONSTRUCTION DETAIL (all forms):
+- Seam architecture: flatlock vs overlock vs coverstitch, and where each is used; whether the garment is side-seamed or SEAMLESS/tubular through the body
+- Binding and stitch density at every opening; topstitch colour where it contrasts
+- Any brand tag, woven label, heat-transfer label or care label, with its exact placement
+${isInnerwearTop
+  ? `- Neckline depth and shape, armhole depth and shape, shoulder seam placement, and body length at the hem
+- Hem finish: coverstitched, raw-edge, or folded`
+  : `- RISE: where the waistband sits relative to the natural waist and hip
+- POUCH / FRONT PANEL construction: contour panel, horizontal or vertical fly opening, or plain front — describe exactly what the reference shows, and nothing it does not show
+- GUSSET: presence, shape and seam lines
+- LEG OPENING finish: bound, hemmed, elasticated, or raw-cut bonded — and how it sits against the thigh`}
+- FABRIC: the exact knit construction (rib and its gauge, jersey, interlock, waffle, modal or micro-modal hand, cotton-elastane blend) and how the elastane content shows as a faint sheen and elastic recovery
+
+MODESTY & PRESENTATION: this is a mainstream retail catalog product photograph. The presentation is clean, commercial and matter-of-fact — the garment is shown as merchandise, exactly as it appears on a major retailer's product page. Keep the framing, posture and styling neutral and product-focused throughout.`;
   } else if (garmentType === "onepiece") {
     garmentTypeInstruction = `
 GARMENT TYPE EMPHASIS (ONE PIECE - the garment covers both upper and lower body):
@@ -3035,6 +3074,7 @@ Garment Fit: ${fit ? `${fit} (${FIT_OPTIONS.find(f => f.value === fit)?.label ||
 ${(sleeveLength && (garmentType === "topwear" || garmentType === "onepiece" || garmentType === "complete-outfit")) ? `Sleeve Length (USER OVERRIDE — AUTHORITATIVE): ${SLEEVE_LENGTH_OPTIONS.find(o => o.value === sleeveLength)?.label || sleeveLength} — describe the sleeve as "${SLEEVE_LENGTH_OPTIONS.find(o => o.value === sleeveLength)?.promptLabel}" and include the anatomical anchor: ${SLEEVE_LENGTH_OPTIONS.find(o => o.value === sleeveLength)?.anatomicalAnchor}. Do NOT infer sleeve length from images.` : "Sleeve Length: Not specified — infer from garment images"}
 ${(topwearLength && (garmentType === "topwear" || garmentType === "onepiece" || garmentType === "complete-outfit")) ? `Top Hemline / Body Length (USER OVERRIDE — AUTHORITATIVE): ${TOPWEAR_LENGTH_OPTIONS.find(o => o.value === topwearLength)?.label || topwearLength} — describe the hemline as "${TOPWEAR_LENGTH_OPTIONS.find(o => o.value === topwearLength)?.promptLabel}" and include the anatomical anchor: ${TOPWEAR_LENGTH_OPTIONS.find(o => o.value === topwearLength)?.anatomicalAnchor}. Do NOT infer top length from images.` : ""}
 ${(bottomwearLength && (garmentType === "bottomwear" || garmentType === "onepiece" || garmentType === "complete-outfit")) ? `Bottomwear Outseam / Leg Length (USER OVERRIDE — AUTHORITATIVE): ${BOTTOMWEAR_LENGTH_OPTIONS.find(o => o.value === bottomwearLength)?.label || bottomwearLength} — describe the leg hem as "${BOTTOMWEAR_LENGTH_OPTIONS.find(o => o.value === bottomwearLength)?.promptLabel}" and include the anatomical anchor: ${BOTTOMWEAR_LENGTH_OPTIONS.find(o => o.value === bottomwearLength)?.anatomicalAnchor}. Do NOT infer bottomwear length from images.` : ""}
+${(innerwearSubtype && garmentType === "innerwear") ? `Innerwear Form (USER OVERRIDE — AUTHORITATIVE): ${INNERWEAR_SUBTYPE_OPTIONS.find(o => o.value === innerwearSubtype)?.label || innerwearSubtype} — describe the product as "${INNERWEAR_SUBTYPE_OPTIONS.find(o => o.value === innerwearSubtype)?.promptLabel}" and include the anatomical anchor: ${INNERWEAR_SUBTYPE_OPTIONS.find(o => o.value === innerwearSubtype)?.anatomicalAnchor}. Do NOT infer the product form from images.` : ""}
 Shot Type: ${isGhostMannequin ? "GHOST MANNEQUIN (no visible model — garment shaped as if worn by invisible person)" : isProductOnlyShot ? "PRODUCT ONLY (no human model)" : "ON-MODEL"}
 ${!isProductOnlyShot ? (model ? `AI Model: ${model.name} - ${model.description}` : "AI Model: Use the provided model reference image as the person") : ""}
 ${!isProductOnlyShot && modelImage ? "Model Reference Image: PROVIDED (use the EXACT person from the reference photo - same face, skin tone, hair, body type)" : ""}
@@ -5395,7 +5435,7 @@ export async function generateUGCPrompt({
   const genderLabel = gender === "male" ? "men's / masculine" : gender === "female" ? "women's / feminine" : "unisex / gender-neutral";
   const productTypeLabel = isFootwear
     ? (FOOTWEAR_TYPE_OPTIONS.find((f) => f.value === footwearType)?.label || footwearType || "Footwear")
-    : garmentType === "topwear" ? "Top Wear" : garmentType === "bottomwear" ? "Bottom Wear" : garmentType === "complete-outfit" ? "Complete Outfit" : "One Piece";
+    : garmentType === "topwear" ? "Top Wear" : garmentType === "bottomwear" ? "Bottom Wear" : garmentType === "complete-outfit" ? "Complete Outfit" : garmentType === "innerwear" ? "Innerwear" : "One Piece";
 
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
 
@@ -6881,6 +6921,34 @@ ${input}
 Your job is to turn this into CONCRETE, EXPLICIT callout points. Study the product images closely and derive points that are factually supportable by what you can actually see (construction, materials, silhouette, closure, sole/outsole, stitching, panelling, hardware, finish) plus anything stated in the product information. Each point becomes one short, scannable callout label of roughly 2–5 words, written in confident retail-marketing voice consistent with the operator's direction. Never invent a spec, technology name, material, measurement, certification or performance claim you cannot ground in the images or the supplied information — where the direction implies a claim you cannot evidence, reframe it as an observable design attribute instead.`;
 }
 
+/**
+ * Callout anchoring rules — every printed claim must point at the part of the product
+ * it is actually about.
+ *
+ * Why this is spelled out at this length: an infographic whose leader lines land in
+ * plausible-looking but arbitrary places is worse than one with no leader lines, because
+ * it asserts a spatial claim that is wrong — "4-way stretch" pointing at a care label
+ * reads as sloppy to the buyer and to the brand. `anchor` already existed on
+ * {@link InfographicTextPoint} but was optional and loosely specified, so the analysis was
+ * free to return vague values ("the product") that carry no placement information at all.
+ *
+ * The second half of this block handles the case that otherwise produces the worst
+ * output: claims that are TRUE of the product but not LOCATED anywhere on it (care
+ * instructions, pack counts, certifications). Forcing those into a leader line invents a
+ * false spatial relationship, so they are routed to non-pointing zones instead.
+ */
+const INFOGRAPHIC_CALLOUT_ANCHORING = `═══ CALLOUT ANCHORING — EVERY POINT MUST LAND ON THE RIGHT PART OF THE PRODUCT ═══
+A callout is a spatial claim: drawing a leader line from a piece of copy to a place on the product asserts "THIS is what that text is about". If the line lands somewhere arbitrary, the asset is wrong even when every word is correct — and it reads as careless to the buyer.
+
+For EVERY point you emit:
+1. \`anchor\` is REQUIRED and must name a SPECIFIC, PHYSICALLY VISIBLE region or feature of the product, in plain words a person could point to — "the jacquard-woven waistband", "the flatlock seam along the inner thigh", "the ribbed neck binding", "the heel counter", "the knit face on the front panel". Reject and rewrite any anchor that is generic ("the product", "overall", "the garment", "the whole item"), invisible in the images, or a restatement of the copy rather than a location.
+2. \`anchorPoint\` is REQUIRED: the normalized position of that feature ON THE PRODUCT AS YOU WILL STAGE IT IN THE COMPOSITION, as { "x": 0.00–1.00 from the left edge of the canvas, "y": 0.00–1.00 from the top }. This is the coordinate the leader line terminates on. It must fall ON the named feature, not merely near the product.
+3. The pairing must be SEMANTICALLY CORRECT: the callout's subject and its anchor must be the same thing. A claim about the waistband anchors to the waistband; a claim about the knit anchors to an open area of fabric where the knit is legible; a claim about a seam anchors to that seam. Never distribute callouts around the product for visual balance alone — placement follows meaning, and layout balance is achieved by arranging the TEXT ZONES, not by re-pointing the lines.
+
+NON-LOCALIZED CLAIMS: some true statements have no position on the product — care instructions, pack quantity, size range, certifications, country of origin, price-tier messaging. Do NOT invent an anchor for these and do NOT give them a leader line. Route them instead to a non-pointing element: a footer strip, a corner badge, an icon row, or a caption block. Mark these by setting \`anchor\` to the literal string "unanchored" and omitting \`anchorPoint\`. It is better to present a claim as a badge than to point it at a place it does not belong.
+
+GROUNDING: every callout must trace back to something visible in the product images or stated in the operator's text / product information. If you cannot point to the evidence, do not print the claim.`;
+
 /** Builds the fidelity directive for how literally the reference layout is reproduced. */
 function buildInfographicFidelityDirective(fidelity: InfographicFidelity): string {
   return fidelity === "layout-lock"
@@ -6919,10 +6987,30 @@ function coerceInfographicPoints(raw: unknown): InfographicTextPoint[] {
   const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   return raw
     .map((entry, i) => {
-      const row = (entry ?? {}) as { text?: unknown; anchor?: unknown };
+      const row = (entry ?? {}) as {
+        text?: unknown;
+        anchor?: unknown;
+        anchorPoint?: unknown;
+      };
       const text = typeof row.text === "string" ? row.text.trim() : "";
       const anchor = typeof row.anchor === "string" ? row.anchor.trim() : "";
-      return { id: `ig-pt-${stamp}-${i}`, text, anchor: anchor || undefined };
+      // Accept an anchorPoint only when BOTH coordinates are real numbers inside the
+      // canvas. A partial or out-of-range point is worse than none: it would place a
+      // leader line off the product, so it is dropped and the callout falls back to
+      // being positioned by its `anchor` wording alone.
+      const rawPoint = row.anchorPoint as { x?: unknown; y?: unknown } | undefined;
+      const x = typeof rawPoint?.x === "number" ? rawPoint.x : NaN;
+      const y = typeof rawPoint?.y === "number" ? rawPoint.y : NaN;
+      const anchorPoint =
+        Number.isFinite(x) && Number.isFinite(y) && x >= 0 && x <= 1 && y >= 0 && y <= 1
+          ? { x, y }
+          : undefined;
+      return {
+        id: `ig-pt-${stamp}-${i}`,
+        text,
+        anchor: anchor || undefined,
+        anchorPoint,
+      };
     })
     .filter((p) => p.text.length > 0);
 }
@@ -7000,7 +7088,9 @@ ${buildInfographicFidelityDirective(fidelity)}
 ═══ STEP B — DERIVE THE TEXT ═══
 ${buildInfographicTextDirective(textMode, textInput)}
 
-For each point emit \`text\` (the exact string to print) and \`anchor\` (which region or feature of the product it points to, in plain words — e.g. "the midsole sidewall", "the collar and placket"). Keep the number of points consistent with what the template's layout can hold gracefully${fidelity === "layout-lock" ? " — under Layout Lock, match the template's own callout count unless the copy genuinely demands otherwise" : ""}.
+${INFOGRAPHIC_CALLOUT_ANCHORING}
+
+For each point emit \`text\` (the exact string to print), \`anchor\` and \`anchorPoint\` as specified above. Keep the number of points consistent with what the template's layout can hold gracefully${fidelity === "layout-lock" ? " — under Layout Lock, match the template's own callout count unless the copy genuinely demands otherwise" : ""}.
 
 ═══ STEP C — DECIDE THE SUBJECT ═══
 Decide whether the finished asset shows a HUMAN MODEL wearing the ${productNoun}, or the ${productNoun} alone as a product-only render. Base this on the reference template's own treatment (does it stage a person or an isolated product?), the product category, and what best serves the callouts — a callout pointing at fit, drape or styling argues for a model; one pointing at construction, sole or material detail argues for an isolated product. Return the decision as \`includesModel\` (boolean) and justify it in one clause inside the composition.
@@ -7010,7 +7100,7 @@ Author the composition description as flowing, well-structured prose (short labe
 1. The canvas: target aspect ratio ${aspectRatio}, and its orientation.
 2. The ${productNoun}: its exact placement, orientation, angle and scale in the frame${productAgnostic ? " (described structurally, so it holds for any product in the batch)" : ", faithful to the attached product images"}.
 3. Whether a human model is present (matching \`includesModel\`), and if so their framing, crop and pose — described only as far as the layout requires.
-4. Each callout: its exact quoted text, the product region it points to, its leader line and icon, and its position in the frame.
+4. Each callout: its exact quoted text, the product region it points to (its \`anchor\`), the normalized \`anchorPoint\` its leader line TERMINATES on, the leader-line routing and icon, and the position of the text zone itself in the frame. State the anchor coordinates explicitly so the line cannot drift onto a neighbouring feature. Callouts marked \`"unanchored"\` get NO leader line — place them in a footer strip, corner badge or icon row instead.
 5. The background${customBackground?.trim() ? ` — the operator requires: ${customBackground.trim()}` : ""}, with concrete hex colours and the light/gradient direction, chosen to contrast with and elevate the product.
 6. The contact-shadow direction and softness, kept in sync with the lighting and any background gradient.
 7. The typographic treatment: hierarchy, weights, casing and alignment.
@@ -7022,7 +7112,7 @@ Respond with a SINGLE JSON object and nothing else — no preamble, no commentar
 {
   "includesModel": boolean,
   "layoutSummary": "compact restatement of the template's structure",
-  "points": [ { "text": "exact on-image copy", "anchor": "product region it points to" } ],
+  "points": [ { "text": "exact on-image copy", "anchor": "specific visible product region it points to, or \\"unanchored\\"", "anchorPoint": { "x": 0.0, "y": 0.0 } } ],
   "composition": "the full composition description from STEP D"
 }`;
 
@@ -7141,7 +7231,15 @@ export async function generateCustomPoseInfographicPrompt({
   const productNoun = productCategory === "footwear" ? "footwear" : "garment";
 
   const approvedCopy = plan.points
-    .map((p, i) => `${i + 1}. "${p.text}"${p.anchor ? `  →  points to: ${p.anchor}` : ""}`)
+    .map((p, i) => {
+      if (p.anchor === "unanchored") {
+        return `${i + 1}. "${p.text}"  →  UNANCHORED: render as a badge / footer item with NO leader line`;
+      }
+      const at = p.anchorPoint
+        ? `  (leader line terminates at x=${p.anchorPoint.x.toFixed(2)}, y=${p.anchorPoint.y.toFixed(2)})`
+        : "";
+      return `${i + 1}. "${p.text}"${p.anchor ? `  →  points to: ${p.anchor}${at}` : ""}`;
+    })
     .join("\n");
 
   const systemPrompt = `You are an expert e-commerce art director finalising a product infographic. An approved plan already exists — your job is to re-project it onto the specific ${productNoun} shown in the attached product images and emit the final IMAGE-COMPOSITION DESCRIPTION.

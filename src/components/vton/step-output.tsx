@@ -4,7 +4,7 @@ import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, BarChart3, Camera, Check, CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, Filter, GripVertical, ImageIcon, Loader2, Lock, Package, Plus, RefreshCw, ShieldCheck, ShieldOff, Sparkles, Trash2, Upload, User, Wand2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ACCESSORY_CATEGORIES, ASPECT_RATIOS, DEFAULT_PRODUCT_FILL_PERCENT, FRAMING_OPTIONS, POSES, FOOTWEAR_POSES, PRODUCT_FILL_PERCENT_MAX, PRODUCT_FILL_PERCENT_MIN, UGC_SHOT_TYPE_OPTIONS, UGC_SCENE_PRESETS } from "@/lib/constants";
+import { ACCESSORY_CATEGORIES, ASPECT_RATIOS, DEFAULT_PRODUCT_FILL_PERCENT, FRAMING_OPTIONS, isPoseRelevantTo, POSES, FOOTWEAR_POSES, PRODUCT_FILL_PERCENT_MAX, PRODUCT_FILL_PERCENT_MIN, UGC_SHOT_TYPE_OPTIONS, UGC_SCENE_PRESETS } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -1107,9 +1107,25 @@ function InfographicPanel({
                           anchor: e.target.value || undefined,
                         })
                       }
-                      placeholder="Points to... (e.g. the midsole sidewall)"
+                      placeholder="Points to... (e.g. the jacquard waistband)"
                       className="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-[11px] text-muted-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
                     />
+                    {/* Where the leader line will actually land. Surfaced so a callout
+                        pointing at the wrong feature is caught here, before rendering. */}
+                    {pt.anchor === "unanchored" ? (
+                      <p className="text-[10px] text-muted-foreground/60 pl-0.5">
+                        Unanchored — renders as a badge / footer item, no leader line
+                      </p>
+                    ) : pt.anchorPoint ? (
+                      <p className="text-[10px] text-muted-foreground/60 pl-0.5 tabular-nums">
+                        Leader line lands at x={pt.anchorPoint.x.toFixed(2)}, y=
+                        {pt.anchorPoint.y.toFixed(2)}
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-amber-500/80 pl-0.5">
+                        No anchor point — placement is left to the image model
+                      </p>
+                    )}
                   </div>
                   <button
                     onClick={() => api.removePoint(pose.id, pt.id)}
@@ -2246,7 +2262,7 @@ function FramingAccordionContent({
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 pt-1">
       {framingPoses.map((pose) => {
         const isSelected = selectedPoses.some((p) => p.id === pose.id);
-        const isIrrelevant = showAllPoses && !pose.garmentRelevance.includes(activeType);
+        const isIrrelevant = showAllPoses && !isPoseRelevantTo(pose, activeType);
         const isProductOnly = pose.requiresModel === false;
 
         return (
@@ -3079,7 +3095,7 @@ export function StepOutput({ store }: StepOutputProps) {
 
   const relevantPoses = showAllPoses
     ? allPoses
-    : allPoses.filter((p) => p.garmentRelevance.includes(activeType));
+    : allPoses.filter((p) => isPoseRelevantTo(p, activeType));
 
   const garmentLabel = isFootwear
     ? (FOOTWEAR_POSES[0] ? footwearType.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "Footwear")
@@ -3089,7 +3105,9 @@ export function StepOutput({ store }: StepOutputProps) {
         ? "Bottom Wear"
         : garmentType === "complete-outfit"
           ? "Complete Outfit"
-          : "One Piece";
+          : garmentType === "innerwear"
+            ? "Innerwear"
+            : "One Piece";
 
   return (
     <div className="space-y-8">

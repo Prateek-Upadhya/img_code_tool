@@ -1,4 +1,4 @@
-import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, ModelAgeGroup, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SoleConstructionLayerCount, SwatchShape, TextGenModel, TopwearLength } from "./types";
+import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, InnerwearSubtype, ModelAgeGroup, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SoleConstructionLayerCount, SwatchShape, TextGenModel, TopwearLength } from "./types";
 
 export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; description: string }[] = [
   { value: "clothing", label: "Clothing", description: "Apparel, garments, and fashion items" },
@@ -2023,6 +2023,150 @@ export const ACCESSORY_CATEGORIES: {
   { value: "cufflinks", label: "Cufflinks", icon: "🔗", description: "Cufflinks or sleeve buttons" },
   { value: "anklet", label: "Anklet", icon: "🦶", description: "Ankle chain or anklet" },
   { value: "hair-accessory", label: "Hair Accessory", icon: "🎀", description: "Headband, clips, scrunchie, tiara" },
+];
+
+/**
+ * Which `Pose.garmentRelevance` keys a given garment type should match.
+ *
+ * Poses declare relevance against the original garment types, and there are ~70 of them.
+ * Rather than editing every one to add `"innerwear"`, innerwear borrows the relevance of
+ * the categories it physically resembles: bottoms and tops. This keeps the pose library
+ * as the single source of truth for which framings suit which body region, and means a
+ * new garment type cannot silently ship with an empty pose list.
+ */
+export function poseRelevanceKeysFor(
+  type: GarmentType | FootwearType,
+): (GarmentType | FootwearType)[] {
+  if (type === "innerwear") return ["bottomwear", "topwear"];
+  return [type];
+}
+
+/** Whether `pose` should be offered for the given garment/footwear type. */
+export function isPoseRelevantTo(
+  pose: Pose,
+  type: GarmentType | FootwearType,
+): boolean {
+  return poseRelevanceKeysFor(type).some((k) => pose.garmentRelevance.includes(k));
+}
+
+/**
+ * Product forms for the `innerwear` garment type.
+ *
+ * Reuses the `{ value, label, description, promptLabel, anatomicalAnchor }` shape of the
+ * length option lists so the same authoritative-override plumbing carries it into the
+ * prompt. `anatomicalAnchor` does the job the bottomwear outseam options do for pants —
+ * it pins the hem/opening to a body landmark so the model cannot drift a trunk into a
+ * boxer, which is the single most common form error on this category.
+ *
+ * `group` drives the optgroup headings in the selector only.
+ */
+export const INNERWEAR_SUBTYPE_OPTIONS: {
+  value: InnerwearSubtype;
+  label: string;
+  group: "Bottoms" | "Tops" | "Loungewear & Thermals";
+  description: string;
+  promptLabel: string;
+  anatomicalAnchor: string;
+}[] = [
+  {
+    value: "brief",
+    label: "Brief",
+    group: "Bottoms",
+    description: "No leg — high-cut leg openings at the hip crease",
+    promptLabel: "men's brief",
+    anatomicalAnchor:
+      "the garment has NO leg length at all — the leg openings are cut high at the hip crease / upper thigh, following the groin line, leaving the entire thigh exposed",
+  },
+  {
+    value: "trunk",
+    label: "Trunk",
+    group: "Bottoms",
+    description: "Short square leg ending at the upper thigh",
+    promptLabel: "men's trunk (short-leg boxer brief)",
+    anatomicalAnchor:
+      "the leg openings end on the UPPER thigh, roughly a hand's width below the crotch — a short, square-cut leg that is clearly present but well above mid-thigh",
+  },
+  {
+    value: "boxer-brief",
+    label: "Boxer Brief",
+    group: "Bottoms",
+    description: "Fitted leg ending at mid-thigh",
+    promptLabel: "men's boxer brief",
+    anatomicalAnchor:
+      "the leg openings end at MID-THIGH, roughly halfway between crotch and knee, with the leg fabric fitted close to the thigh rather than loose",
+  },
+  {
+    value: "boxer",
+    label: "Boxer",
+    group: "Bottoms",
+    description: "Loose woven leg, relaxed cut",
+    promptLabel: "men's loose boxer short",
+    anatomicalAnchor:
+      "the leg is LOOSE and relaxed rather than body-fitted, cut wide through the thigh with the hem falling freely at mid-thigh and the fabric hanging away from the leg",
+  },
+  {
+    value: "vest",
+    label: "Vest / Tank",
+    group: "Tops",
+    description: "Sleeveless with narrow shoulder straps",
+    promptLabel: "men's innerwear vest (sleeveless tank)",
+    anatomicalAnchor:
+      "the garment is SLEEVELESS with narrow shoulder straps and deep armholes cut well down the side of the torso, leaving the entire shoulder and arm exposed",
+  },
+  {
+    value: "undershirt-crew",
+    label: "Undershirt — Crew",
+    group: "Tops",
+    description: "Short sleeve, round crew neckline",
+    promptLabel: "men's crew-neck undershirt",
+    anatomicalAnchor:
+      "the garment has SHORT SLEEVES ending on the upper arm above the elbow, and a round crew neckline sitting at the base of the neck",
+  },
+  {
+    value: "undershirt-vneck",
+    label: "Undershirt — V-Neck",
+    group: "Tops",
+    description: "Short sleeve, V neckline",
+    promptLabel: "men's V-neck undershirt",
+    anatomicalAnchor:
+      "the garment has SHORT SLEEVES ending on the upper arm above the elbow, and a V-shaped neckline whose point sits on the upper chest below the collarbone",
+  },
+  {
+    value: "lounge-shorts",
+    label: "Lounge Shorts",
+    group: "Loungewear & Thermals",
+    description: "Relaxed short with drawcord waist",
+    promptLabel: "men's lounge shorts",
+    anatomicalAnchor:
+      "the leg hem ends at or just above the knee in a relaxed, non-body-fitted cut, with a soft drawcord waistband",
+  },
+  {
+    value: "lounge-pants",
+    label: "Lounge Pants",
+    group: "Loungewear & Thermals",
+    description: "Full-length relaxed pant with drawcord waist",
+    promptLabel: "men's lounge pants",
+    anatomicalAnchor:
+      "the leg hem reaches the ankle in a relaxed, non-body-fitted cut, with a soft drawcord waistband",
+  },
+  {
+    value: "thermal-top",
+    label: "Thermal Top",
+    group: "Loungewear & Thermals",
+    description: "Long-sleeve base layer, often waffle-knit",
+    promptLabel: "men's thermal base-layer top",
+    anatomicalAnchor:
+      "the garment has FULL-LENGTH sleeves ending at the wrist and a body that reaches the hip, fitted close as a base layer",
+  },
+  {
+    value: "thermal-bottom",
+    label: "Thermal Bottom",
+    group: "Loungewear & Thermals",
+    description: "Full-length base layer legging",
+    promptLabel: "men's thermal base-layer bottom (long john)",
+    anatomicalAnchor:
+      "the leg reaches the ankle and is fitted close to the leg as a base layer rather than hanging loose",
+  },
 ];
 
 /**
