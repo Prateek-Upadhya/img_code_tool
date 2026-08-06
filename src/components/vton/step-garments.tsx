@@ -65,7 +65,7 @@ import { BULK_SPREADSHEET_FILTER_ALL } from "@/lib/types";
  * bulk-mode controls show identical guidance.
  */
 const POSE_VARIATION_TOOLTIP =
-  "When ON, the generated image introduces subtle pose changes (gaze direction, hand position, stance) while preserving image framing and body orientation. When OFF, the original pose is reproduced exactly.";
+  "When ON, one or two subtle pose changes are chosen for each image based on its crop, the model's pose, what they are touching, and which garment details must stay visible — so a close-up varies the gaze while a full-body shot can shift weight. Framing and lighting stay locked either way. When OFF, the original pose is reproduced exactly.";
 
 /**
  * Compact Model-Swap-only toggle for the "Pose Variation" product-level option.

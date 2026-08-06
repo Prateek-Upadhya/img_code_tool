@@ -771,6 +771,60 @@ function buildSubjectFillContractLine(
      TO ACHIEVE IT, RE-DERIVE the CAMERA DISTANCE, FOCAL-LENGTH EQUIVALENT and the four CROP anchors so they are mutually consistent with ${productFillPercent}% fill — move the camera closer and/or tighten the crop until the product genuinely fills that share of the frame height. Every other locked attribute (camera height, dutch angle, subject placement) is preserved from the reference. Do NOT satisfy the number by upscaling, stretching, or distorting the product, and do NOT crop into the product itself: the ${noun} stays whole and in proportion, the FRAME closes in around it.`;
 }
 
+/**
+ * The FIELD LINES of the FRAMING & CROP CONTRACT — the 13 measurable camera/crop attributes
+ * that make run-to-run framing deterministic.
+ *
+ * This list was previously duplicated across
+ * {@link buildCustomPoseImageReferenceExtractionBlock} (verbose) and
+ * {@link buildReferencePhotoshootExtractionBlock} (terse), with an in-code note asking that
+ * the two be kept in sync. It now lives here once; `terse` selects which register is emitted.
+ *
+ * Only the bullet lines are returned — each call site supplies its own section heading, emit
+ * instruction, and FRAMING LOCK paragraph, because those differ per feature.
+ */
+function buildFramingCropContractFields({
+  isProductOnlyShot,
+  productFillPercent,
+  imageModelName,
+  terse = false,
+}: {
+  isProductOnlyShot: boolean;
+  productFillPercent: number | undefined;
+  imageModelName: string;
+  terse?: boolean;
+}): string {
+  if (terse) {
+    return `   - SHOT TYPE NAME (pick the SINGLE best match and name it explicitly): extreme close-up, close-up, medium close-up (chest-up), medium shot (waist-up), medium-long shot (mid-thigh / cowboy shot), long shot (full-length / full-body), wide shot, extreme wide shot${isProductOnlyShot ? ", product macro, product flat-lay, product hero shot" : ""}. ${imageModelName} treats this name as a top-tier composition signal.
+   - FOCAL-LENGTH EQUIVALENT (35 mm full-frame): pick from {24, 28, 35, 50, 85, 105, 135, 200} mm to match the perspective compression of the reference.
+   - CAMERA DISTANCE: lens-to-subject distance in meters (e.g., "0.6 m", "1.5 m", "3.2 m").
+   - CAMERA HEIGHT + lens tilt in degrees (e.g., "lens at chest-level, tilted up 8°").
+   - DUTCH ANGLE / ROLL: 0° for level horizon, else exact degrees + direction.
+   - ASPECT-RATIO ORIENTATION: portrait / landscape / square (describe only whether it reads taller-than-wide, wider-than-tall, or 1:1).
+${buildSubjectFillContractLine(isProductOnlyShot, productFillPercent, { terse: true })}
+   - SUBJECT PLACEMENT: normalized coordinates (x_center 0.00–1.00 from left, y_center 0.00–1.00 from top) + a one-line caption.
+   - TOP CROP — ANATOMICAL ANCHOR: the EXACT vertical position where the top edge cuts, pegged to a named ${isProductOnlyShot ? "product/scene" : "anatomical"} landmark (e.g., "frame top sits ~4 cm above the model's crown").
+   - BOTTOM CROP — ANATOMICAL ANCHOR: same treatment for the bottom edge.
+   - LEFT CROP and RIGHT CROP: how far each side extends past the subject, anchored to an anatomical or scene landmark.
+   - DEPTH OF FIELD: deep focus / mild background blur / pronounced bokeh, and WHERE the focal plane sits.
+   - HORIZON LINE (only if visible): vertical position as a fraction from the top.`;
+  }
+
+  return `   - SHOT TYPE NAME (pick the SINGLE best match from this canonical vocabulary and name it explicitly): extreme close-up, close-up, medium close-up (chest-up), medium shot (waist-up), medium-long shot (mid-thigh / cowboy shot), long shot (full-length / full-body), wide shot, extreme wide shot${isProductOnlyShot ? ", product macro, product flat-lay, product hero shot" : ""}. State the named shot type in plain words — ${imageModelName} treats this name as a top-tier composition signal.
+   - FOCAL-LENGTH EQUIVALENT (35 mm full-frame): pick a concrete number from {24 mm, 28 mm, 35 mm, 50 mm, 85 mm, 105 mm, 135 mm, 200 mm} that best matches the perspective compression and depth feel of the reference. Lower = wider / more environmental context; higher = tighter / more compressed background.
+   - CAMERA DISTANCE: distance from the lens to the subject's ${isProductOnlyShot ? "centroid" : "chest (or to the product centroid for product-only shots)"}, in meters (e.g., "0.6 m", "1.5 m", "3.2 m").
+   - CAMERA HEIGHT relative to the subject: name the reference plane (overhead / above-head / eye-level / chin-level / chest-level / hip-level / knee-level / ankle-level / ground-level) AND the lens tilt in degrees (e.g., "lens at chest-level, tilted up by 8°", "lens at knee-level, level / 0° tilt", "lens directly overhead, tilted straight down at 90°").
+   - DUTCH ANGLE / ROLL: 0° for level horizon; otherwise specify the exact tilt in degrees and direction (e.g., "5° clockwise roll").
+   - ASPECT-RATIO ORIENTATION: portrait / landscape / square (do NOT pick the numeric aspect ratio here — that is decided elsewhere; only describe whether the reference reads taller-than-wide, wider-than-tall, or 1:1).
+${buildSubjectFillContractLine(isProductOnlyShot, productFillPercent)}
+   - SUBJECT PLACEMENT: normalized rule-of-thirds coordinates of the subject's center of mass (x_center in 0.00–1.00 from left, y_center in 0.00–1.00 from top) plus a one-line caption (e.g., "x_center=0.50, y_center=0.55 — centered, slightly low"; "x_center=0.33, y_center=0.50 — left-third").
+   - TOP CROP — ANATOMICAL ANCHOR (this is the line that stops framing drift): describe the EXACT vertical position where the top edge of the image cuts, pegged to a named ${isProductOnlyShot ? "product or scene" : "anatomical"} landmark, using the same imperative style this codebase already uses for preset framings. Examples (for shape only): "frame top sits ~4 cm above the model's crown leaving a thin band of headroom"; "frame top cuts mid-forehead, the hairline is fully visible but the crown is cropped"; "frame top is at the model's clavicle line, the head is entirely outside the frame"; "frame top is at the upper edge of the toe-cap with ~3 cm of empty backdrop above".
+   - BOTTOM CROP — ANATOMICAL ANCHOR: same treatment for the bottom edge. Examples (for shape only): "frame bottom cuts ~2 cm above the patella, the knee is NOT visible"; "frame bottom cuts at mid-calf, the lower calf and feet are entirely cropped"; "frame bottom is at the toe-tip with ~5 cm of visible floor"; "frame bottom is just below the lower ribcage, strictly above the natural waistline".
+   - LEFT CROP and RIGHT CROP: how far each side extends past the subject. Anchor each side to either an anatomical landmark (e.g., "frame left sits ~8 cm outboard of the model's left shoulder"; "frame right cuts at the model's right elbow with the forearm exiting the frame") OR a scene element ("frame left is at the leading edge of the column"; "frame right is at the doorway jamb").
+   - DEPTH OF FIELD: pick one — deep focus (entire scene sharp), mild background blur (background softens but reads), pronounced bokeh (background reduced to circles of confusion). Then name WHERE the focal plane sits (e.g., "focal plane on the model's eyes; background falls off to soft-blur beyond ~2 m").
+   - HORIZON LINE (only if visible): vertical position in the frame as a fraction from the top (e.g., "horizon at y=0.42"; "no horizon visible — interior").`;
+}
+
 function buildCustomPoseImageReferenceExtractionBlock({
   isProductOnlyShot,
   referenceImageCount,
@@ -814,19 +868,7 @@ ${isProductOnlyShot
    - IDENTITY-FREE: describe the body purely as anonymous geometry. Do NOT record the stand-in's face, hair, skin tone, age, ethnicity, or any identifying trait — those come SOLELY from the user's attached model reference image (see PERSON IDENTITY block above)`}
 
 1B. FRAMING & CROP CONTRACT — DENSE, DETERMINISTIC, NON-NEGOTIABLE (this section is the single most important determinant of run-to-run framing consistency — translate every camera and crop attribute into concrete, measurable, photographer-grade English so two consecutive generations cannot drift):
-   - SHOT TYPE NAME (pick the SINGLE best match from this canonical vocabulary and name it explicitly): extreme close-up, close-up, medium close-up (chest-up), medium shot (waist-up), medium-long shot (mid-thigh / cowboy shot), long shot (full-length / full-body), wide shot, extreme wide shot${isProductOnlyShot ? ", product macro, product flat-lay, product hero shot" : ""}. State the named shot type in plain words — ${imageModelName} treats this name as a top-tier composition signal.
-   - FOCAL-LENGTH EQUIVALENT (35 mm full-frame): pick a concrete number from {24 mm, 28 mm, 35 mm, 50 mm, 85 mm, 105 mm, 135 mm, 200 mm} that best matches the perspective compression and depth feel of the reference. Lower = wider / more environmental context; higher = tighter / more compressed background.
-   - CAMERA DISTANCE: distance from the lens to the subject's ${isProductOnlyShot ? "centroid" : "chest (or to the product centroid for product-only shots)"}, in meters (e.g., "0.6 m", "1.5 m", "3.2 m").
-   - CAMERA HEIGHT relative to the subject: name the reference plane (overhead / above-head / eye-level / chin-level / chest-level / hip-level / knee-level / ankle-level / ground-level) AND the lens tilt in degrees (e.g., "lens at chest-level, tilted up by 8°", "lens at knee-level, level / 0° tilt", "lens directly overhead, tilted straight down at 90°").
-   - DUTCH ANGLE / ROLL: 0° for level horizon; otherwise specify the exact tilt in degrees and direction (e.g., "5° clockwise roll").
-   - ASPECT-RATIO ORIENTATION: portrait / landscape / square (do NOT pick the numeric aspect ratio here — that is decided elsewhere; only describe whether the reference reads taller-than-wide, wider-than-tall, or 1:1).
-${buildSubjectFillContractLine(isProductOnlyShot, productFillPercent)}
-   - SUBJECT PLACEMENT: normalized rule-of-thirds coordinates of the subject's center of mass (x_center in 0.00–1.00 from left, y_center in 0.00–1.00 from top) plus a one-line caption (e.g., "x_center=0.50, y_center=0.55 — centered, slightly low"; "x_center=0.33, y_center=0.50 — left-third").
-   - TOP CROP — ANATOMICAL ANCHOR (this is the line that stops framing drift): describe the EXACT vertical position where the top edge of the image cuts, pegged to a named ${isProductOnlyShot ? "product or scene" : "anatomical"} landmark, using the same imperative style this codebase already uses for preset framings. Examples (for shape only): "frame top sits ~4 cm above the model's crown leaving a thin band of headroom"; "frame top cuts mid-forehead, the hairline is fully visible but the crown is cropped"; "frame top is at the model's clavicle line, the head is entirely outside the frame"; "frame top is at the upper edge of the toe-cap with ~3 cm of empty backdrop above".
-   - BOTTOM CROP — ANATOMICAL ANCHOR: same treatment for the bottom edge. Examples (for shape only): "frame bottom cuts ~2 cm above the patella, the knee is NOT visible"; "frame bottom cuts at mid-calf, the lower calf and feet are entirely cropped"; "frame bottom is at the toe-tip with ~5 cm of visible floor"; "frame bottom is just below the lower ribcage, strictly above the natural waistline".
-   - LEFT CROP and RIGHT CROP: how far each side extends past the subject. Anchor each side to either an anatomical landmark (e.g., "frame left sits ~8 cm outboard of the model's left shoulder"; "frame right cuts at the model's right elbow with the forearm exiting the frame") OR a scene element ("frame left is at the leading edge of the column"; "frame right is at the doorway jamb").
-   - DEPTH OF FIELD: pick one — deep focus (entire scene sharp), mild background blur (background softens but reads), pronounced bokeh (background reduced to circles of confusion). Then name WHERE the focal plane sits (e.g., "focal plane on the model's eyes; background falls off to soft-blur beyond ~2 m").
-   - HORIZON LINE (only if visible): vertical position in the frame as a fraction from the top (e.g., "horizon at y=0.42"; "no horizon visible — interior").
+${buildFramingCropContractFields({ isProductOnlyShot, productFillPercent, imageModelName })}
 
 After extracting the above, EMIT the entire 1B block — verbatim, with these exact field labels — as a labeled FRAMING & CROP CONTRACT section near the TOP of your final output prompt (immediately after the OPENING LINE and BEFORE the pose paragraph, scene paragraph, and lighting paragraph). The downstream image generator reads composition as a first-class element; emitting the contract early and verbatim is what guarantees consistent framing across generations.
 
@@ -980,19 +1022,7 @@ EXTRACT and DESCRIBE:
 ${section1A}
 
 1B. FRAMING & CROP CONTRACT — DENSE, DETERMINISTIC, NON-NEGOTIABLE (the single most important determinant of run-to-run framing consistency — translate every camera and crop attribute into concrete, measurable, photographer-grade English):
-   - SHOT TYPE NAME (pick the SINGLE best match and name it explicitly): extreme close-up, close-up, medium close-up (chest-up), medium shot (waist-up), medium-long shot (mid-thigh / cowboy shot), long shot (full-length / full-body), wide shot, extreme wide shot${isProductOnlyShot ? ", product macro, product flat-lay, product hero shot" : ""}. ${imageModelName} treats this name as a top-tier composition signal.
-   - FOCAL-LENGTH EQUIVALENT (35 mm full-frame): pick from {24, 28, 35, 50, 85, 105, 135, 200} mm to match the perspective compression of the reference.
-   - CAMERA DISTANCE: lens-to-subject distance in meters (e.g., "0.6 m", "1.5 m", "3.2 m").
-   - CAMERA HEIGHT + lens tilt in degrees (e.g., "lens at chest-level, tilted up 8°").
-   - DUTCH ANGLE / ROLL: 0° for level horizon, else exact degrees + direction.
-   - ASPECT-RATIO ORIENTATION: portrait / landscape / square (describe only whether it reads taller-than-wide, wider-than-tall, or 1:1).
-${buildSubjectFillContractLine(isProductOnlyShot, productFillPercent, { terse: true })}
-   - SUBJECT PLACEMENT: normalized coordinates (x_center 0.00–1.00 from left, y_center 0.00–1.00 from top) + a one-line caption.
-   - TOP CROP — ANATOMICAL ANCHOR: the EXACT vertical position where the top edge cuts, pegged to a named ${isProductOnlyShot ? "product/scene" : "anatomical"} landmark (e.g., "frame top sits ~4 cm above the model's crown").
-   - BOTTOM CROP — ANATOMICAL ANCHOR: same treatment for the bottom edge.
-   - LEFT CROP and RIGHT CROP: how far each side extends past the subject, anchored to an anatomical or scene landmark.
-   - DEPTH OF FIELD: deep focus / mild background blur / pronounced bokeh, and WHERE the focal plane sits.
-   - HORIZON LINE (only if visible): vertical position as a fraction from the top.
+${buildFramingCropContractFields({ isProductOnlyShot, productFillPercent, imageModelName, terse: true })}
 
 After extracting the above, EMIT the entire 1B block — verbatim, with these exact field labels — as a labeled FRAMING & CROP CONTRACT section near the TOP of your final output prompt (immediately after the OPENING LINE and BEFORE the pose, scene, and lighting paragraphs).
 
@@ -4082,21 +4112,317 @@ Do NOT include any other text.`,
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODEL SWAP — SOURCE CONTRACTS (framing + lighting) AND POSE DIRECTIVE
+//
+// Design note. The previous version of these prompts described lighting and framing only in
+// the abstract ("match the source's key direction, colour temperature and shadow softness")
+// and never committed to a VALUE for the image in hand. The meta-prompter sees the source
+// photo, so it can measure them — these builders force it to, and to emit the measurements as
+// labelled contracts at the top of the generated prompt. The image-gen stage then treats those
+// contracts as authoritative rather than re-deriving anything.
+//
+// This mirrors the pattern already proven by the custom-pose path (see the FRAMING LOCK note
+// in `buildCustomPoseImageReferenceExtractionBlock`: emitting the contract early and verbatim
+// is what stops drift between generations).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Label used for both contracts, in the meta-prompt and in the image-gen enforcement clause. */
+const MODEL_SWAP_FRAMING_CONTRACT_LABEL = "FRAMING & CROP CONTRACT (MEASURED FROM REFERENCE #1)";
+const MODEL_SWAP_LIGHTING_CONTRACT_LABEL = "LIGHTING CONTRACT (MEASURED FROM REFERENCE #1)";
+const MODEL_SWAP_VARIATION_BLOCK_LABEL = "PERMITTED VARIATION (DERIVED FROM REFERENCE #1)";
+
+/**
+ * CONSTRAINT 4 — FRAMING. Extraction rules that turn the source photo's composition into the
+ * same 13-field contract the custom-pose path uses, reusing
+ * {@link buildFramingCropContractFields} so there is no third copy of that list.
+ */
+function buildSourceFramingContractBlock(): string {
+  return `CONSTRAINT 4 — FRAMING REPLICATION (the output is framed IDENTICALLY to the source)
+The ORIGINAL product photo's composition IS the contract. MEASURE it — do not approximate it,
+and do not describe it in loose words like "similar framing" or "same general composition".
+Extract every field below and commit to a concrete value for each:
+
+${buildFramingCropContractFields({ isProductOnlyShot: false, productFillPercent: undefined, imageModelName: "Nano Banana 2", terse: true })}
+
+EMIT the entire field list — verbatim, with these exact field labels — as a labelled
+"═══ ${MODEL_SWAP_FRAMING_CONTRACT_LABEL} ═══" section at the VERY TOP of your output prompt,
+before any prose paragraph.
+
+FRAMING LOCK — NON-NEGOTIABLE: the SHOT TYPE NAME, FOCAL-LENGTH EQUIVALENT, CAMERA DISTANCE,
+CAMERA HEIGHT, DUTCH ANGLE, SUBJECT FILL, SUBJECT PLACEMENT and all four CROP anchors are the
+SOLE source of truth for the output's framing. Do NOT re-derive them, paraphrase them, or swap
+synonyms (do not switch between "mid-thigh" and "cowboy shot").
+★ MODEL-SWAP-SPECIFIC RULE — THE CAMERA DOES NOT MOVE FOR THE NEW MODEL: the replacement model
+may be taller, shorter, broader or slimmer than the person in the source. The frame does NOT
+loosen, tighten, or re-centre to accommodate them. The crop stays pegged to the SAME named
+anatomical landmarks and the subject still occupies the SAME percentage of frame height. If the
+new model's build makes the source crop feel tight, the crop still wins.
+★ THIS LOCK SURVIVES POSE VARIATION: even when subtle pose variation is permitted, every field
+in this contract is unchanged.`;
+}
+
+/**
+ * CONSTRAINT 3 — LIGHTING. Forces a measured, per-field lighting description instead of the
+ * generic "match the source's lighting" instruction this template used to carry.
+ *
+ * Vocabulary (clock terms, Kelvin, key:fill, "DO NOT FLATTEN") is deliberately consistent with
+ * {@link analyzeReferenceScene}, which solves the same problem for scene replication.
+ */
+function buildSourceLightingContractBlock(): string {
+  return `CONSTRAINT 3 — LIGHTING REPLICATION (the output's light dynamics MATCH the source EXACTLY)
+This is the constraint that separates "an AI swap" from "the same photoshoot with a different
+model", and it is the one most often lost. Do NOT write a general paragraph about matching the
+lighting. MEASURE the light in the ORIGINAL product photo and COMMIT TO A VALUE for every field:
+
+   - KEY LIGHT: azimuth as a clock position relative to the camera AND in degrees, plus
+     elevation in degrees, plus the apparent source size / quality (hard point source / medium /
+     large soft source). E.g. "key at 10 o'clock, ~40° camera-left, ~35° elevation, large soft
+     source ≈1.2 m wide".
+   - KEY-TO-FILL RATIO: a number — 2:1, 4:1, 8:1 — not "some fill".
+   - COLOUR TEMPERATURE: in Kelvin, plus any colour cast or tint (e.g. "~5200K neutral daylight
+     with a faint green cast from overhead fluorescents").
+   - SECONDARY / PRACTICAL LIGHTS: how many, from where, what colour, at what relative
+     intensity — or state "none".
+   - RIM / BACK / KICKER LIGHT: present or absent; if present, which side, how intense, what
+     colour, and which edges it catches (shoulder, jaw, hair) — or state "none".
+   - SHADOW CHARACTER:
+       • the core-shadow TERMINATOR pegged to a NAMED facial landmark (e.g. "runs down the
+         subject-right cheek from temple to jaw, leaving the far cheek in shadow");
+       • shadow-edge transition width (razor-hard / medium / broad soft gradient);
+       • cast-shadow direction and length on the background;
+       • contact shadow and ambient occlusion where the body meets the ground, and inside
+         garment folds, collars, and under hems.
+   - SPECULAR MAP: which facial planes carry highlights and how hot (forehead, cheekbones, nose
+     tip, chin, clavicles), and which garment surfaces do (satin sheen, leather highlight,
+     metallic hardware glint, footwear gloss).
+   - CATCHLIGHTS: shape (round / rectangular / octagonal / window-pane / none), clock position
+     within the iris, and relative size.
+   - EXPOSURE & TONE: high-key / normal / low-key; where the black point sits; highlight
+     rolloff; overall contrast.
+   - AMBIENT BOUNCE: the colour and strength of bounce filling the shadow side, as a rough
+     percentage of key (e.g. "neutral white bounce, ~25% of key, from camera-right").
+   - ATMOSPHERE / OPTICS: haze, bloom, veiling flare, lens flare, vignette — or state "none".
+   - WHITE-BALANCE ANCHOR: name the surface in the source that reads as neutral grey, so the
+     generator has a reference for correct colour.
+
+EMIT the entire field list — verbatim, with these exact field labels — as a labelled
+"═══ ${MODEL_SWAP_LIGHTING_CONTRACT_LABEL} ═══" section immediately AFTER the framing contract
+and BEFORE any prose paragraph.
+
+Then state, in the lighting paragraph, that this exact setup lights BOTH the new model's skin
+AND every surface of the clothing — the new model's facial shadows, nose shadow, chin shadow,
+neck shadow and clothing shadows fall on the SAME sides, with the SAME edge quality, as in the
+source.
+
+FOUR RULES GOVERNING THIS CONTRACT:
+1. LIGHTING LOCK — once measured, this block is the SOLE source of truth for light. Do NOT
+   re-derive it, paraphrase it, or swap synonyms between generations. It governs the new
+   model's skin, every garment surface, and the background.
+2. DO NOT FLATTEN — reproduce the source's REAL light. A moody low-key source stays moody and
+   low-key; a hard-shadow source keeps its hard shadows; a warm source stays warm. NEVER
+   default to flat, even, high-key studio lighting, and never "clean up" or soften the source's
+   lighting because it looks dramatic.
+3. IDENTITY / LIGHT SEPARATION — describe the LIGHT, never the source model's rendered skin.
+   The replacement model's skin tone, undertone and complexion come SOLELY from the new-model
+   reference. When you describe speculars and shadows, describe where light lands and how it
+   falls off — do NOT describe the colour of the skin it lands on, or the original person's
+   complexion will leak into the output through the lighting description.
+4. SAFE VALVE — if a field genuinely cannot be read from the image, write
+   "not determinable — infer from Reference #1" for that field rather than inventing a value.
+   The source photo is attached to the image generator too, so an honest gap falls back to
+   direct observation; a fabricated value would be locked in and reproduced.`;
+}
+
+/**
+ * Background handling for Model Swap.
+ *
+ * When the background is REPLACED, the source's key light stays authoritative for the subject
+ * AND the new environment is re-rendered as if photographed under that same key. The previous
+ * wording ("adapt only the environment, not its light dynamics") left the subject and the plate
+ * lit by two different setups, which reads as a cut-out composite. The lock → build → unify
+ * sequence here follows the LIGHTING HARMONISE block used by the VTON location-reference path.
+ */
+function buildModelSwapBackgroundLightingClause(keepBackground: boolean): string {
+  if (keepBackground) {
+    return `The background is UNCHANGED — same environment, props, depth of field, out-of-focus
+rendering and atmosphere as the source. The ${MODEL_SWAP_LIGHTING_CONTRACT_LABEL} governs the
+background exactly as it governs the model: cast shadows fall the same way and at the same
+length, and the backdrop keeps its original exposure and colour temperature.`;
+  }
+
+  return `The background is REPLACED, but the LIGHT IS NOT. Follow this sequence:
+  (1) The model, their skin and every garment surface stay lit EXACTLY per the
+      ${MODEL_SWAP_LIGHTING_CONTRACT_LABEL} — same key direction, same elevation, same
+      key-to-fill ratio, same colour temperature, same shadow edges, same terminator.
+  (2) Build the new environment described below.
+  (3) RE-RENDER that environment as if it had been PHOTOGRAPHED UNDER THE CONTRACT'S KEY LIGHT:
+      shadows cast by scene elements run in the SAME direction and carry the SAME edge quality,
+      the plate sits at the SAME colour temperature and the SAME contrast as the source.
+  (4) Allow SUBTLE environmental bounce and reflected colour from the new surroundings onto the
+      model's shadow side for realism — but never enough to flip which side is in shadow, change
+      the key direction, or move the terminator off the landmark named in the contract.
+  (5) Ground the model in the new scene with a CONTACT SHADOW and ambient occlusion where the
+      body meets the floor or a wall, consistent with that same key light.
+PRECEDENCE: where the ${MODEL_SWAP_LIGHTING_CONTRACT_LABEL} and the new background's implied
+lighting disagree, the CONTRACT WINS for the subject, and the background is re-rendered to agree
+with it — not the other way around. The garment also keeps its true product colours; bounce is
+subtle and must never shift the garment's recognisable colour.`;
+}
+
+/**
+ * The pose directive for both Model Swap stages.
+ *
+ * Returned as a pair so the meta-prompt and the image-gen enforcement clause cannot drift apart
+ * (they were previously two hand-maintained copies).
+ *
+ * When `poseVariation` is ON, the permitted motions are no longer a fixed five-item menu. The
+ * meta-prompter must first CLASSIFY the source image, then DERIVE 1–2 micro-motions that pass
+ * five filters, and emit them as an explicit PERMITTED / FORBIDDEN pair. The magnitude budget
+ * reuses the numbers already established by the ACCESSORY INTEGRATION CONTRACT in
+ * `generateVTONPrompt`, so "subtle" means the same thing across features.
+ */
+function buildModelSwapPoseDirective(poseVariation: boolean): { metaPrompt: string; enforcement: string } {
+  if (!poseVariation) {
+    return {
+      metaPrompt: `POSE LOGIC — STRICT REPRODUCTION (DEFAULT):
+The new model must adopt the EXACT same pose as the original photo. Reproduce IDENTICALLY:
+  • Body position, stance, and weight distribution
+  • Every arm, hand, and finger position
+  • Every leg position and foot orientation
+  • Head angle, head tilt, and chin position
+  • Gaze direction
+  • Facial expression intent
+  • Shoulder line and torso rotation
+Treat the source photo as a strict pose reference — the new model is in the SAME instant
+of the SAME pose, not a re-staged variant.
+The ${MODEL_SWAP_FRAMING_CONTRACT_LABEL} and ${MODEL_SWAP_LIGHTING_CONTRACT_LABEL} apply on top
+of this: the pose, the framing and the light are ALL held constant. Only the person changes.`,
+      enforcement: `4. POSE — STRICT REPRODUCTION (DEFAULT):
+   The new model must adopt the EXACT SAME POSE as the original photo. Reproduce identically:
+   body position, arm and hand positions, leg stance, weight distribution, head angle,
+   chin position, gaze direction, facial expression intent, and torso/shoulder rotation.
+   The pose, the framing contract and the lighting contract are ALL held constant —
+   only the person changes.`,
+    };
+  }
+
+  return {
+    metaPrompt: `POSE LOGIC — CONTEXTUAL SUBTLE VARIATION (USER OPTED IN):
+The user has allowed subtle pose variation. This does NOT license a re-staged photograph, and
+it does NOT relax the framing or lighting contracts. Work through the following three steps and
+emit the result as a labelled "═══ ${MODEL_SWAP_VARIATION_BLOCK_LABEL} ═══" section in your
+output prompt, placed immediately after the two contracts.
+
+STEP A — CLASSIFY THE SOURCE (do this before choosing anything). Determine and state:
+  • VISIBLE EXTENT — given the crop measured in the framing contract, which joints are actually
+    inside the frame? A motion outside the crop is invisible and therefore pointless.
+  • POSE FAMILY — pick one: standing contrapposto / weight-even standing / walking mid-stride /
+    seated / leaning on a support / hands in pockets / arms crossed / hand on hip /
+    interacting with a prop.
+  • SCENE CONTACTS — which body part touches a wall, the floor, a prop, or another body part,
+    and how (resting, gripping, bearing weight, tucked into a pocket).
+  • PROTECTED GARMENT FEATURES — every logo, print, graphic, hardware detail, closure and hem
+    that is currently visible, and which arm or hand position is currently keeping it visible.
+  • LIGHT GEOMETRY — which side the key light strikes, and where the terminator sits (copy this
+    from the lighting contract).
+
+STEP B — DERIVE THE PERMITTED MOTIONS. Choose only ONE or TWO micro-motions, and admit a motion
+ONLY if it passes ALL FIVE filters:
+  1. VISIBLE — the motion happens inside the measured crop. (On a chest-up frame, stance and
+     weight changes are invisible: reject them.)
+  2. AVAILABLE — the motion is physically possible in the classified pose family. (Weight
+     transfer between feet is meaningless when the subject is seated: reject it.)
+  3. CONTACT-SAFE — the motion does not break a contact recorded in STEP A. (Do not lift a hand
+     that is resting on a wall, gripping a prop, or tucked into a pocket.)
+  4. GARMENT-SAFE — the motion does not newly occlude, shadow or reveal any protected garment
+     feature, and does not disturb the wrinkles and folds that CONSTRAINT 2 pins in place.
+  5. LIGHT-SAFE — the motion does not move the head or torso out of the key light, does not flip
+     which side is in shadow, does not move the terminator off its named landmark, and does not
+     change which planes carry specular highlights.
+
+Then write TWO explicit lists:
+  PERMITTED: the 1–2 motions that survived, each with its magnitude (see STEP C).
+  FORBIDDEN: name the motions you rejected AND the reason (invisible at this crop / unavailable
+  in this pose / breaks a contact / would occlude a protected feature / would disturb the light).
+Naming the rejects matters — an unlisted motion is one the image generator will feel free to
+invent.
+
+STEP C — MAGNITUDE BUDGET (hard caps; state the chosen values in the PERMITTED list):
+  • Head tilt or turn: ≤ 5°.        • Chin raise or drop: ≤ 5°.
+  • Gaze direction: ≤ 10°.          • Any individual limb joint (elbow, wrist, knee, ankle,
+                                       neck): ≤ 8°.
+  • Hand / wrist translation: ≤ 1–3 cm, staying in the same region of the body.
+  • Shoulder-line roll: ≤ 3°.
+  • Pelvis lateral shift: ≤ 2 cm, and BOTH FEET STAY PLANTED exactly where they are.
+  • Facial expression: at most one micro-step (neutral ↔ soft closed-lip smile). No teeth
+    appearing where none were visible, no laugh, no new squint.
+
+  MOTION-COUNT RULE: at most TWO of the permitted axes may change at once — one is often
+  better. Every other axis is identical to the source. Real burst frames differ in one or two
+  things, not five.
+
+  INVARIANTS UNDER VARIATION (these do NOT move, ever):
+    - Every field of the ${MODEL_SWAP_FRAMING_CONTRACT_LABEL}: subject fill changes by no more
+      than 2 percentage points, all four crop anchors stay pegged to the same landmarks, and the
+      silhouette's bounding box within the frame is unchanged.
+    - Camera distance, camera height, focal length and dutch angle.
+    - Body ORIENTATION: the direction the torso faces, the shoulder line, and foot direction.
+    - Every field of the ${MODEL_SWAP_LIGHTING_CONTRACT_LABEL}. A catchlight may translate
+      slightly with a permitted gaze shift, but it keeps its shape, its size, and a position
+      consistent with the same key light.
+
+  RESULT TEST: the source and the output must read as TWO FRAMES OF THE SAME SHUTTER BURST,
+  taken a fraction of a second apart. If a viewer would describe them as "a different pose",
+  the variation is out of bounds and you have gone too far.
+
+FALLBACK BY SHOT TYPE — if STEP A is ambiguous, default to the motions available at this crop:
+  • Extreme close-up / close-up / medium close-up (chest-up): gaze micro-shift, eyelid or blink
+    phase, lip tension, head tilt ≤ 5°.
+  • Medium shot (waist-up): the above, plus a finger or hand micro-reposition within the same
+    region, plus shoulder roll ≤ 3°.
+  • Medium-long / long shot (mid-thigh / full body): the above, plus a pelvis weight shift
+    ≤ 2 cm with both feet planted, plus knee angle ≤ 8°.`,
+    enforcement: `4. POSE — CONTEXTUAL SUBTLE VARIATION (USER OPTED IN):
+   The prompt above contains a "${MODEL_SWAP_VARIATION_BLOCK_LABEL}" block listing PERMITTED and
+   FORBIDDEN motions derived from Reference #1. That block is AUTHORITATIVE.
+     - Apply ONLY the motions in the PERMITTED list, within the magnitudes stated there.
+     - Apply NONE of the motions in the FORBIDDEN list.
+     - Change at most TWO axes; every other aspect of the pose is identical to Reference #1.
+   These stay LOCKED regardless of the variation:
+     - The full framing contract — same crop, camera angle, focal length, camera height, and the
+       same proportion of the frame occupied by the model.
+     - Body ORIENTATION — the direction the torso faces, the shoulder line, foot direction.
+     - The full lighting contract — the shadow side does not flip, the terminator does not move
+       off its landmark, and the specular planes do not change.
+     - Every protected garment feature stays exactly as visible as it is in Reference #1 — a
+       permitted motion must never swing an arm or hand across a logo, print or closure.
+   RESULT TEST: the output and Reference #1 must read as two frames of the same shutter burst,
+   a fraction of a second apart — not as a re-staged photograph.`,
+  };
+}
+
 /**
  * Model Swap Step 1: Generate a prompt for model replacement.
  *
  * The meta-prompter (Gemini 3.1 Pro) reads the source product photo and the new-model
  * reference, then synthesises a Nano Banana 2 (Gemini 3.1 Flash Image) image-gen prompt
- * that obeys THREE NON-NEGOTIABLE constraints:
+ * that obeys FOUR NON-NEGOTIABLE constraints:
  *   1. Identity Preservation — the target model's face/skin/hair/build is captured precisely
  *   2. Clothing Preservation — every garment & accessory in the source is pixel-perfect
- *   3. Lighting Replication — the new render inherits the source image's light dynamics
- *      (direction, color temperature, intensity, shadow softness, ambient fill, specular highlights)
+ *   3. Lighting Replication — the source's light is MEASURED into a labelled LIGHTING CONTRACT
+ *      (key azimuth/elevation, key:fill, Kelvin, terminator, speculars, catchlights, bounce)
+ *      that the image-gen stage then treats as authoritative
+ *   4. Framing Replication — the source's composition is MEASURED into a labelled
+ *      FRAMING & CROP CONTRACT (the same 13 fields the custom-pose path uses)
  *
  * @param poseVariation
  *   false (default) — reproduce the source pose EXACTLY (same gaze, hands, stance, head tilt).
- *   true            — retain the EXACT image framing & body orientation, but allow subtle
- *                     variation in gaze direction, hand positioning, stance, and overall pose.
+ *   true            — retain the framing and lighting contracts and the body orientation, and
+ *                     allow 1–2 micro-motions DERIVED from this specific image: the meta-prompter
+ *                     classifies the crop, pose family, scene contacts, protected garment
+ *                     features and light geometry, then emits an explicit PERMITTED / FORBIDDEN
+ *                     pair bounded by a numeric magnitude budget.
  *                     This option is product-level (per source image in single mode,
  *                     per ProductFolder in bulk mode).
  *
@@ -4158,36 +4484,15 @@ export async function generateModelSwapPrompt({
   // ─────────────────────────────────────────────────────────────────────────
   // POSE LOGIC — conditional on the product-level Pose Variation toggle.
   // OFF: reproduce the source pose EXACTLY (this is the default and historical behavior).
-  // ON:  retain framing + body orientation; allow subtle gaze/hand/stance variation.
+  // ON:  classify the source, then derive 1-2 permitted micro-motions bounded by a budget.
+  // Both branches live in buildModelSwapPoseDirective so this stage and the image-gen
+  // enforcement clause cannot drift apart.
   // ─────────────────────────────────────────────────────────────────────────
-  const poseDirective = poseVariation
-    ? `POSE LOGIC — SUBTLE VARIATION (USER OPTED IN):
-The new model must retain the EXACT image framing of the source photo (same crop, same
-camera angle, same focal length, same composition, same proportion of the frame occupied)
-AND the EXACT body orientation (same direction the torso faces, same shoulder line, same
-foot/feet direction, same overall weight distribution). Within those locks, you ARE allowed
-to introduce SUBTLE, NATURAL variations in:
-  • Gaze direction (e.g., looking slightly off-camera vs. directly at the lens)
-  • Hand and finger positioning (e.g., hand on hip → hand at side; relaxed fingers vs. closed fist)
-  • Stance details (e.g., subtle hip shift, slight weight transfer between feet)
-  • Head tilt or chin angle (subtle, within natural human range)
-  • Facial expression (within the new model's identity — e.g., neutral → soft smile)
-The pose should still read as "the same shot taken a fraction of a second later" — not a
-re-staged photograph. Camera position, lens, framing, and body orientation MUST be locked.`
-    : `POSE LOGIC — STRICT REPRODUCTION (DEFAULT):
-The new model must adopt the EXACT same pose as the original photo. Reproduce IDENTICALLY:
-  • Body position, stance, and weight distribution
-  • Every arm, hand, and finger position
-  • Every leg position and foot orientation
-  • Head angle, head tilt, and chin position
-  • Gaze direction
-  • Facial expression intent
-  • Shoulder line and torso rotation
-Treat the source photo as a strict pose reference — the new model is in the SAME instant
-of the SAME pose, not a re-staged variant.`;
+  const poseDirectives = buildModelSwapPoseDirective(poseVariation);
+  const poseDirective = poseDirectives.metaPrompt;
 
   parts.push({
-    text: `You are an expert fashion photographer and prompt engineer specialising in COMPLETE MODEL REPLACEMENT for professional product photography. Your job: analyse the supplied ORIGINAL product photo and the NEW MODEL reference, then synthesise a Nano Banana 2 (Gemini 3.1 Flash Image) image-generation prompt that replaces the human model end-to-end while honouring three non-negotiable constraints.
+    text: `You are an expert fashion photographer and prompt engineer specialising in COMPLETE MODEL REPLACEMENT for professional product photography. Your job: analyse the supplied ORIGINAL product photo and the NEW MODEL reference, then synthesise a Nano Banana 2 (Gemini 3.1 Flash Image) image-generation prompt that replaces the human model end-to-end while honouring four non-negotiable constraints.
 
 TASK: COMPLETE MODEL REPLACEMENT (NOT a face swap, NOT a compositing edit)
 The input is an existing product photo that already shows a model wearing clothing. Your
@@ -4197,7 +4502,9 @@ in the same scene — every visible body part from head to toe belongs to the ne
 GENDER CONTEXT: ${genderLabel} product
 
 ═══════════════════════════════════════════════════════════════════════════════
-THREE NON-NEGOTIABLE CONSTRAINTS — these are the spine of the output prompt
+FOUR NON-NEGOTIABLE CONSTRAINTS — these are the spine of the output prompt
+Identity · Clothing · Lighting · Framing. Constraints 3 and 4 are MEASUREMENT tasks:
+you must read concrete values off the source photo, not describe them in general terms.
 ═══════════════════════════════════════════════════════════════════════════════
 
 CONSTRAINT 1 — IDENTITY PRESERVATION (the new model's visual identity is captured PRECISELY)
@@ -4242,35 +4549,14 @@ the source photo pixel-for-pixel. Lock down:
 The garments are NEVER to be changed. Treat the clothing region of the source as an
 inviolable photo overlay.
 
-CONSTRAINT 3 — LIGHTING REPLICATION (the output's light dynamics MATCH the source EXACTLY)
-The output prompt MUST contain a dedicated lighting clause that instructs the image generator
-to analyse and EXACTLY REPLICATE the source image's lighting on BOTH the new model's skin
-AND every surface of the clothing. Specifically:
-  • LIGHT DIRECTION — the principal light's azimuth and elevation as visible in the source
-    (e.g., "key light high front-left at ~45°", "soft top-down overhead", "back-lit with
-    rim from camera-right"). The new model's facial shadows, nose shadow, chin shadow,
-    and clothing shadows must fall on the SAME sides as in the source.
-  • COLOUR TEMPERATURE — warm tungsten / neutral daylight / cool overcast — match the
-    source's white balance and any colour casts (warm window light, cool studio strobe,
-    golden-hour amber, etc.).
-  • INTENSITY & EXPOSURE — match the source's overall exposure level, key-to-fill ratio,
-    and contrast curve. Bright high-key sources stay bright; moody low-key sources stay moody.
-  • SHADOW SOFTNESS — match the hardness/softness of shadow edges (hard sun =
-    sharp-edged shadows; softbox / overcast = gradient soft shadows). The new model's skin
-    must render the same shadow softness on the same body planes.
-  • AMBIENT / FILL LIGHT — match the ambient fill level on the shadow side of the model.
-    Open shade / studio bounce / dark room ambient — copy whichever is visible in the source.
-  • SPECULAR HIGHLIGHTS — match the position and intensity of specular highlights on the
-    skin (forehead, cheekbones, nose tip, chin, collarbones) and on the clothing
-    (satin sheens, leather highlights, metallic hardware glints, footwear gloss).
-  • RIM / BACK LIGHT (if present) — preserve any rim light hitting the shoulders, hair,
-    or silhouette edge in the source; reproduce it on the new model with matching colour
-    and intensity.
+${buildSourceLightingContractBlock()}
 The goal is photographic indistinguishability: the final image must look like it was
 captured by the SAME photographer, in the SAME studio/location, with the SAME lighting
 setup, at the SAME moment as the source — just with a different person in front of the lens.
-This lighting clause is the difference between "AI-generated swap" and
+This lighting contract is the difference between "AI-generated swap" and
 "professional real-life photoshoot".
+
+${buildSourceFramingContractBlock()}
 
 ═══════════════════════════════════════════════════════════════════════════════
 ${poseDirective}
@@ -4280,28 +4566,47 @@ ADDITIONAL REQUIREMENTS
   • The clothing-to-body interaction must look natural — garments fit and drape
     realistically on the new model's body proportions (the new model may have a
     slightly different build; the drape must still read as physically correct).
-  • Maintain the same camera angle, framing, and composition as the source.
+  • Camera angle, framing and composition are governed by the ${MODEL_SWAP_FRAMING_CONTRACT_LABEL} above — do not restate them loosely here.
   • Professional e-commerce fashion photography quality, photorealistic.
   • ${keepBackground ? "PRESERVE the original BACKGROUND exactly — same environment, same props, same depth of field, same out-of-focus rendering" : "REPLACE the background with the new background described in the parameters block below; otherwise everything else stays locked"}.
 
 ${modelImage ? "A reference photo of the NEW model is provided directly below. Study every facial feature, the skin tone, and the body proportions. Enumerate these explicitly in your output prompt — do not just say 'use the reference'." : ""}
 ${model ? `Preset AI Model to use: ${model.name} — ${model.description}. Anchor every body part of the new render to this model's appearance.` : ""}
 
-Output ONLY the generation prompt text (no preamble, no explanation, no commentary). The prompt
-should be 3-5 well-structured paragraphs. Order the prompt as:
-  ¶1 — Identity (enumerate facial features and skin tone from the reference photo)
+Output ONLY the generation prompt text (no preamble, no explanation, no commentary).
+Structure it EXACTLY like this — the two labelled contracts come FIRST, as labelled blocks with
+their field labels intact, because the image generator reads composition and lighting as
+first-class signals and a contract stated early and verbatim is what stops drift:
+
+  ═══ ${MODEL_SWAP_FRAMING_CONTRACT_LABEL} ═══
+  (every field from CONSTRAINT 4, one per line, with its measured value)
+
+  ═══ ${MODEL_SWAP_LIGHTING_CONTRACT_LABEL} ═══
+  (every field from CONSTRAINT 3, one per line, with its measured value)
+${poseVariation ? `
+  ═══ ${MODEL_SWAP_VARIATION_BLOCK_LABEL} ═══
+  (the STEP A classification in one or two lines, then the PERMITTED list with magnitudes,
+   then the FORBIDDEN list with reasons)
+` : ""}
+  Then these prose paragraphs, in this order:
+  ¶1 — Identity (enumerate facial features and skin tone from the NEW model reference photo)
   ¶2 — Clothing & accessories preservation (enumerate every garment attribute observed)
-  ¶3 — Lighting replication (enumerate the source's light direction, temperature, softness)
-  ¶4 — Pose ${poseVariation ? "(framing + body-orientation lock + permitted subtle variations)" : "(exact reproduction)"}
-  ¶5 — Composition, framing, background, and final quality directives
-Use natural prose (Nano Banana 2 responds best to descriptive sentences, not keyword lists).
+  ¶3 — Lighting: state in prose that the LIGHTING CONTRACT above lights BOTH the new model's
+       skin AND every clothing surface, with shadows falling on the same sides and with the
+       same edge quality as the source
+  ¶4 — Pose ${poseVariation ? "(apply ONLY the PERMITTED motions; the framing and lighting contracts and the body orientation stay locked)" : "(exact reproduction of the source pose)"}
+  ¶5 — Background and final quality directives
+
+Use natural prose in the PARAGRAPHS (Nano Banana 2 responds best to descriptive sentences, not
+keyword lists), but keep the two CONTRACT BLOCKS as labelled field lists — they are data, not
+prose, and paraphrasing them is what causes drift.
 Use positive framing throughout ("preserve X exactly", "match Y precisely") rather than
 negative phrasing.`,
   });
 
   // Add the source product image
   parts.push({
-    text: "\n\nHere is the ORIGINAL product photo. Analyse the pose, clothing, accessories, AND lighting dynamics carefully — the new render must inherit ALL of these:",
+    text: "\n\nHere is the ORIGINAL product photo. MEASURE its framing and its lighting field-by-field (CONSTRAINT 3 and CONSTRAINT 4), and analyse the pose, clothing and accessories carefully — the new render must inherit ALL of these:",
   });
   const sourceBase64 = await fileToBase64(sourceImage.file);
   parts.push({
@@ -4325,13 +4630,16 @@ negative phrasing.`,
     });
   }
 
-  // Background instructions
+  // Background instructions. In every replace-background branch the source's key light stays
+  // authoritative for the SUBJECT and the new environment is re-rendered to agree with it —
+  // see buildModelSwapBackgroundLightingClause.
+  const bgLightingClause = buildModelSwapBackgroundLightingClause(keepBackground);
   let bgInstruction = "";
   if (keepBackground) {
-    bgInstruction = "BACKGROUND: Keep the EXACT same background from the original product photo — same environment, lighting conditions, props, colours, depth of field, and atmosphere. The lighting clause above also applies to the background.";
+    bgInstruction = `BACKGROUND: Keep the EXACT same background from the original product photo — same environment, lighting conditions, props, colours, depth of field, and atmosphere.\n${bgLightingClause}`;
   } else if (background.mode === "inspiration" && background.inspirationImage) {
     parts.push({
-      text: "\n\nHere is the inspiration image for the NEW background:",
+      text: "\n\nHere is the inspiration image for the NEW background. Take the ENVIRONMENT from it — the setting, surfaces, props and depth. Do NOT take its lighting: the light comes from the LIGHTING CONTRACT you measured off the ORIGINAL product photo.",
     });
     const bgBase64 = await fileToBase64(background.inspirationImage.file);
     parts.push({
@@ -4340,13 +4648,11 @@ negative phrasing.`,
         data: bgBase64,
       },
     });
-    bgInstruction = "BACKGROUND: Replace the background using the provided inspiration image as reference. CRITICAL — the LIGHTING REPLICATION clause still applies to the new model and clothing: the model's skin and clothing must remain lit by the SOURCE image's lighting setup, not by the inspiration background's lighting. Adapt only the environment/setting from the inspiration image, not its light dynamics.";
+    bgInstruction = `BACKGROUND: Replace the background using the provided inspiration image as the ENVIRONMENT reference.\n${bgLightingClause}`;
   } else if (background.textDescription) {
-    bgInstruction = `BACKGROUND: Replace the background with: ${background.textDescription}. CRITICAL — the LIGHTING REPLICATION clause still applies: the model and clothing remain lit by the SOURCE image's lighting setup.`;
+    bgInstruction = `BACKGROUND: Replace the background with: ${background.textDescription}.\n${bgLightingClause}`;
   } else {
-    bgInstruction = keepBackground
-      ? "BACKGROUND: Keep the original background from the product photo."
-      : "BACKGROUND: Use a clean, professional e-commerce photography studio background. CRITICAL — the model and clothing remain lit by the SOURCE image's lighting setup (the LIGHTING REPLICATION clause is authoritative over any studio default).";
+    bgInstruction = `BACKGROUND: Use a clean, professional e-commerce photography studio background.\n${bgLightingClause}`;
   }
 
   parts.push({
@@ -4354,28 +4660,33 @@ negative phrasing.`,
 Gender: ${genderLabel}
 ${model ? `New Model: ${model.name} — ${model.description}` : "New Model: Use the provided model reference image (enumerate identity features in the prompt)"}
 ${modelImage ? "Model Reference: PROVIDED (the ENTIRE person — face, body, skin tone, hair, build — must be this EXACT individual)" : ""}
-Pose Variation: ${poseVariation ? "ON — subtle pose variations allowed within locked framing + body orientation" : "OFF — strict exact pose reproduction (default)"}
+Pose Variation: ${poseVariation ? `ON — derive 1-2 contextual micro-motions per the POSE LOGIC block and emit them as a "${MODEL_SWAP_VARIATION_BLOCK_LABEL}" section. Framing and lighting contracts stay locked.` : "OFF — strict exact pose reproduction (default)"}
 ${bgInstruction}
 Aspect Ratio: ${aspectRatio}
 ${productInfo ? `Product Info: ${productInfo}` : ""}
 ${additionalInfo ? `Additional Instructions: ${additionalInfo}` : ""}
-${previousMismatchFeedback ? `\n═══ CORRECTION FROM PREVIOUS ATTEMPT ═══\nA previous generation attempt was flagged by our quality-control system with these issues:\n${previousMismatchFeedback}\n\nYou MUST address ALL of the above issues in your prompt. Write explicit, forceful instructions that directly prevent each flagged problem:\n  - If "pose changed" was flagged AND poseVariation is OFF: emphasise exact replication of every limb position, head angle, weight distribution, and body orientation. (If poseVariation is ON, treat this flag as expected and do NOT over-correct — only ensure framing and body orientation are still locked.)\n  - If "model size/framing changed" was flagged: emphasise that the new model must occupy the EXACT same proportion of the image frame — same crop, same distance from camera, same apparent size.\n  - If "clothing mismatch" was flagged: re-state pixel-perfect preservation of every garment detail — colour, pattern, fit, drape, construction, accessories.\n  - If lighting mismatch was implied: restate the LIGHTING REPLICATION clause with extra concrete detail (direction, temperature, shadow softness).\nDo NOT just repeat generic instructions — specifically call out and correct the exact issues listed above.\n═══ END CORRECTION ═══` : ""}
+${previousMismatchFeedback ? `\n═══ CORRECTION FROM PREVIOUS ATTEMPT ═══\nA previous generation attempt was flagged by our quality-control system with these issues:\n${previousMismatchFeedback}\n\nYou MUST address ALL of the above issues in your prompt. Write explicit, forceful instructions that directly prevent each flagged problem:\n  - If "lighting drift" was flagged: the LIGHTING CONTRACT was not honoured. Re-measure the source's light and make every field MORE concrete — commit to a clock position and degrees for the key, a numeric key-to-fill ratio, a Kelvin value, and a named facial landmark for the terminator. State explicitly which side the shadows fall on.\n  - If "framing drift" was flagged: the FRAMING & CROP CONTRACT was not honoured. Re-measure and tighten the crop anchors, the subject fill percentage, the camera distance and the camera height, and restate that the camera does NOT move to accommodate the new model's build.\n  - If "pose changed" was flagged AND poseVariation is OFF: emphasise exact replication of every limb position, head angle, weight distribution, and body orientation.\n  - If "pose variation out of bounds" was flagged AND poseVariation is ON: the variation was too large. Cut the PERMITTED list to a SINGLE motion, halve its magnitude, and expand the FORBIDDEN list with the specific motion that went too far.\n  - If "model size/framing changed" was flagged: emphasise that the new model must occupy the EXACT same proportion of the image frame — same crop, same distance from camera, same apparent size.\n  - If "clothing mismatch" was flagged: re-state pixel-perfect preservation of every garment detail — colour, pattern, fit, drape, construction, accessories.\nDo NOT just repeat generic instructions — specifically call out and correct the exact issues listed above.\n═══ END CORRECTION ═══` : ""}
 
 CRITICAL OUTPUT-PROMPT CHECKLIST (your written prompt must contain ALL of these):
-1. Enumerated identity features of the new model (face + skin + hair + body).
-2. Enumerated clothing & accessory features locked verbatim from the source.
-3. A dedicated lighting clause describing direction, temperature, intensity, shadow
-   softness, ambient fill, and specular highlights observed in the source — explicitly
-   stating these MUST be replicated on both the new model's skin AND every clothing surface.
-4. Pose directive matching the Pose Variation setting:
-   - poseVariation = OFF → exact pose reproduction
-   - poseVariation = ON  → framing + body-orientation lock; subtle gaze/hand/stance variation allowed
-5. Skin-tone uniformity across all visible body parts.
-6. Professional e-commerce fashion photography quality.
-7. ${keepBackground ? "Background preserved exactly as in the source" : "Background per the BACKGROUND directive above, with source lighting still authoritative over the model+clothing"}.
+1. A labelled "═══ ${MODEL_SWAP_FRAMING_CONTRACT_LABEL} ═══" block at the very top, with every
+   field carrying a concrete measured value (no "similar", no "approximately the same").
+2. A labelled "═══ ${MODEL_SWAP_LIGHTING_CONTRACT_LABEL} ═══" block immediately after it, with
+   every field carrying a concrete measured value — including a clock position AND degrees for
+   the key light, a numeric key-to-fill ratio, a Kelvin value, and the terminator pegged to a
+   named facial landmark.
+${poseVariation ? `3. A labelled "═══ ${MODEL_SWAP_VARIATION_BLOCK_LABEL} ═══" block with an explicit PERMITTED list
+   (1-2 motions, each with its magnitude) AND an explicit FORBIDDEN list naming the rejected
+   motions and why.` : "3. A pose paragraph demanding exact reproduction of the source pose."}
+4. Enumerated identity features of the new model (face + skin + hair + body).
+5. Enumerated clothing & accessory features locked verbatim from the source.
+6. A prose lighting paragraph stating that the LIGHTING CONTRACT lights BOTH the new model's
+   skin AND every clothing surface, with shadows on the same sides and the same edge quality.
+7. Skin-tone uniformity across all visible body parts.
+8. Professional e-commerce fashion photography quality.
+9. ${keepBackground ? "Background preserved exactly as in the source, governed by the same lighting contract" : "Background per the BACKGROUND directive above — the environment changes, the light does not, and the new environment is re-rendered under the source's key"}.
 
-Now write the Complete Model Replacement image generation prompt following the 5-paragraph
-structure described above. Remember: this is a FULL-BODY model replacement, NOT a face swap.
+Now write the Complete Model Replacement image generation prompt following the structure
+described above. Remember: this is a FULL-BODY model replacement, NOT a face swap.
 Every visible body part must belong to the new model, and the final image must be
 indistinguishable from a real professional photoshoot of that new model.`,
   });
@@ -4385,7 +4696,10 @@ indistinguishable from a real professional photoshoot of that new model.`,
     contents: parts,
     config: {
       thinkingConfig: {
-        thinkingLevel: ThinkingLevel.LOW,
+        // MEDIUM (was LOW): constraints 3 and 4 are measurement tasks — reading a key-light
+        // azimuth, a key-to-fill ratio and crop anchors off the source photo benefits from
+        // more deliberation than writing generic preservation prose did.
+        thinkingLevel: ThinkingLevel.MEDIUM,
       },
     },
   });
@@ -4411,9 +4725,13 @@ indistinguishable from a real professional photoshoot of that new model.`,
  *   - The source product photo is the first image (Reference #1) — it carries the clothing,
  *     pose, framing, and lighting that must be preserved.
  *   - The new-model reference is the second image (Reference #2) — it supplies the identity.
- *   - The enforcement clause repeats the THREE NON-NEGOTIABLE constraints in image-gen
- *     register: identity-preservation, clothing-preservation, lighting-replication, and the
- *     pose directive that corresponds to the product-level `poseVariation` flag.
+ *   - The enforcement clause repeats the FOUR NON-NEGOTIABLE constraints in image-gen register:
+ *     identity-preservation, clothing-preservation, lighting-replication, framing-replication,
+ *     and the pose directive that corresponds to the product-level `poseVariation` flag.
+ *   - Lighting and framing are NOT re-described here. They were measured into two labelled
+ *     contracts at the top of `prompt`; this clause points at those contracts and forbids
+ *     re-deriving them, restating only the three highest-leverage lighting facts so they sit
+ *     adjacent to the pixels (the same "deliver the anchor twice" pattern used by the VTON path).
  */
 export async function buildModelSwapImageContentParts({
   prompt,
@@ -4450,25 +4768,15 @@ export async function buildModelSwapImageContentParts({
     parts.push({ inlineData: { mimeType: background.inspirationImage.file.type, data: bgBase64 } });
   }
 
-  const poseClause = poseVariation
-    ? `4. POSE — SUBTLE VARIATION (USER OPTED IN):
-   Lock the FRAMING and BODY ORIENTATION of the source photo:
-     - Same crop, same camera angle, same focal length, same composition.
-     - Same proportion of the frame occupied by the model.
-     - Same torso, shoulder, foot, and overall body-orientation direction.
-   Within that lock you ARE allowed to introduce subtle, natural variation in: gaze
-   direction, hand and finger position, stance details, head tilt, and facial expression.
-   The shot should still read as "a fraction of a second later" — not a re-staged photograph.`
-    : `4. POSE — STRICT REPRODUCTION (DEFAULT):
-   The new model must adopt the EXACT SAME POSE as the original photo. Reproduce identically:
-   body position, arm and hand positions, leg stance, weight distribution, head angle,
-   chin position, gaze direction, facial expression intent, and torso/shoulder rotation.`;
+  const poseClause = buildModelSwapPoseDirective(poseVariation).enforcement;
 
   parts.push({
     text: `${prompt}\n\n` +
       `═══════════════════════════════════════════════════════════════════════════════\n` +
       `IMAGE-GEN ENFORCEMENT — Complete Model Replacement\n` +
-      `Three non-negotiable constraints (identity, clothing, lighting) + pose directive.\n` +
+      `Four non-negotiable constraints (identity, clothing, lighting, framing) + pose directive.\n` +
+      `The prompt above opens with two MEASURED contracts — framing and lighting. They are\n` +
+      `authoritative: reproduce their stated values rather than re-deriving them by eye.\n` +
       `═══════════════════════════════════════════════════════════════════════════════\n\n` +
       `REFERENCE LABELS:\n` +
       `  • Reference #1 (first attached image) = ORIGINAL PRODUCT PHOTO. This carries the\n` +
@@ -4496,38 +4804,60 @@ export async function buildModelSwapImageContentParts({
       `     - Every accessory already worn in the source (watch, jewellery, belt, scarf,\n` +
       `       bag, sunglasses, hat, etc.) — keep each in place, do not add or remove any.\n\n` +
       `3. CONSTRAINT 3 — LIGHTING REPLICATION (output light dynamics MATCH the source EXACTLY)\n` +
-      `   Analyse the lighting in Reference #1 and apply that EXACT lighting to BOTH the new\n` +
-      `   model's skin AND every clothing surface in the output:\n` +
-      `     - LIGHT DIRECTION — same principal-light azimuth and elevation. Shadows on the\n` +
-      `       new model's nose, chin, neck, and clothing must fall on the SAME side as in\n` +
-      `       Reference #1.\n` +
-      `     - COLOUR TEMPERATURE / WHITE BALANCE — match the source's warm/neutral/cool cast.\n` +
-      `     - INTENSITY & EXPOSURE — match the source's brightness, key-to-fill ratio, and\n` +
-      `       contrast curve (high-key stays high-key; moody stays moody).\n` +
-      `     - SHADOW SOFTNESS — match shadow-edge hardness (hard sun = sharp; softbox /\n` +
-      `       overcast = soft gradients).\n` +
-      `     - AMBIENT / FILL — match the fill level on the model's shadow side.\n` +
-      `     - SPECULAR HIGHLIGHTS — match position & intensity of skin highlights\n` +
-      `       (forehead, cheekbones, nose tip, chin, collarbones) AND clothing highlights\n` +
-      `       (satin sheens, leather highlights, metallic hardware glints, footwear gloss).\n` +
-      `     - RIM / BACK LIGHT — preserve any rim light hitting shoulders, hair, or\n` +
-      `       silhouette edge in the source.\n` +
+      `   The prompt above opens with a "${MODEL_SWAP_LIGHTING_CONTRACT_LABEL}" block. That block\n` +
+      `   is the AUTHORITATIVE, measured description of Reference #1's light. Reproduce EVERY\n` +
+      `   value it states, on BOTH the new model's skin AND every clothing surface. Do NOT\n` +
+      `   re-derive it, do NOT paraphrase it, and do NOT flatten it toward even studio light.\n` +
+      `   The three highest-leverage items, restated here so they sit next to the pixels:\n` +
+      `     - KEY DIRECTION & SHADOW SIDE — shadows on the new model's nose, chin, neck and\n` +
+      `       clothing fall on the SAME side as in Reference #1, and the core-shadow terminator\n` +
+      `       sits on the SAME facial landmark named in the contract.\n` +
+      `     - SHADOW EDGE & CONTRAST — same edge hardness and same key-to-fill ratio as the\n` +
+      `       contract states (high-key stays high-key; moody low-key stays moody low-key).\n` +
+      `     - COLOUR TEMPERATURE — the Kelvin value and colour cast stated in the contract.\n` +
+      `   The light describes ILLUMINATION ONLY — the new model's skin tone, undertone and\n` +
+      `   complexion come from ${modelImage ? "Reference #2" : "the model description"}, never from the person in Reference #1.\n` +
       `   The final image must look like the SAME photographer captured it in the SAME\n` +
       `   studio/location with the SAME lighting setup as the source — just with a\n` +
       `   different person in front of the lens.\n\n` +
       `${poseClause}\n\n` +
       `5. CLOTHING-TO-BODY INTERACTION — garments must fit and drape naturally on the new\n` +
       `   model's body proportions. The drape must read as physically correct.\n\n` +
-      `6. CAMERA & FRAMING — same camera angle, same framing, same composition,\n` +
-      `   same proportion of the frame occupied by the model as in Reference #1.\n\n` +
-      `${keepBackground ? "7. BACKGROUND — keep identical to Reference #1 (same environment, props,\n   depth of field, and atmosphere). The lighting clause above also governs the background.\n\n" : "7. BACKGROUND — replace per the prompt's BACKGROUND directive. CRITICAL: the\n   model and clothing remain lit by Reference #1's lighting setup (the LIGHTING\n   REPLICATION clause is authoritative over any new background's ambient lighting).\n\n"}` +
+      `6. CONSTRAINT 4 — FRAMING REPLICATION (the output is framed IDENTICALLY to Reference #1)\n` +
+      `   The prompt above opens with a "${MODEL_SWAP_FRAMING_CONTRACT_LABEL}" block. That block\n` +
+      `   is AUTHORITATIVE. Match every field it states: shot type, focal length, camera\n` +
+      `   distance, camera height and lens tilt, dutch angle, subject fill percentage, subject\n` +
+      `   placement, and all four crop anchors.\n` +
+      `   ★ THE CAMERA DOES NOT MOVE FOR THE NEW MODEL. The replacement model may be taller,\n` +
+      `   shorter, broader or slimmer than the person in Reference #1. The frame does NOT\n` +
+      `   loosen, tighten, zoom or re-centre to accommodate them — the crop stays pegged to the\n` +
+      `   same anatomical landmarks and the subject still fills the same share of the frame.\n\n` +
+      `${keepBackground
+        ? "7. BACKGROUND — keep identical to Reference #1 (same environment, props,\n" +
+          "   depth of field, and atmosphere). The LIGHTING CONTRACT governs the background\n" +
+          "   exactly as it governs the model: cast shadows run the same way and at the same\n" +
+          "   length, and the backdrop keeps its original exposure and colour temperature.\n\n"
+        : "7. BACKGROUND — replace per the prompt's BACKGROUND directive. The ENVIRONMENT\n" +
+          "   changes; the LIGHT does not. Sequence: (1) the model, skin and every garment\n" +
+          "   surface stay lit exactly per the LIGHTING CONTRACT; (2) build the new environment;\n" +
+          "   (3) RE-RENDER that environment as if photographed under the contract's key light —\n" +
+          "   scene shadows run in the SAME direction with the SAME edge quality, at the SAME\n" +
+          "   colour temperature and contrast; (4) allow SUBTLE bounce from the new surroundings\n" +
+          "   onto the model's shadow side, never enough to flip the shadow side, change the key\n" +
+          "   direction, or move the terminator; (5) ground the model with a CONTACT SHADOW and\n" +
+          "   ambient occlusion where the body meets the floor or a wall, from that same key.\n" +
+          "   PRECEDENCE: where the LIGHTING CONTRACT and the new background's implied lighting\n" +
+          "   disagree, the CONTRACT WINS for the subject and the background is re-rendered to\n" +
+          "   agree with it. The garment keeps its true product colours throughout.\n\n"}` +
       `8. PHOTOGRAPHIC QUALITY — render as professional e-commerce fashion photography,\n` +
       `   photorealistic, indistinguishable from a real-life studio capture.\n\n` +
       `═══ MENTAL MODEL ═══\n` +
       `Imagine the original photographer re-shot the same scene with a completely different\n` +
       `person in front of the lens, in the same lighting setup, wearing the exact same\n` +
-      `clothing and accessories${poseVariation ? ", from the same camera position with the same framing — but caught a fraction of a second later, so the gaze, hand position, and stance vary subtly within natural human range" : ", holding the exact same pose"}. The result should look like\n` +
-      `a fresh authentic photograph — never like a face-swap or composite edit.`,
+      `clothing and accessories${poseVariation ? ", from the same camera position with the same framing — but caught a fraction of a second later, so ONLY the one or two motions listed as PERMITTED differ, each within its stated magnitude" : ", holding the exact same pose"}. The result should look like\n` +
+      `a fresh authentic photograph — never like a face-swap or composite edit.\n` +
+      `BURST TEST: place the output next to Reference #1. They must read as two frames from the\n` +
+      `same shutter burst — same light, same crop, same lens, ${poseVariation ? "the pose differing only by the permitted micro-motions" : "the same pose"}.`,
   });
 
   return parts;
@@ -4599,6 +4929,11 @@ export async function generateModelSwapImage({
 /**
  * Multi-turn edit for model swap: sends the user's edit instruction to gemini-3.1-flash-image
  * with the full conversation history from the original generation + any prior edits.
+ *
+ * The current instruction is wrapped in a standing guard (see `guardedEditInstruction` below):
+ * a short free-text edit is the easiest place for the measured framing and lighting contracts
+ * to quietly drift, because the model is otherwise free to re-render everything around the
+ * change. Replayed history entries are left verbatim so the recorded conversation stays honest.
  */
 export async function editModelSwapImage({
   apiKey,
@@ -4632,7 +4967,17 @@ export async function editModelSwapImage({
     }
   }
 
-  contents.push({ role: "user", parts: [{ text: editInstruction }] });
+  const guardedEditInstruction =
+    `${editInstruction}\n\n` +
+    `CHANGE ONLY WHAT THE INSTRUCTION ABOVE ASKS FOR. Unless that instruction explicitly ` +
+    `concerns lighting or framing, the "${MODEL_SWAP_FRAMING_CONTRACT_LABEL}" and the ` +
+    `"${MODEL_SWAP_LIGHTING_CONTRACT_LABEL}" from the original prompt remain in force and ` +
+    `pixel-identical: same crop and camera, same subject fill, same key-light direction and ` +
+    `shadow side, same colour temperature, same contrast, same specular placement. The model's ` +
+    `identity, the garments and accessories, the pose and the background likewise stay exactly ` +
+    `as they are in the image being edited.`;
+
+  contents.push({ role: "user", parts: [{ text: guardedEditInstruction }] });
 
   const response = await ai.models.generateContent({
     model: "gemini-3.1-flash-image",
@@ -4683,10 +5028,16 @@ export async function validateGeneratedImage({
   productCategory?: ProductCategory;
   validationMode?: "vton" | "model-swap" | "room-staging";
   /**
-   * Model Swap only — when true, the validator will NOT flag "pose changed" as a
-   * warning, because the user explicitly opted into subtle pose variation at the
-   * product level. Framing and body-orientation drift are still considered failures
-   * (those are checked via the SIZE/framing line). Default: false.
+   * Model Swap only — the user opted into subtle pose variation at the product level.
+   *
+   * This is passed INTO the inspector's prompt rather than being applied after the fact: the
+   * pose verdict switches from "preserved / changed" to "in-bounds / out-of-bounds", and the
+   * inspector is given the magnitude budget so it can tell a burst-frame micro-variation from
+   * a re-staged shot. Previously this flag simply suppressed the pose check, which let a full
+   * re-stage pass silently.
+   *
+   * Lighting, framing and screen-real-estate are checked identically either way — those locks
+   * hold regardless of the toggle. Default: false.
    */
   allowPoseVariation?: boolean;
   abortSignal?: AbortSignal;
@@ -4729,9 +5080,9 @@ Do NOT include any other text.`,
     });
   } else if (isModelSwap) {
     parts.push({
-      text: `You are a quality-control inspector for AI-generated fashion photography. Your task is to compare an ORIGINAL product photo against an AI-GENERATED output image produced by a MODEL SWAP operation. The model swap replaces the human model while preserving the clothing, pose, and composition.
+      text: `You are a quality-control inspector for AI-generated fashion photography. Your task is to compare an ORIGINAL product photo against an AI-GENERATED output image produced by a MODEL SWAP operation. The model swap replaces the human model while preserving the clothing, the pose, the composition AND the lighting. Only the person should differ.
 
-CHECK THESE THREE ASPECTS:
+CHECK THESE FIVE ASPECTS:
 
 1. CLOTHING MATCH — Does the primary ${productLabel} in the output faithfully match the original?
    - Overall silhouette and shape
@@ -4739,26 +5090,50 @@ CHECK THESE THREE ASPECTS:
    - Pattern, print, or graphic elements
    - Key construction details (neckline, closure, pockets, sole shape, branding marks, etc.)
    - Material appearance and texture
-   - Minor stylistic rendering differences (slight color temperature shift, soft focus) are acceptable.
+   - Minor stylistic rendering differences (soft focus, slight fabric-fold variation) are acceptable.
    - Flag only SUBSTANTIVE differences (wrong color, missing/changed pattern, altered silhouette, etc.)
 
-2. POSE PRESERVATION — Is the model's pose in the generated image essentially the same as the original?
+${allowPoseVariation
+        ? `2. POSE — VARIATION IS PERMITTED, BUT ONLY WITHIN BOUNDS. The user opted into subtle pose variation, so the pose is EXPECTED to differ slightly. Your job is to decide whether it varies like the NEXT FRAME OF THE SAME SHUTTER BURST, or whether the shot was RE-STAGED.
+   The permitted budget was: head tilt/turn and chin ≤ 5°; gaze ≤ 10°; any individual limb joint (elbow, wrist, knee, ankle, neck) ≤ 8°; hand/wrist movement ≤ 1-3 cm within the same region of the body; shoulder-line roll ≤ 3°; pelvis lateral shift ≤ 2 cm with BOTH FEET STAYING PLANTED; facial expression at most one micro-step. At most TWO of these axes may have changed.
+   Answer "in-bounds" if the differences fit that budget.
+   Answer "out-of-bounds" if ANY of these is true: the body orientation changed (torso, shoulder line or feet now face a different direction); an arm or hand moved to a different region of the body (e.g. hand left the hip, came out of a pocket, or unfolded from crossed arms); a foot moved or the stance was re-planted; a scene contact broke (a hand that rested on a wall, prop or pocket is no longer there); a limb now occludes a garment logo, print or closure that was visible in the original; or more than two aspects of the pose changed at once.`
+        : `2. POSE PRESERVATION — Is the model's pose in the generated image essentially the same as the original?
    - Body position and stance
    - Arm and hand placement
    - Leg stance and weight distribution
    - Head angle and tilt
-   - Minor natural variations are acceptable. Flag only if the pose has NOTICEABLY changed (different arm position, different stance, turned a different direction, etc.)
+   - Minor natural variations are acceptable. Flag only if the pose has NOTICEABLY changed (different arm position, different stance, turned a different direction, etc.)`}
 
 3. SCREEN REAL-ESTATE — Does the human model occupy approximately the same proportion of the image frame?
    - Compare what percentage of the frame the model fills in both images
    - The model should be roughly the same size relative to the frame
    - Flag only if the model appears SIGNIFICANTLY larger or smaller (e.g., full-body became waist-up, or model shrank noticeably)
 
-Respond with EXACTLY four lines in this format:
+4. LIGHTING MATCH — Is the output lit by the SAME setup as the original? Compare:
+   - KEY DIRECTION AND SHADOW SIDE: do the shadows under the nose, chin and neck, and the shadows cast by the clothing, fall on the SAME side as in the original? A flipped or rotated key light is the most serious failure here.
+   - SHADOW CHARACTER: same edge hardness (crisp vs soft gradient), and roughly the same shadow length and direction on the background.
+   - CONTRAST AND EXPOSURE LEVEL: a moody, low-key, high-contrast original must NOT come back as bright, flat, even studio lighting — and vice versa.
+   - COLOUR TEMPERATURE: same warm / neutral / cool cast.
+   - RIM OR BACK LIGHT: if the original had a rim light on the shoulders, hair or silhouette edge, it should still be there (and not newly invented if it was absent).
+   - Differences in skin tone between the two people are EXPECTED (the model was deliberately replaced) — judge the LIGHT, not the complexion.
+   - Flag only a SUBSTANTIVE mismatch: shadows on the wrong side, hard light become soft (or the reverse), a dramatic original rendered flat, or an obvious warm/cool shift.
+
+5. FRAMING MATCH — Is the output framed the same way as the original? Compare:
+   - CROP: do the top and bottom edges cut the body at the same anatomical points (same headroom, same cut at waist / thigh / knee / ankle)?
+   - CAMERA HEIGHT AND ANGLE: same eye-level / chest-level / low or high angle, same tilt.
+   - LENS COMPRESSION AND CAMERA DISTANCE: the subject should not read as noticeably closer, further, wider or more compressed.
+   - SUBJECT PLACEMENT: the model sits in roughly the same position within the frame.
+   - A replacement model with a different build is NOT a reason for the frame to loosen or tighten — the crop should still hit the same landmarks.
+   - Flag only a SUBSTANTIVE mismatch (the crop moved to a different body landmark, the camera angle changed, or the composition was re-centred).
+
+Respond with EXACTLY six lines in this format:
 MATCH: <yes or no>
-POSE: <preserved or changed>
+POSE: <${allowPoseVariation ? "in-bounds or out-of-bounds" : "preserved or changed"}>
 SIZE: <consistent or changed>
-REASON: <one or two sentences covering all three aspects>
+LIGHTING: <matched or drifted>
+FRAMING: <matched or drifted>
+REASON: <one or two sentences covering the aspects that failed, or confirming all five match>
 
 Do NOT include any other text.`,
     });
@@ -4814,7 +5189,7 @@ Do NOT include any other text.`,
 
   if (isModelSwap) {
     parts.push({
-      text: `\n\nNow compare the generated image against the original. Check: (1) clothing match, (2) pose preservation, (3) model screen real-estate consistency.`,
+      text: `\n\nNow compare the generated image against the original. Check: (1) clothing match, (2) ${allowPoseVariation ? "whether the pose variation stayed in-bounds" : "pose preservation"}, (3) model screen real-estate consistency, (4) lighting match, (5) framing match.`,
     });
   } else {
     parts.push({
@@ -4843,26 +5218,39 @@ Do NOT include any other text.`,
     const reason = reasonLine?.replace(/^REASON:\s*/i, "").trim() ?? "";
 
     if (isModelSwap) {
-      const poseLine = text.split("\n").find((l) => l.startsWith("POSE:"));
-      const sizeLine = text.split("\n").find((l) => l.startsWith("SIZE:"));
-      const posePreserved = poseLine?.toLowerCase().includes("preserved") ?? true;
-      const sizeConsistent = sizeLine?.toLowerCase().includes("consistent") ?? true;
+      const lines = text.split("\n");
+      const lineFor = (prefix: string) => lines.find((l) => l.startsWith(prefix))?.toLowerCase();
+      const poseLine = lineFor("POSE:");
+      const sizeLine = lineFor("SIZE:");
+      const lightingLine = lineFor("LIGHTING:");
+      const framingLine = lineFor("FRAMING:");
 
-      // When the user opted into Pose Variation, a pose change is EXPECTED — do not flag it.
-      // Framing/size changes are still considered failures because the framing+body-orientation
-      // lock applies regardless of the Pose Variation toggle.
-      const poseOk = posePreserved || allowPoseVariation;
+      // Every verdict defaults to PASS when its line is absent. That keeps a model which
+      // replies in the older four-line format (no LIGHTING/FRAMING) degrading gracefully
+      // instead of reporting phantom drift.
+      const sizeConsistent = sizeLine?.includes("consistent") ?? true;
+      const lightingOk = lightingLine ? !lightingLine.includes("drifted") : true;
+      const framingOk = framingLine ? !framingLine.includes("drifted") : true;
 
-      if (isMatch && poseOk && sizeConsistent) {
-        const okReason = allowPoseVariation && !posePreserved
-          ? (reason || "Product and framing match well; pose varies within user-permitted range")
-          : (reason || "Product, pose, and framing match well");
+      // With Pose Variation ON the verdict vocabulary changes: a pose change is expected, so
+      // the inspector judges whether the variation stayed inside the magnitude budget. With it
+      // OFF the historical "preserved / changed" wording applies.
+      const poseOk = allowPoseVariation
+        ? (poseLine ? !poseLine.includes("out-of-bounds") : true)
+        : (poseLine?.includes("preserved") ?? true);
+
+      if (isMatch && poseOk && sizeConsistent && lightingOk && framingOk) {
+        const okReason = allowPoseVariation
+          ? (reason || "Product, lighting and framing match well; pose varies within the permitted range")
+          : (reason || "Product, pose, lighting and framing match well");
         return { status: "passed", message: okReason, cost: vCost };
       } else {
         const issues: string[] = [];
         if (!isMatch) issues.push("clothing mismatch");
-        if (!poseOk) issues.push("pose changed");
+        if (!poseOk) issues.push(allowPoseVariation ? "pose variation out of bounds" : "pose changed");
         if (!sizeConsistent) issues.push("model size/framing changed");
+        if (!lightingOk) issues.push("lighting drift");
+        if (!framingOk) issues.push("framing drift");
         const issuePrefix = `Issues: ${issues.join(", ")}. `;
         return { status: "warning", message: issuePrefix + (reason || "The output may differ from the original"), cost: vCost };
       }
