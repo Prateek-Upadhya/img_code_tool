@@ -1,16 +1,31 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useMemo } from "react";
 import { Plus, Pencil, Trash2, Check, X, Upload, ImageIcon, FolderOpen } from "lucide-react";
 import { ImageUploadZone } from "./image-upload-zone";
+import { InfographicSheetImportButton, InfographicSheetSummaryBar } from "./infographic-sheet-import";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { INFOGRAPHIC_CATEGORY_OPTIONS, SOLE_CONSTRUCTION_LAYER_OPTIONS } from "@/lib/constants";
+import {
+  refillFolderOnRename,
+  seedFolderFromSheet,
+  sheetIndexFromSession,
+} from "@/lib/infographic-sheet-import";
 import type { VTONStore } from "@/store/vton-store";
 import type { InfographicProductFolder } from "@/lib/types";
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/** Marks a callout field whose text came from the attached spreadsheet, not from typing. */
+function SheetTag() {
+  return (
+    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+      from sheet
+    </span>
+  );
 }
 
 /**
@@ -174,10 +189,16 @@ function ProductCard({
       <div>
         <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 mb-1.5">
           ✨ Minimalistic callouts
+          {folder.sheetFilled?.minimalisticInfo && <SheetTag />}
         </label>
         <Textarea
           value={folder.minimalisticInfo ?? folder.productInfo ?? ""}
-          onChange={(e) => onFieldChange(folder.id, { minimalisticInfo: e.target.value })}
+          onChange={(e) =>
+            onFieldChange(folder.id, {
+              minimalisticInfo: e.target.value,
+              sheetFilled: { ...folder.sheetFilled, minimalisticInfo: false },
+            })
+          }
           placeholder="Feature bullets for the floating-pair infographic. e.g. • Breathable knit upper • Carbon-plate midsole • Rubber grip outsole. Wrap exact words in quotes to render them verbatim."
           className="min-h-[80px] text-sm resize-y"
         />
@@ -187,6 +208,7 @@ function ProductCard({
       <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
         <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
           🧱 Sole-construction layers
+          {folder.sheetFilled?.soleConstructionInfo && <SheetTag />}
         </label>
         <div className="grid grid-cols-3 gap-2">
           {SOLE_CONSTRUCTION_LAYER_OPTIONS.map((opt) => {
@@ -212,7 +234,12 @@ function ProductCard({
         </div>
         <Textarea
           value={folder.soleConstructionInfo ?? folder.productInfo ?? ""}
-          onChange={(e) => onFieldChange(folder.id, { soleConstructionInfo: e.target.value })}
+          onChange={(e) =>
+            onFieldChange(folder.id, {
+              soleConstructionInfo: e.target.value,
+              sheetFilled: { ...folder.sheetFilled, soleConstructionInfo: false },
+            })
+          }
           placeholder={
             "One short callout label per layer, top-to-bottom (rendered verbatim). e.g.\n" +
             "Upper Strap\nContoured Footbed\nGrip Outsole"
@@ -238,17 +265,36 @@ export function StepInfographicProducts({ store }: { store: VTONStore }) {
     infographicBrand,
     setInfographicBrandLogo,
     setInfographicBrandPlacement,
+    infographicSheetSession,
   } = store;
 
+  // Lookup for the attached callout sheet, so products added after an import fill themselves.
+  const sheetIndex = useMemo(
+    () => sheetIndexFromSession(infographicSheetSession),
+    [infographicSheetSession]
+  );
+
+  // Renaming a product to its SKU is the fix for "not found in the sheet", so pick up its
+  // callouts on rename too — filling only the fields still left empty.
+  const handleRename = (id: string, name: string) => {
+    renameInfographicFolder(id, name);
+    const folder = infographicFolders.find((f) => f.id === id);
+    if (!folder) return;
+    const patch = refillFolderOnRename(folder, name, sheetIndex);
+    if (patch) updateInfographicFolder(id, patch);
+  };
+
   const handleAddProduct = () => {
+    const name = `Product ${infographicFolders.length + 1}`;
     addInfographicFolder({
       id: uid("ig-folder"),
-      name: `Product ${infographicFolders.length + 1}`,
+      name,
       images: [],
       productInfo: "",
       minimalisticInfo: "",
       soleConstructionInfo: "",
       soleConstructionLayers: 3,
+      ...seedFolderFromSheet(name, sheetIndex),
     });
   };
 
@@ -276,6 +322,7 @@ export function StepInfographicProducts({ store }: { store: VTONStore }) {
         minimalisticInfo: "",
         soleConstructionInfo: "",
         soleConstructionLayers: 3,
+        ...seedFolderFromSheet(folder.name, sheetIndex),
       });
     });
   };
@@ -343,6 +390,7 @@ export function StepInfographicProducts({ store }: { store: VTONStore }) {
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <InfographicSheetImportButton store={store} />
             <FolderUploadButton onFoldersSelected={handleFoldersSelected} />
             <button
               onClick={handleAddProduct}
@@ -353,6 +401,8 @@ export function StepInfographicProducts({ store }: { store: VTONStore }) {
             </button>
           </div>
         </div>
+
+        <InfographicSheetSummaryBar store={store} />
 
         {infographicFolders.length === 0 ? (
           <button
@@ -374,7 +424,7 @@ export function StepInfographicProducts({ store }: { store: VTONStore }) {
                 key={folder.id}
                 folder={folder}
                 index={i}
-                onRename={renameInfographicFolder}
+                onRename={handleRename}
                 onRemove={removeInfographicFolder}
                 onAddImages={handleAddImages}
                 onRemoveImage={removeInfographicFolderImage}

@@ -90,6 +90,8 @@ import {
   InfographicProductFolder,
   InfographicBrand,
   InfographicResult,
+  InfographicSheetSession,
+  InfographicSheetImportSummary,
   InfographicBackgroundStyle,
   InfographicTemplate,
   ModelCreationGender,
@@ -485,6 +487,13 @@ export function useVTONStore() {
   const [infographicStylingInstructions, setInfographicStylingInstructions] = useState("");
   const [infographicResults, setInfographicResults] = useState<InfographicResult[]>([]);
   const [isInfographicGenerating, setIsInfographicGenerating] = useState(false);
+  /**
+   * Callout spreadsheet attached to this session, kept so products added after an import
+   * auto-fill. Lives here rather than in the step component because the wizard unmounts each
+   * step on navigation, which would otherwise drop the sheet and its undo buffer.
+   */
+  const [infographicSheetSession, setInfographicSheetSession] = useState<InfographicSheetSession | null>(null);
+  const [infographicSheetImport, setInfographicSheetImport] = useState<InfographicSheetImportSummary | null>(null);
 
   // --- AI Model Creation State ---
   // Global "casting" attributes — apply to every model box in the batch.
@@ -2068,6 +2077,31 @@ export function useVTONStore() {
     []
   );
 
+  // Batched multi-product patch — the callout spreadsheet import fills every matched product in
+  // one state update instead of N sequential updateInfographicFolder calls.
+  const patchInfographicFolders = useCallback(
+    (patches: Array<{ id: string; patch: Partial<InfographicProductFolder> }>) => {
+      if (patches.length === 0) return;
+      const byId = new Map(patches.map((p) => [p.id, p.patch]));
+      setInfographicFolders((prev) =>
+        prev.map((f) => {
+          const patch = byId.get(f.id);
+          return patch ? { ...f, ...patch } : f;
+        })
+      );
+    },
+    []
+  );
+
+  /** Detach the callout sheet: forget it, clear the summary, drop every "from sheet" tag. */
+  const clearInfographicSheet = useCallback(() => {
+    setInfographicSheetSession(null);
+    setInfographicSheetImport(null);
+    setInfographicFolders((prev) =>
+      prev.map((f) => (f.sheetFilled ? { ...f, sheetFilled: undefined } : f))
+    );
+  }, []);
+
   const addInfographicFolderImage = useCallback(
     (folderId: string, image: { id: string; file: File; preview: string }) => {
       setInfographicFolders((prev) =>
@@ -2951,7 +2985,11 @@ export function useVTONStore() {
     infographicFolders, setInfographicFolders,
     addInfographicFolder, removeInfographicFolder,
     renameInfographicFolder, updateInfographicFolderProductInfo, updateInfographicFolder,
+    patchInfographicFolders,
     addInfographicFolderImage, removeInfographicFolderImage,
+    infographicSheetSession, setInfographicSheetSession,
+    infographicSheetImport, setInfographicSheetImport,
+    clearInfographicSheet,
     infographicBrand, setInfographicBrand,
     setInfographicBrandLogo, setInfographicBrandPlacement,
     infographicBackgroundStyle, setInfographicBackgroundStyle,

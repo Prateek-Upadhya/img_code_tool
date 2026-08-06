@@ -1574,6 +1574,46 @@ export interface InfographicProductFolder {
   soleConstructionInfo?: string;
   /** Fixed exploded-layer count for this product's sole-construction infographic. Default 3. */
   soleConstructionLayers?: SoleConstructionLayerCount;
+  /**
+   * Which callout fields were last filled from the attached callout spreadsheet. Drives the
+   * "from sheet" tag on the product card; each flag is cleared as soon as the user edits
+   * that textarea by hand.
+   */
+  sheetFilled?: { minimalisticInfo?: boolean; soleConstructionInfo?: boolean };
+}
+
+/** Column mapping for the infographic callout spreadsheet import. */
+export interface InfographicSheetMapping {
+  /** Header whose cells hold the product SKU / style code. Required. */
+  skuColumn: string;
+  /** Header whose cells hold the minimalistic-template callouts. Null when not mapped. */
+  minimalisticColumn: string | null;
+  /** Header whose cells hold the sole-construction layer labels. Null when not mapped. */
+  soleConstructionColumn: string | null;
+}
+
+/**
+ * A parsed callout spreadsheet that stays attached to the session, so products added after
+ * the import (e.g. a later folder upload) auto-fill without re-uploading the file.
+ */
+export interface InfographicSheetSession {
+  fileName: string;
+  headers: string[];
+  records: Record<string, string>[];
+  mapping: InfographicSheetMapping;
+}
+
+/** Outcome of the last callout-sheet import — drives the summary bar and its Undo. */
+export interface InfographicSheetImportSummary {
+  fileName: string;
+  /** Number of products that had at least one field written. */
+  filledCount: number;
+  /** Sheet SKUs that matched no product. */
+  unmatchedSkus: string[];
+  /** Product names that got no sheet row. */
+  unfilledProducts: string[];
+  /** Pre-import field values, for one-click undo. */
+  snapshot: Array<{ id: string; patch: Partial<InfographicProductFolder> }>;
 }
 
 /** Optional brand logo + placement guidance applied to every generation in the batch. */
