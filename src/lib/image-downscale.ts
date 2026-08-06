@@ -65,7 +65,7 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 /** Promisified `canvas.toBlob`. */
-function canvasToBlob(
+export function canvasToBlob(
   canvas: HTMLCanvasElement,
   type: string,
   quality: number,
