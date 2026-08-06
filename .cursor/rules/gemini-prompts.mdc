@@ -470,6 +470,7 @@ Content Parts Order:
 ```typescript
 {
   apiKey: string;
+  textGenModel?: TextGenModel;                    // default "gemini"
   gender: Gender;
   sourceImage: { file: File; preview: string };  // existing product photo
   model: AIModel | null;                          // preset model description
@@ -479,123 +480,151 @@ Content Parts Order:
   aspectRatio: AspectRatio;
   additionalInfo: string;
   productInfo?: string;                          // product-specific details (fabric, features, selling points)
+  poseVariation?: boolean;                       // product-level toggle, default false
+  previousMismatchFeedback?: string;             // QC issues from a prior attempt (regenerate path)
 }
 ```
 
-### Complete System Prompt
+Runs on `gemini-3.1-pro-preview` at `ThinkingLevel.MEDIUM` — constraints 3 and 4 are
+*measurement* tasks (reading a key-light azimuth and crop anchors off the photo), which needs
+more deliberation than the generic preservation prose this stage used to emit.
+
+### FOUR NON-NEGOTIABLE CONSTRAINTS
+
+The system prompt is built around four constraints. **Constraints 3 and 4 are measurement
+tasks** — the meta-prompter must commit to a concrete value per field, not describe the
+lighting and framing in general terms.
+
+| # | Constraint | Built by |
+|---|---|---|
+| 1 | IDENTITY PRESERVATION — enumerate the new model's face/skin/hair/build; uniform skin tone across every visible body part | inline |
+| 2 | CLOTHING PRESERVATION — every garment and accessory copied pixel-for-pixel | inline |
+| 3 | LIGHTING REPLICATION — measure the source's light into a labelled contract | `buildSourceLightingContractBlock()` |
+| 4 | FRAMING REPLICATION — measure the source's composition into a labelled contract | `buildSourceFramingContractBlock()` |
+
+**`buildSourceLightingContractBlock()`** demands a committed value for: KEY LIGHT (clock
+position + degrees + elevation + source size), KEY-TO-FILL RATIO (numeric), COLOUR TEMPERATURE
+(Kelvin + cast), SECONDARY/PRACTICAL LIGHTS, RIM/BACK/KICKER, SHADOW CHARACTER (terminator
+pegged to a *named facial landmark*, edge width, cast-shadow direction, contact shadow),
+SPECULAR MAP, CATCHLIGHTS (shape + clock position in the iris), EXPOSURE & TONE, AMBIENT
+BOUNCE (% of key), ATMOSPHERE/OPTICS, WHITE-BALANCE ANCHOR. Four rules govern it:
+
+1. **LIGHTING LOCK** — sole source of truth; no re-deriving or paraphrasing.
+2. **DO NOT FLATTEN** — a moody low-key source stays moody; never default to even high-key.
+3. **IDENTITY / LIGHT SEPARATION** — describe the *light*, never the source model's rendered
+   skin, or the original person's complexion leaks in through the lighting description.
+4. **SAFE VALVE** — an unreadable field is written as `not determinable — infer from
+   Reference #1` rather than invented, since the source photo reaches the image generator too.
+
+**`buildSourceFramingContractBlock()`** reuses `buildFramingCropContractFields({ terse: true })`
+— the same 13-field list the custom-pose path uses — plus a FRAMING LOCK whose Model-Swap
+addition is: *the camera does not move for the new model*. A taller or broader replacement does
+not cause the frame to loosen; the crop stays pegged to the same anatomical landmarks.
+
+### Pose logic — `buildModelSwapPoseDirective(poseVariation)`
+
+Returns `{ metaPrompt, enforcement }` so this stage and the image-gen enforcement clause cannot
+drift apart (they used to be two hand-maintained copies).
+
+- **OFF (default)** — strict reproduction of the source pose, with the framing and lighting
+  contracts applying on top.
+- **ON** — *not* a fixed menu of allowed changes. Three steps:
+  - **STEP A — CLASSIFY** the source: visible extent at the measured crop, pose family, scene
+    contacts, protected garment features, and light geometry.
+  - **STEP B — DERIVE** 1–2 micro-motions, admitting one only if it passes all five filters:
+    VISIBLE · AVAILABLE · CONTACT-SAFE · GARMENT-SAFE · LIGHT-SAFE. Emit explicit `PERMITTED:`
+    and `FORBIDDEN:` lists — an unlisted motion is one the generator will feel free to invent.
+  - **STEP C — MAGNITUDE BUDGET**, reusing the numbers from the ACCESSORY INTEGRATION CONTRACT
+    in `generateVTONPrompt` so "subtle" means the same thing across features: head tilt/chin
+    ≤ 5°, gaze ≤ 10°, any limb joint ≤ 8°, hand/wrist ≤ 1–3 cm, shoulder roll ≤ 3°, pelvis
+    shift ≤ 2 cm with both feet planted, expression one micro-step. Plus a MOTION-COUNT RULE
+    (≤ 2 axes), INVARIANTS (both contracts, body orientation, camera), a RESULT TEST (two
+    frames of the same shutter burst) and a fallback table keyed on shot type.
+
+### Background — `buildModelSwapBackgroundLightingClause(keepBackground)`
+
+When the background is replaced, **the environment changes but the light does not**. The clause
+follows the lock → build → unify sequence used by the VTON LIGHTING HARMONISE block: the subject
+stays lit per the lighting contract, the new environment is *re-rendered as if photographed
+under that same key*, subtle bounce is allowed but may never flip the shadow side, and a contact
+shadow grounds the model. Precedence is explicit: where the contract and the new background's
+implied lighting disagree, **the contract wins for the subject** and the background is
+re-rendered to agree with it. (The previous wording — "adapt only the environment, not its light
+dynamics" — left subject and plate lit by two different setups and read as a cut-out composite.)
+
+### Required output structure
+
+The generated prompt must lead with the labelled contracts as **field lists, not prose** —
+paraphrasing them is what causes drift:
+
 ```
-ROLE: "expert fashion photographer and prompt engineer specializing in
-COMPLETE MODEL REPLACEMENT in product photography"
-
-TASK: COMPLETE MODEL REPLACEMENT (NOT a face swap)
-The input is an existing product photo showing a model wearing clothing.
-
-Instructions for the image generator:
-1. REPLACE the ENTIRE human model — EVERY visible body part: face, neck, shoulders, arms,
-   hands, fingers, torso, legs, feet. The COMPLETE person must be the new model.
-2. PRESERVE the clothing EXACTLY — same garment, fit, drape, wrinkles, colors, patterns,
-   every construction detail
-3. PRESERVE the exact same POSE — same body position, arm placement, leg stance, head angle
-4. {keepBackground ? "PRESERVE the original BACKGROUND exactly" : "REPLACE the background"}
-5. Maintain same camera angle, framing, and composition
-
-GENDER CONTEXT: {genderLabel} product
-
-═══ CRITICAL: FULL-BODY MODEL REPLACEMENT, NOT A FACE SWAP ═══
-★★★ The #1 most common failure is replacing ONLY the face while keeping the original model's body.
-This produces a visible skin tone mismatch between face and body. ★★★
-
-MUST explicitly instruct:
-- Replace ENTIRE PERSON, not just face — every square inch of visible skin
-- Skin tone UNIFORM and CONSISTENT across ALL visible body parts:
-  face, neck, décolletage, arms, hands, fingers, legs, feet
-- Body build (musculature, frame, proportions) consistent with reference
-- Hands and arms match new model's skin tone and build
-- If legs/feet visible, they also belong to new model
-- Think of this as photographing a COMPLETELY DIFFERENT PERSON in same pose wearing same outfit
-
-ACCURACY:
-- Clothing: PIXEL-PERFECT identical — no garment attribute changes
-- Pose: EXACTLY replicated
-- {keepBackground: "Background IDENTICAL to original"}
-- Clothing-to-body interaction natural on new model's proportions
-
-{modelImage: "Generated image must feature EXACT person — same face, skin tone, hair, body.
-Study reference for skin tone, complexion, body characteristics, apply consistently to every body part."}
-{model: "AI Model: {model.name} — {model.description}"}
-
-Output ONLY generation prompt text. 2-4 paragraphs ensuring COMPLETE model replacement
-with uniform skin tone and perfectly preserved clothing.
+═══ FRAMING & CROP CONTRACT (MEASURED FROM REFERENCE #1) ═══
+═══ LIGHTING CONTRACT (MEASURED FROM REFERENCE #1) ═══
+═══ PERMITTED VARIATION (DERIVED FROM REFERENCE #1) ═══   (only when poseVariation is ON)
+¶1 Identity · ¶2 Clothing & accessories · ¶3 Lighting prose · ¶4 Pose · ¶5 Background & quality
 ```
 
 ### Content Parts Assembly Order
-1. System prompt text
-2. Source product image (labeled: "ORIGINAL product photo — analyze pose, clothing, composition")
-3. New model reference image (labeled: "NEW model — must feature this EXACT person")
-4. Background inspiration image (if new-background mode with image)
-5. Generation parameters block
-6. Final instruction with 6 critical rules
+1. System prompt text (four constraints + pose directive)
+2. Source product image — labelled "MEASURE its framing and its lighting field-by-field"
+3. New model reference image (if provided)
+4. Background inspiration image (if new-background mode with image) — labelled *environment
+   only; the light comes from the LIGHTING CONTRACT*
+5. Generation parameters block + `CRITICAL OUTPUT-PROMPT CHECKLIST` (9 items, requiring both
+   contracts by name and the PERMITTED VARIATION block when the toggle is ON)
 
-### Generation Parameters Block
-```
-Gender, New Model, Model Reference, Background instruction, Aspect Ratio, Additional Instructions
-
-CRITICAL RULES:
-1. Clothing must match original EXACTLY
-2. Pose must be IDENTICAL
-3. ENTIRE human model replaced — face, neck, arms, hands, legs, feet, ALL skin
-4. SKIN TONE CONSISTENCY — uniform across face, neck, arms, hands, all visible skin — NO mismatch
-5. Professional e-commerce fashion photography quality
-6. {keepBackground: "Background exactly as original" : "Background matches specified new background"}
-
-"Remember: FULL-BODY model replacement, NOT a face swap. Every visible body part must belong to the new model."
-```
+The `previousMismatchFeedback` correction block has first-class bullets for `lighting drift`,
+`framing drift` and `pose variation out of bounds` (the last one instructs the model to cut the
+PERMITTED list to a single motion and halve its magnitude).
 
 ---
 
-## FUNCTION 4: `generateModelSwapImage()`
+## FUNCTION 4: `generateModelSwapImage()` / `buildModelSwapImageContentParts()`
 
 ### Content Parts Assembly Order
 ```
-1. IMAGE: Source product photo (most important reference)
-2. IMAGE: New model reference photo
+1. IMAGE: Source product photo (Reference #1 — clothing, pose, framing, lighting)
+2. IMAGE: New model reference photo (Reference #2 — identity)
 3. IMAGE: Background inspiration (if new-background with image)
 4. TEXT: Generated prompt + enforcement instructions
 ```
 
 ### Enforcement Instructions (appended after prompt)
+
+Eight numbered items. The key architectural point: **lighting and framing are not re-described
+here.** They were measured into two labelled contracts at the top of the prompt, so the
+enforcement clause *points at those contracts and forbids re-deriving them* — restating only the
+three highest-leverage lighting facts so they sit adjacent to the pixels (the same "deliver the
+anchor twice" pattern the VTON path uses).
+
 ```
-═══ CRITICAL: COMPLETE MODEL REPLACEMENT INSTRUCTIONS (NOT A FACE SWAP) ═══
+1. CONSTRAINT 1 — IDENTITY PRESERVATION (+ ★★★ SKIN-TONE UNIFORMITY, the historical #1 failure)
+2. CONSTRAINT 2 — CLOTHING & ACCESSORY IDENTITY PRESERVATION (pixel-for-pixel)
+3. CONSTRAINT 3 — LIGHTING REPLICATION
+   → "the LIGHTING CONTRACT above is AUTHORITATIVE; reproduce every value; do NOT re-derive,
+      paraphrase, or flatten it"
+   → restated near the pixels: key direction & shadow side (terminator on its named landmark),
+      shadow edge & key-to-fill, colour temperature
+   → "the light describes ILLUMINATION ONLY — skin tone comes from Reference #2"
+4. POSE — buildModelSwapPoseDirective(poseVariation).enforcement
+5. CLOTHING-TO-BODY INTERACTION
+6. CONSTRAINT 4 — FRAMING REPLICATION
+   → "the FRAMING & CROP CONTRACT above is AUTHORITATIVE"
+   → ★ THE CAMERA DOES NOT MOVE FOR THE NEW MODEL
+7. BACKGROUND — keep-same, or the 5-step relight sequence with explicit PRECEDENCE
+8. PHOTOGRAPHIC QUALITY
 
-1. First reference image is ORIGINAL product photo — preserve clothing EXACTLY
-   (same garment, fit, colors, patterns, textures, construction, wrinkles, drape)
-
-2. REPLACE ENTIRE HUMAN MODEL — not just face. Every visible body part
-   (face, neck, shoulders, arms, hands, fingers, torso, legs, feet) must belong
-   to the NEW person. Use their EXACT face, skin tone, hair color, hair style,
-   body build, and proportions for the COMPLETE body.
-
-3. ★★★ SKIN TONE UNIFORMITY (MOST CRITICAL) ★★★
-   New model's skin tone PERFECTLY CONSISTENT across ALL visible body parts:
-   - Face and neck: new model's skin tone
-   - Arms and hands: SAME skin tone as face (not original model's)
-   - Legs and feet (if visible): SAME skin tone as face
-   - Décolletage/chest (if visible): SAME skin tone as face
-   ZERO visible skin tone difference between face and any other body part.
-   If new model has different skin tone than original, ENTIRE body reflects new tone uniformly.
-
-4. New model must adopt EXACT SAME POSE as original — same body position,
-   arm placement, leg stance, head angle.
-
-5. {keepBackground: "Keep background IDENTICAL" : "Replace background as described"}
-
-6. Clothing-to-body interaction natural on new model's proportions.
-
-7. Maintain same camera angle, framing, professional photography quality.
-
-THINK OF IT THIS WAY: Imagine photographing a COMPLETELY DIFFERENT PERSON wearing the exact same
-outfit in the exact same pose. Result should look like a fresh photograph — not old photo with face pasted on.
+═══ MENTAL MODEL ═══ + BURST TEST: placed side by side, output and Reference #1 must read as
+two frames from the same shutter burst — same light, same crop, same lens.
 ```
+
+### `editModelSwapImage()` — standing guard
+
+A short free-text edit is the easiest place for the two contracts to drift, so the **current**
+instruction is wrapped in a "CHANGE ONLY WHAT THE INSTRUCTION ASKS FOR" guard (same formula as
+`contextualRetryVTONImage`) restating that both contracts remain in force unless the instruction
+explicitly concerns lighting or framing. Replayed history entries are left verbatim so the
+recorded conversation stays honest.
 
 ---
 
@@ -750,8 +779,11 @@ The store (`useVTONStore`) owns a `generationAbortControllerRef: React.MutableRe
 - **Full-Body Replacement**: The #1 failure mode is face-only swap with skin tone mismatch. Every instruction hammers "ENTIRE person, not just face".
 - **Skin Tone Uniformity**: Repeated 4+ times in the prompt — face, neck, arms, hands, legs, feet must ALL match the new model's skin tone.
 - **Clothing Preservation**: The clothing must remain pixel-perfect identical — zero changes to any garment attribute.
-- **Pose Preservation**: The new model must adopt the exact same pose.
-- **Background Handling**: `keep-same` preserves everything; `new-background` supports inspiration image, text, or default studio.
+- **Measure, don't describe**: Lighting and framing are MEASURED into two labelled contracts by the meta-prompter and treated as authoritative downstream. Never replace a contract field list with prose — a description that does not commit to a value ("match the source's lighting") is what the contracts exist to prevent.
+- **Contracts are shared text**: The framing field list comes from `buildFramingCropContractFields()`, which also feeds the two custom-pose extraction blocks. Change it there once, not per feature.
+- **Pose**: OFF = exact reproduction. ON = 1–2 micro-motions *derived per image* via `buildModelSwapPoseDirective`, bounded by the same magnitude budget as the ACCESSORY INTEGRATION CONTRACT. Both branches are emitted as a `{ metaPrompt, enforcement }` pair — never edit one stage's copy alone.
+- **Background Handling**: `keep-same` preserves everything; `new-background` supports inspiration image, text, or default studio. In every replace branch the source key light stays authoritative for the subject and the new environment is re-rendered to agree with it.
+- **QC**: `validateGeneratedImage({ validationMode: "model-swap" })` returns six lines — `MATCH / POSE / SIZE / LIGHTING / FRAMING / REASON`. `allowPoseVariation` is passed INTO the prompt (the pose verdict becomes `in-bounds / out-of-bounds` and the inspector receives the magnitude budget), not applied afterwards — the old post-hoc suppression let a full re-stage pass silently. Every verdict defaults to PASS when its line is missing, so an older four-line reply degrades gracefully.
 
 ### Cross-Cutting Rules
 - **Gender Context**: Always passed and used to inform garment analysis (male=broader shoulders/straighter cuts; female=varied necklines/darting; unisex=relaxed proportions).
