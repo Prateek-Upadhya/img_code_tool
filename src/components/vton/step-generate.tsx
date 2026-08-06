@@ -40,6 +40,7 @@ import { cn, buildDynamicPoseSeed, pickBucketImage } from "@/lib/utils";
 import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene, analyzeReferenceScene, describeGarmentFromImages, generateCustomPoseInfographicPrompt } from "@/lib/gemini";
 import { customPoseIsInfographic, customPoseIsProductOnly, customPoseNeedsModel, customPoseShotKindLabel, customPoseIsReadyToGenerate } from "@/lib/custom-pose";
 import { generateVTONImageAzure } from "@/lib/azure-image";
+import { resolveSourceNamedOutput, sourceBaseName, extensionForBlob, uniqueName } from "@/lib/output-naming";
 import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS } from "@/lib/constants";
 import { ModelComboPicker } from "./model-combo-picker";
 import Image from "next/image";
@@ -3336,22 +3337,25 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
     const zip = new JSZip();
     const timestamp = Date.now();
+    // One namespace for the whole flat ZIP — single mode can be fed same-named files
+    // from different source folders, and a silent overwrite would drop an image.
+    const usedNames = new Set<string>();
     for (const r of completedResults) {
-      try {
-        const resp = await fetch(r.imageData);
-        const blob = await resp.blob();
-        const ext = (blob.type && blob.type.split("/")[1]) || "png";
-        zip.file(`model-swap-${r.sourceImageId}.${ext}`, blob);
-      } catch (e) {
-        console.error("Failed to add image to zip:", e);
+      const out = await resolveSourceNamedOutput(r.imageData, r.sourceImageName, usedNames);
+      if (out) {
+        zip.file(out.name, out.blob);
+      } else {
+        console.error("Failed to add image to zip:", r.sourceImageName);
       }
       if (r.infographicImages?.length) {
+        const base = sourceBaseName(r.sourceImageName);
         for (let idx = 0; idx < r.infographicImages.length; idx++) {
           try {
             const resp = await fetch(r.infographicImages[idx]);
             const blob = await resp.blob();
-            const ext = (blob.type && blob.type.split("/")[1]) || "png";
-            zip.file(`model-swap-${r.sourceImageId}-infographic-${idx + 1}.${ext}`, blob);
+            // Infographics are new assets rather than replacements, so they keep
+            // their own real format instead of matching the source.
+            zip.file(uniqueName(`${base}-infographic-${idx + 1}.${extensionForBlob(blob)}`, usedNames), blob);
           } catch (e) {
             console.error("Failed to add infographic to zip:", e);
           }
@@ -3482,24 +3486,24 @@ export function StepGenerate({ store }: StepGenerateProps) {
       const safeName = folderName.replace(/[<>:"/\\|?*]+/g, "_");
       const zip = new JSZip();
       const folder = zip.folder(safeName)!;
-      for (let i = 0; i < comboResults.length; i++) {
-        const r = comboResults[i];
-        try {
-          const resp = await fetch(r.imageData);
-          const blob = await resp.blob();
-          const ext = (blob.type && blob.type.split("/")[1]) || "png";
-          folder.file(`${i + 1}.${ext}`, blob);
-        } catch (e) {
+      // Scoped to this folder: the ZIP already namespaces by product, so two products
+      // may each legitimately hold a `1.jpg` and neither should be renamed.
+      const usedNames = new Set<string>();
+      for (const r of comboResults) {
+        const out = await resolveSourceNamedOutput(r.imageData, r.sourceImageName, usedNames);
+        if (out) {
+          folder.file(out.name, out.blob);
+        } else {
           // eslint-disable-next-line no-console
-          console.error("Failed to add image to zip:", e);
+          console.error("Failed to add image to zip:", r.sourceImageName);
         }
         if (r.infographicImages?.length) {
+          const base = sourceBaseName(r.sourceImageName);
           for (let idx = 0; idx < r.infographicImages.length; idx++) {
             try {
               const resp = await fetch(r.infographicImages[idx]);
               const blob = await resp.blob();
-              const ext = (blob.type && blob.type.split("/")[1]) || "png";
-              folder.file(`${i + 1}-infographic-${idx + 1}.${ext}`, blob);
+              folder.file(uniqueName(`${base}-infographic-${idx + 1}.${extensionForBlob(blob)}`, usedNames), blob);
             } catch (e) {
               // eslint-disable-next-line no-console
               console.error("Failed to add infographic to zip:", e);
@@ -3740,24 +3744,23 @@ export function StepGenerate({ store }: StepGenerateProps) {
       if (comboResults.length === 0) continue;
       const safeName = combo.primaryFolder.name.replace(/[<>:"/\\|?*]+/g, "_");
       const folder = zip.folder(safeName)!;
-      for (let i = 0; i < comboResults.length; i++) {
-        const r = comboResults[i];
-        try {
-          const resp = await fetch(r.imageData);
-          const blob = await resp.blob();
-          const ext = (blob.type && blob.type.split("/")[1]) || "png";
-          folder.file(`${i + 1}.${ext}`, blob);
-        } catch (e) {
+      // Per-folder namespace — see handleDownloadAllModelSwapCombo.
+      const usedNames = new Set<string>();
+      for (const r of comboResults) {
+        const out = await resolveSourceNamedOutput(r.imageData, r.sourceImageName, usedNames);
+        if (out) {
+          folder.file(out.name, out.blob);
+        } else {
           // eslint-disable-next-line no-console
-          console.error("Failed to add image to zip:", e);
+          console.error("Failed to add image to zip:", r.sourceImageName);
         }
         if (r.infographicImages?.length) {
+          const base = sourceBaseName(r.sourceImageName);
           for (let idx = 0; idx < r.infographicImages.length; idx++) {
             try {
               const resp = await fetch(r.infographicImages[idx]);
               const blob = await resp.blob();
-              const ext = (blob.type && blob.type.split("/")[1]) || "png";
-              folder.file(`${i + 1}-infographic-${idx + 1}.${ext}`, blob);
+              folder.file(uniqueName(`${base}-infographic-${idx + 1}.${extensionForBlob(blob)}`, usedNames), blob);
             } catch (e) {
               // eslint-disable-next-line no-console
               console.error("Failed to add infographic to zip:", e);
@@ -3996,6 +3999,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
     const initialResults: ModelSwapGeneratedResult[] = garmentImages.map((img) => ({
       id: `ms-result-${img.id}-${Date.now()}`,
       sourceImageId: img.id,
+      sourceImageName: img.file.name,
       sourceImagePreview: img.preview,
       prompt: "",
       imageData: "",
@@ -4149,6 +4153,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           combinationId: combo.id,
           combinationLabel: comboLabel,
           sourceImageId: img.id,
+          sourceImageName: img.file.name,
           sourceImagePreview: img.preview,
           prompt: "",
           imageData: "",
@@ -4428,27 +4433,29 @@ export function StepGenerate({ store }: StepGenerateProps) {
     }
   }, [modelSwapResults, isGenerating, handleRetryModelSwap, setIsGenerating]);
 
-  // Model swap download
-  const handleModelSwapDownload = useCallback(async (imageData: string, sourceId: string) => {
-    try {
-      const resp = await fetch(imageData);
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
+  // Model swap download — saves under the source image's original filename so the
+  // file is a drop-in replacement for the client's input. See src/lib/output-naming.ts.
+  const handleModelSwapDownload = useCallback(async (imageData: string, sourceName: string) => {
+    const out = await resolveSourceNamedOutput(imageData, sourceName, new Set<string>());
+    if (out) {
+      const url = URL.createObjectURL(out.blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `model-swap-${sourceId}-${Date.now()}.png`;
+      link.download = out.name;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       setTimeout(() => URL.revokeObjectURL(url), 5000);
-    } catch {
-      const link = document.createElement("a");
-      link.href = imageData;
-      link.download = `model-swap-${sourceId}-${Date.now()}.png`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      return;
     }
+    // The image data could not be fetched — hand the raw source to the browser and
+    // let it save what it can, still under the original name.
+    const link = document.createElement("a");
+    link.href = imageData;
+    link.download = sourceName || "image.png";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   }, []);
 
   // Model swap retry/regenerate single bulk result — works for both errored and completed results
@@ -4890,14 +4897,14 @@ export function StepGenerate({ store }: StepGenerateProps) {
                                     <Button variant="outline" size="sm" onClick={() => setInfographicImage({ src: result.imageData, poseName: result.sourceImageId, resultId: result.id, resultType: "model-swap-bulk" })} className="rounded-md gap-1 h-7 px-2 text-[11px]">
                                       <Layers className="w-3 h-3" />
                                     </Button>
-                                    <Button variant="outline" size="sm" onClick={() => handleModelSwapDownload(result.imageData, result.sourceImageId)} className="rounded-md gap-1 h-7 px-2 text-[11px]">
+                                    <Button variant="outline" size="sm" onClick={() => handleModelSwapDownload(result.imageData, result.sourceImageName)} className="rounded-md gap-1 h-7 px-2 text-[11px]">
                                       <Download className="w-3 h-3" />
                                     </Button>
                                   </div>
                                 )}
                                 {result.status === "skipped" && result.imageData && (
                                   <div className="flex items-center gap-1">
-                                    <Button variant="outline" size="sm" onClick={() => handleModelSwapDownload(result.imageData, result.sourceImageId)} className="rounded-md gap-1 h-7 px-2 text-[11px]" title="Save Original">
+                                    <Button variant="outline" size="sm" onClick={() => handleModelSwapDownload(result.imageData, result.sourceImageName)} className="rounded-md gap-1 h-7 px-2 text-[11px]" title="Save Original">
                                       <Download className="w-3 h-3" />
                                     </Button>
                                   </div>
@@ -5196,7 +5203,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                           <Layers className="w-3.5 h-3.5" />
                           Infographic
                         </Button>
-                        <Button variant="outline" size="sm" onClick={() => handleModelSwapDownload(result.imageData, result.sourceImageId)} className="rounded-lg gap-1.5">
+                        <Button variant="outline" size="sm" onClick={() => handleModelSwapDownload(result.imageData, result.sourceImageName)} className="rounded-lg gap-1.5">
                           <Download className="w-3.5 h-3.5" />
                           Save
                         </Button>
@@ -5204,7 +5211,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                     )}
                     {result.status === "skipped" && result.imageData && (
                       <div className="flex items-center gap-1.5">
-                        <Button variant="outline" size="sm" onClick={() => handleModelSwapDownload(result.imageData, result.sourceImageId)} className="rounded-lg gap-1.5">
+                        <Button variant="outline" size="sm" onClick={() => handleModelSwapDownload(result.imageData, result.sourceImageName)} className="rounded-lg gap-1.5">
                           <Download className="w-3.5 h-3.5" />
                           Save Original
                         </Button>

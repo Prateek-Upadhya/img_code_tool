@@ -994,6 +994,12 @@ export interface BulkGeneratedResult {
 export interface ModelSwapGeneratedResult {
   id: string;
   sourceImageId: string;
+  /**
+   * Original filename of the source image, extension included. Model Swap output is
+   * 1:1 with its input, and downloads reuse this name verbatim so a client can drop
+   * the result straight over their input lot. See `src/lib/output-naming.ts`.
+   */
+  sourceImageName: string;
   sourceImagePreview: string;
   prompt: string;
   imageData: string;
@@ -1020,6 +1026,8 @@ export interface ModelSwapBulkResult {
   combinationId: string;
   combinationLabel: string;
   sourceImageId: string;
+  /** See {@link ModelSwapGeneratedResult.sourceImageName}. */
+  sourceImageName: string;
   sourceImagePreview: string;
   prompt: string;
   imageData: string;
