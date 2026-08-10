@@ -38,6 +38,9 @@ import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn, buildDynamicPoseSeed, pickBucketImage } from "@/lib/utils";
 import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene, analyzeReferenceScene, describeGarmentFromImages, generateCustomPoseInfographicPrompt } from "@/lib/gemini";
+import { scoreVTONImage, VTON_DIMENSION_LABELS, VTON_MAX_ATTEMPTS, VTON_SCORE_PASS_THRESHOLD } from "@/lib/gemini";
+import { runTwoLanes, runPool, type FollowUpTask } from "@/lib/two-lane-runner";
+import { runVerifyAndRepair, type AttemptProduct, type VtonRepairHooks } from "@/lib/vton-verify-retry";
 import { customPoseIsInfographic, customPoseIsProductOnly, customPoseNeedsModel, customPoseShotKindLabel, customPoseIsReadyToGenerate } from "@/lib/custom-pose";
 import { generateVTONImageAzure } from "@/lib/azure-image";
 import { resolveSourceNamedOutput, sourceBaseName, extensionForBlob, uniqueName } from "@/lib/output-naming";
@@ -52,10 +55,13 @@ import type {
   BulkCombination,
   BulkGeneratedResult,
   BulkPoseOverride,
+  BottomwearLength,
   ComplementaryImage,
   CustomPose,
   EditHistoryEntry,
+  FitType,
   GarmentImage,
+  GarmentType,
   GeneratedResult,
   GenerationCostBreakdown,
   LabeledModelView,
@@ -65,9 +71,14 @@ import type {
   Pose,
   PoseFraming,
   SetBulkResult,
+  SleeveLength,
   StepCost,
+  TopwearLength,
   UGCGeneratedResult,
   ValidationStatus,
+  VtonAttemptRecord,
+  VtonDefect,
+  VtonScoreDimension,
 } from "@/lib/types";
 import { InfographicEditor } from "./infographic-editor";
 import { useState, useEffect } from "react";
@@ -390,8 +401,211 @@ const getStatusText = (status: GeneratedResult["status"] | BulkGeneratedResult["
   }
 };
 
-function ValidationBadge({ status, message }: { status?: ValidationStatus; message?: string }) {
+function scoreTone(score: number): string {
+  if (score >= VTON_SCORE_PASS_THRESHOLD) return "text-emerald-600 dark:text-emerald-400";
+  if (score >= 60) return "text-amber-600 dark:text-amber-400";
+  return "text-red-600 dark:text-red-400";
+}
+
+function scoreBarTone(score: number): string {
+  if (score >= VTON_SCORE_PASS_THRESHOLD) return "bg-emerald-500";
+  if (score >= 60) return "bg-amber-500";
+  return "bg-red-500";
+}
+
+/**
+ * Per-dimension breakdown shown in the badge tooltip.
+ *
+ * Renders the SAME defect records that were fed back to the model as the
+ * correction — the operator sees exactly what the inspector objected to, in
+ * plain language, rather than a bare percentage.
+ */
+function ScoreBreakdown({
+  defects,
+  weightedMean,
+  cappedBy,
+  attempts,
+  correctionSent,
+}: {
+  defects?: VtonDefect[];
+  weightedMean?: number;
+  cappedBy?: VtonScoreDimension[];
+  attempts?: VtonAttemptRecord[];
+  correctionSent?: string;
+}) {
+  if (!defects || defects.length === 0) return null;
+
+  return (
+    <div className="mt-2 space-y-1.5">
+      {defects.map((d) => {
+        const label = VTON_DIMENSION_LABELS[d.dimension];
+        if (!d.applicable) {
+          return (
+            <div key={d.dimension} className="flex items-center gap-2 opacity-40">
+              <span className="text-[10px] w-[104px] shrink-0">{label}</span>
+              <span className="text-[10px] italic">n/a</span>
+            </div>
+          );
+        }
+        const failing = d.score < VTON_SCORE_PASS_THRESHOLD;
+        return (
+          <div key={d.dimension}>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] w-[104px] shrink-0 text-muted-foreground">{label}</span>
+              <span className="h-1.5 w-16 shrink-0 rounded-full bg-muted overflow-hidden">
+                <span
+                  className={cn("block h-full rounded-full", scoreBarTone(d.score))}
+                  style={{ width: `${Math.max(2, d.score)}%` }}
+                />
+              </span>
+              <span className={cn("text-[10px] font-mono font-semibold tabular-nums", scoreTone(d.score))}>
+                {d.score}
+              </span>
+              <span className="text-[9px] text-muted-foreground/70 tabular-nums">
+                {Math.round(d.weight * 100)}%
+              </span>
+            </div>
+            {failing && (d.expected || d.observed) && (
+              <div className="ml-[112px] mt-0.5 space-y-0.5">
+                {d.expected && (
+                  <p className="text-[10px] leading-snug text-muted-foreground">
+                    <span className="font-medium">Expected:</span> {d.expected}
+                  </p>
+                )}
+                {d.observed && (
+                  <p className="text-[10px] leading-snug text-amber-700 dark:text-amber-400">
+                    <span className="font-medium">Observed:</span> {d.observed}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {cappedBy && cappedBy.length > 0 && weightedMean !== undefined && (
+        <p className="text-[10px] text-muted-foreground pt-1 border-t border-border/50">
+          Weighted mean {weightedMean}% — capped by{" "}
+          {cappedBy.map((d) => VTON_DIMENSION_LABELS[d].toLowerCase()).join(", ")}.
+        </p>
+      )}
+
+      {attempts && attempts.length > 1 && (
+        <p className="text-[10px] text-muted-foreground">
+          {attempts.map((a) => `Attempt ${a.attempt}: ${a.score ?? "n/a"}%`).join(" · ")}
+        </p>
+      )}
+
+      {correctionSent && (
+        <details className="pt-1 border-t border-border/50">
+          <summary className="text-[10px] text-muted-foreground cursor-pointer select-none">
+            Show the correction sent to the model
+          </summary>
+          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap text-[9px] leading-snug text-muted-foreground">
+            {correctionSent}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Shared by the VTON and Model Swap grids. Every scored behaviour is gated on
+ * `score !== undefined`, so Model Swap — which still uses the binary validator —
+ * keeps its original Verified / Mismatch rendering untouched.
+ */
+function ValidationBadge({
+  status,
+  message,
+  score,
+  attempt,
+  defects,
+  weightedMean,
+  cappedBy,
+  attempts,
+  correctionSent,
+}: {
+  status?: ValidationStatus;
+  message?: string;
+  score?: number;
+  attempt?: number;
+  defects?: VtonDefect[];
+  weightedMean?: number;
+  cappedBy?: VtonScoreDimension[];
+  attempts?: VtonAttemptRecord[];
+  correctionSent?: string;
+}) {
   if (!status || status === "idle") return null;
+
+  const breakdown = (
+    <ScoreBreakdown
+      defects={defects}
+      weightedMean={weightedMean}
+      cappedBy={cappedBy}
+      attempts={attempts}
+      correctionSent={correctionSent}
+    />
+  );
+
+  // Repair in flight — the image on screen is the current best, and the badge
+  // reports the score that triggered the retry.
+  if (status === "retrying") {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-1 rounded-full bg-amber-500/15 backdrop-blur-sm px-2.5 py-1 border border-amber-500/40 shadow-sm">
+            <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+            <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-300 tabular-nums">
+              {score !== undefined ? `${score}% · ` : ""}Retrying ({attempt ?? 2}/{VTON_MAX_ATTEMPTS})
+            </span>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-sm">
+          <p className="text-xs font-medium">Below the {VTON_SCORE_PASS_THRESHOLD}% pass mark — correcting.</p>
+          {message && <p className="text-xs text-muted-foreground mt-0.5">{message}</p>}
+          {breakdown}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  if (status === "passed" && score !== undefined) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-1 rounded-full bg-emerald-500/10 backdrop-blur-sm px-2 py-1 border border-emerald-500/30">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 tabular-nums">{score}%</span>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-sm">
+          <p className="text-xs">{message || "Passed quality inspection"}</p>
+          {breakdown}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  if (status === "warning" && score !== undefined) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-1 rounded-full bg-amber-500/15 backdrop-blur-sm px-2.5 py-1 border border-amber-500/40 shadow-sm">
+            <ShieldAlert className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+            <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-300 tabular-nums">{score}%</span>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-sm">
+          <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
+            Below the {VTON_SCORE_PASS_THRESHOLD}% pass mark
+          </p>
+          {message && <p className="text-xs text-muted-foreground mt-0.5">{message}</p>}
+          {breakdown}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
 
   if (status === "validating") {
     return (
@@ -558,6 +772,33 @@ function CostBreakdownPopover({ costBreakdown, skip = false }: { costBreakdown?:
   );
 }
 
+/**
+ * VTON fires this many fresh image generations concurrently and keeps the window
+ * refilled, with an equal number of slots held back for verification and repair
+ * so a burst of retries can never starve fresh work. Both lanes together sit at
+ * the server-side gate's ceiling (src/lib/gemini-image-gate.ts MAX_CONCURRENT).
+ *
+ * gpt-image-2 keeps its own smaller sizing — it funnels through the Azure
+ * endpoint pool's rate limiter rather than the Gemini gate.
+ */
+const VTON_FRESH_CONCURRENCY = 15;
+const VTON_REPAIR_CONCURRENCY = 15;
+
+/**
+ * A repair task that was queued but never ran because the user hit Stop. Without
+ * this the card's badge would sit on "Validating" forever.
+ */
+function finalizeAbandonedRepair(
+  task: FollowUpTask,
+  update: (id: string, patch: Record<string, unknown>) => void,
+): void {
+  update(task.id, {
+    validationStatus: "skipped",
+    validationMessage: "Verification cancelled",
+    validationAttempt: undefined,
+  });
+}
+
 interface StepGenerateProps {
   store: VTONStore;
 }
@@ -721,6 +962,149 @@ export function StepGenerate({ store }: StepGenerateProps) {
     [useAzure],
   );
 
+  /**
+   * Assemble the hooks the verify/repair loop drives.
+   *
+   * `judge` grades the image with the FULL generation context — garment refs
+   * plus the model reference, the scene reference, the frozen scene text, the
+   * pose spec and the configured garment attributes. Axes such as character
+   * consistency, background composition and length retention are not decidable
+   * from the garment photos alone, which is why the old binary validator could
+   * never check them.
+   *
+   * Bulk mode passes per-combination overrides: a bulk run's fit and lengths come
+   * from the product folder, not the global styling state, so grading against the
+   * globals would flag correct renders as wrong.
+   */
+  const buildRepairHooks = useCallback(
+    (args: {
+      resultId: string;
+      update: (patch: Record<string, unknown>) => void;
+      pose: Pose;
+      customPose?: CustomPose;
+      accessories: AccessoryItem[];
+      poseIsProductOnly: boolean;
+      poseIsGhostMannequin: boolean;
+      frozenScene?: string;
+      sceneReferenceFile?: File;
+      /** Re-run the full pipeline with the correction report folded into the prompt. */
+      regenerate: (feedback: string) => Promise<AttemptProduct | null>;
+      signal: AbortSignal;
+      // ── Per-combination overrides (bulk mode); default to the global state.
+      garmentImagesOverride?: GarmentImage[];
+      complementaryImagesOverride?: ComplementaryImage[];
+      modelImageOverride?: ModelImage | null;
+      modelViewsOverride?: LabeledModelView[];
+      backgroundOverride?: BackgroundConfig;
+      fitOverride?: FitType | null;
+      sleeveLengthOverride?: SleeveLength | null;
+      topwearLengthOverride?: TopwearLength | null;
+      bottomwearLengthOverride?: BottomwearLength | null;
+      garmentTypeOverride?: GarmentType;
+      garmentDescriptionOverride?: string;
+    }): VtonRepairHooks => {
+      const gImages = args.garmentImagesOverride ?? garmentImages;
+      const cImages = args.complementaryImagesOverride ?? complementaryImages;
+      const mImage = args.poseIsProductOnly ? null : (args.modelImageOverride ?? modelImage);
+      const mViews = args.poseIsProductOnly ? undefined : (args.modelViewsOverride ?? activeModelViews);
+      const bg = args.backgroundOverride ?? background;
+
+      return {
+        resultId: args.resultId,
+        update: args.update,
+        signal: args.signal,
+
+        judge: (imageData, attempt) =>
+          scoreVTONImage({
+            textGenModel,
+            generatedImageData: imageData,
+            garmentImages: gImages,
+            modelImage: mImage,
+            modelViews: mViews,
+            sceneReferenceFile: args.sceneReferenceFile,
+            frozenSceneDescription: args.frozenScene,
+            backgroundTextDescription:
+              bg.mode === "text" ? bg.textDescription : undefined,
+            pose: args.pose,
+            customPose: args.customPose,
+            accessories: args.accessories,
+            productCategory,
+            garmentType: args.garmentTypeOverride ?? garmentType,
+            fit: args.fitOverride ?? fit,
+            sleeveLength: args.sleeveLengthOverride ?? sleeveLength,
+            topwearLength: args.topwearLengthOverride ?? topwearLength,
+            bottomwearLength: args.bottomwearLengthOverride ?? bottomwearLength,
+            garmentDescription: args.garmentDescriptionOverride,
+            isProductOnlyShot: args.poseIsProductOnly,
+            isGhostMannequin: args.poseIsGhostMannequin,
+            attemptNumber: attempt,
+            abortSignal: args.signal,
+          }),
+
+        reroll: async (feedback) => {
+          const next = await args.regenerate(feedback);
+          if (!next) throw new Error("Re-roll produced no image");
+          return next;
+        },
+
+        // The surgical path replays the original multi-turn context, which only
+        // exists for Gemini. gpt-image-2 returns a REST blob with no replayable
+        // content, so those results re-roll instead.
+        surgical: useAzure
+          ? null
+          : async (changeRequest, from) => {
+              const originalContentParts = await buildVTONImageContentParts({
+                prompt: from.prompt,
+                garmentImages: gImages,
+                complementaryImages: cImages,
+                accessories: args.accessories,
+                modelImage: mImage,
+                modelViews: mViews,
+                productCategory,
+                isProductOnlyShot: args.poseIsProductOnly,
+                isGhostMannequin: args.poseIsGhostMannequin,
+              });
+
+              const edit = await contextualRetryVTONImage({
+                apiKey,
+                textGenModel,
+                originalContentParts,
+                imageGenResponseContent: from.imageGenResponseContent,
+                editHistory: from.editHistory,
+                generatedImageData: from.imageData,
+                garmentImages: gImages,
+                complementaryImages: cImages,
+                accessories: args.accessories,
+                modelImage: mImage,
+                modelViews: mViews,
+                background: bg,
+                productInfo,
+                userChangeRequest: changeRequest,
+                aspectRatio,
+                imageSize: imageQuality,
+                abortSignal: args.signal,
+              });
+
+              return {
+                imageData: edit.imageData,
+                prompt: from.prompt,
+                imageGenResponseContent: edit.responseContent,
+                editHistory: [
+                  ...from.editHistory,
+                  { userInstruction: edit.editInstruction, modelResponseContent: edit.responseContent },
+                ],
+                steps: [edit.promptCost, edit.imageCost],
+              };
+            },
+      };
+    },
+    [
+      apiKey, textGenModel, garmentImages, complementaryImages, modelImage, activeModelViews,
+      background, productCategory, garmentType, fit, sleeveLength, topwearLength,
+      bottomwearLength, productInfo, aspectRatio, imageQuality, useAzure,
+    ],
+  );
+
   const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
   const [infographicImage, setInfographicImage] = useState<{
     src: string;
@@ -747,13 +1131,57 @@ export function StepGenerate({ store }: StepGenerateProps) {
     return items.filter((r) => r.validationStatus === "warning");
   };
 
-  const hasAnyValidation = (items: { validationStatus?: ValidationStatus }[]): boolean =>
-    items.some((r) => r.validationStatus === "passed" || r.validationStatus === "warning");
+  /**
+   * Lane-aware progress line. The old header showed a bare "Generating...",
+   * which with a separate verify/repair lane hid the fact that work continues
+   * after every image has landed.
+   */
+  const laneSummary = (
+    items: { validationStatus?: ValidationStatus }[],
+    done: number,
+    total: number,
+    generating: boolean
+  ): string => {
+    const verifying = items.filter((r) => r.validationStatus === "validating").length;
+    const retrying = items.filter((r) => r.validationStatus === "retrying").length;
+    if (generating) {
+      const parts = [`Generating ${done}/${total}`];
+      if (verifying > 0) parts.push(`verifying ${verifying}`);
+      if (retrying > 0) parts.push(`retrying ${retrying}`);
+      return parts.join(" · ");
+    }
+    const passed = items.filter((r) => r.validationStatus === "passed").length;
+    const warning = items.filter((r) => r.validationStatus === "warning").length;
+    const parts = [`${done}/${total} completed`];
+    if (passed > 0) parts.push(`${passed} ≥${VTON_SCORE_PASS_THRESHOLD}%`);
+    if (warning > 0) parts.push(`${warning} <${VTON_SCORE_PASS_THRESHOLD}%`);
+    return parts.join(" · ");
+  };
 
-  const validationFilterBar = (items: { validationStatus?: ValidationStatus }[]) => {
+  // `retrying` counts so the bar stays visible while the repair lane works.
+  const hasAnyValidation = (items: { validationStatus?: ValidationStatus }[]): boolean =>
+    items.some(
+      (r) =>
+        r.validationStatus === "passed" ||
+        r.validationStatus === "warning" ||
+        r.validationStatus === "retrying"
+    );
+
+  /**
+   * `scored: true` switches the labels to the percentage vocabulary for the VTON
+   * grids. Model Swap still runs the binary validator, so it keeps
+   * Verified / Mismatch. Counts key on the same statuses either way — status is
+   * derived from the score, so there is no second source of truth.
+   */
+  const validationFilterBar = (
+    items: { validationStatus?: ValidationStatus }[],
+    opts?: { scored?: boolean }
+  ) => {
     if (!hasAnyValidation(items)) return null;
     const verifiedCount = items.filter((r) => r.validationStatus === "passed").length;
     const mismatchCount = items.filter((r) => r.validationStatus === "warning").length;
+    const verifiedLabel = opts?.scored ? `≥${VTON_SCORE_PASS_THRESHOLD}%` : "Verified";
+    const mismatchLabel = opts?.scored ? `<${VTON_SCORE_PASS_THRESHOLD}%` : "Mismatch";
 
     return (
       <div className="flex items-center gap-1.5">
@@ -780,7 +1208,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
             )}
           >
             <ShieldCheck className="w-3 h-3" />
-            Verified{verifiedCount > 0 && <span className="opacity-60">({verifiedCount})</span>}
+            {verifiedLabel}{verifiedCount > 0 && <span className="opacity-60">({verifiedCount})</span>}
           </button>
           <button
             onClick={() => setValidationFilter("mismatched")}
@@ -792,7 +1220,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
             )}
           >
             <ShieldAlert className="w-3 h-3" />
-            Mismatch{mismatchCount > 0 && <span className="opacity-60">({mismatchCount})</span>}
+            {mismatchLabel}{mismatchCount > 0 && <span className="opacity-60">({mismatchCount})</span>}
           </button>
         </div>
       </div>
@@ -1184,7 +1612,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
     }));
     setUgcResults(initialUgcResults);
 
-    const processPose = async (result: GeneratedResult) => {
+    const processPose = async (
+      result: GeneratedResult,
+      enqueue: (task: FollowUpTask) => void,
+    ) => {
       // If the user already cancelled before this slot started, mark as
       // cancelled without firing any network calls.
       if (signal.aborted) {
@@ -1204,7 +1635,18 @@ export function StepGenerate({ store }: StepGenerateProps) {
       const collectedCosts: StepCost[] = [];
       let retrySteps: StepCost[] | undefined;
 
-      const generate = async () => {
+      /**
+       * One render attempt. Returns the artefacts the verify/repair loop needs,
+       * or null when the infographic sub-pipeline already produced a final result.
+       *
+       * `previousMismatchFeedback` carries the inspector's findings on a full
+       * re-roll; `isRepair` suppresses the validation-status write so the badge
+       * keeps reading "Retrying" between attempts.
+       */
+      const generate = async (
+        previousMismatchFeedback?: string,
+        isRepair = false,
+      ): Promise<AttemptProduct | null> => {
         collectedCosts.length = 0;
         updateResult(result.id, { status: "generating-prompt", error: undefined });
 
@@ -1279,12 +1721,14 @@ export function StepGenerate({ store }: StepGenerateProps) {
             editHistory: [],
             costBreakdown: { steps: [...collectedCosts], totalCost: igTotal + igRetry, retrySteps },
           });
-          return;
+          // Null tells the caller this result is already final — do not grade it.
+          return null;
         }
 
         const promptResult = await generateVTONPrompt({
           apiKey,
           textGenModel,
+          previousMismatchFeedback,
           productCategory,
           gender,
           garmentImages,
@@ -1349,34 +1793,29 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
+          // On a repair the verify loop owns the badge — writing here would flash
+          // the card back to "Validating" between attempts.
+          ...(isRepair
+            ? {}
+            : { validationStatus: skipValidationRef.current ? "skipped" : "validating" }),
         });
 
-        if (!skipValidationRef.current) {
-          validateGeneratedImage({
-            apiKey,
-            textGenModel,
-            originalImages: garmentImages.map((g) => g.file),
-            generatedImageData: imageResult.imageData,
-            productCategory,
-            abortSignal: signal,
-          }).then((v) => {
-            if (v.cost) collectedCosts.push(v.cost);
-            const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
-            const retryCost = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
-            updateResult(result.id, {
-              validationStatus: v.status,
-              validationMessage: v.message,
-              costBreakdown: { steps: [...collectedCosts], totalCost: mainCost + retryCost, retrySteps },
-            });
-          });
-        }
+        return {
+          imageData: imageResult.imageData,
+          prompt: promptResult.text,
+          imageGenResponseContent: imageResult.responseContent,
+          editHistory: [],
+          steps: [...collectedCosts],
+        };
       };
 
+      // ── Attempt 1: generate, with the pre-existing one-shot retry on a THROWN
+      //    error (a transport failure, not a quality failure).
+      let product: AttemptProduct | null = null;
       try {
-        await generate();
+        product = await generate();
       } catch {
         // If the cancel button was pressed, skip auto-retry — mark cancelled
         // and exit. Auto-retry on a cancellation would defeat the whole
@@ -1393,7 +1832,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
             updateResult(result.id, { status: "cancelled", error: "Cancelled by user" });
             return;
           }
-          await generate();
+          product = await generate();
         } catch (retryError) {
           if (signal.aborted) {
             updateResult(result.id, { status: "cancelled", error: "Cancelled by user" });
@@ -1406,38 +1845,78 @@ export function StepGenerate({ store }: StepGenerateProps) {
             error: retryError instanceof Error ? retryError.message : "Unknown error occurred",
             costBreakdown: totalCost > 0 ? { steps: collectedCosts, totalCost, retrySteps } : undefined,
           });
+          return;
         }
       }
+
+      // Infographic custom poses render through their own pipeline and have
+      // already written their final state — nothing to grade.
+      if (!product) return;
+
+      if (skipValidationRef.current) {
+        // Matches the toggle's contract: no verification, and no cost breakdown.
+        return;
+      }
+
+      // Hand the graded-and-repaired pipeline to the repair lane. This returns
+      // immediately so the fresh worker can start the next pose.
+      const attemptOne = product;
+      if (retrySteps) attemptOne.steps.unshift(...retrySteps);
+      enqueue({
+        id: result.id,
+        run: () =>
+          runVerifyAndRepair(attemptOne, buildRepairHooks({
+            resultId: result.id,
+            update: (patch) => updateResult(result.id, patch as Partial<GeneratedResult>),
+            pose: result.pose,
+            customPose: result.customPose,
+            accessories,
+            poseIsProductOnly,
+            poseIsGhostMannequin,
+            frozenScene: result.frozenSceneUsed,
+            sceneReferenceFile: result.sceneReferenceFile,
+            regenerate: (feedback) => generate(feedback, true),
+            signal,
+          })),
+      });
     };
 
-    // Enrichment + image generation is one atomic pipeline unit per result, so
-    // concurrency is gated on the image backend, not the text model. gpt-image-2
-    // funnels through the server-side endpoint pool (rate-limits + rotates across
-    // regional deployments with 429 failover), so it safely sustains ~10 in
-    // flight; Gemini (3.1 Flash Image) is capped at 4 to match the authoritative
-    // server-side gate (src/lib/gemini-image-gate.ts MAX_CONCURRENT). Firing more
-    // just queues server-side and inflates peak base64 buffering in the single
-    // pm2 Node heap, which was tipping the EC2 host into OOM / connection resets.
-    const CONCURRENCY_LIMIT = imageGenModel === "gpt-image-2" ? 10 : 4;
-    for (let i = 0; i < initialResults.length; i += CONCURRENCY_LIMIT) {
-      if (signal.aborted) break;
-      const batch = initialResults.slice(i, i + CONCURRENCY_LIMIT);
-      await Promise.all(batch.map(processPose));
-    }
+    // Two lanes, not one pool: the fresh lane sustains 15 concurrent generations
+    // while a separate 15-wide repair lane grades and corrects them. Running the
+    // judge and its retries inside the generating worker would drain the fresh
+    // lane — see src/lib/two-lane-runner.ts for why the hand-off is a queue push
+    // rather than a permit acquire. gpt-image-2 keeps its own pool sizing because
+    // it funnels through the Azure endpoint rate limiter instead of the Gemini gate.
+    const FRESH_CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : VTON_FRESH_CONCURRENCY;
+    await runTwoLanes<GeneratedResult>({
+      items: initialResults,
+      freshWorkers: FRESH_CONCURRENCY,
+      followUpWorkers: VTON_REPAIR_CONCURRENCY,
+      runFresh: processPose,
+      onAbandon: (task) => finalizeAbandonedRepair(task, updateResult),
+      signal,
+    });
 
-    // After the loop ends, sweep any results still in `pending` state and
-    // mark them cancelled (this can happen when the user aborted partway
-    // through the concurrency batches before those slots even started).
-    // updateResult patches whatever the latest state has — `processPose`
-    // already wrote `cancelled` to anything it actually touched, so this
-    // is only an extra safety net for never-touched pending entries.
-    if (signal.aborted) {
-      setResults((prev) =>
-        prev.map((r) =>
-          r.status === "pending" ? { ...r, status: "cancelled", error: "Cancelled by user" } : r
-        )
-      );
-    }
+    // Sweep anything the lanes never reached. `pending` means a fresh worker
+    // never started it; a validating/retrying badge means the repair lane was
+    // cut short. Both would otherwise spin forever. Run unconditionally — this
+    // is the last-resort net against a task that threw outside its own handler.
+    setResults((prev) =>
+      prev.map((r) => {
+        if (r.status === "pending") {
+          return { ...r, status: "cancelled" as const, error: "Cancelled by user" };
+        }
+        if (r.validationStatus === "validating" || r.validationStatus === "retrying") {
+          return {
+            ...r,
+            validationStatus: "skipped" as const,
+            validationMessage: "Verification cancelled",
+            validationAttempt: undefined,
+          };
+        }
+        return r;
+      })
+    );
 
     // Process UGC scenes
     const processUgcScene = async (result: UGCGeneratedResult) => {
@@ -1547,6 +2026,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       setIsGenerating(false);
     }
   }, [
+    buildRepairHooks,
     productCategory,
     selectedModel,
     selectedPoses,
@@ -1875,7 +2355,10 @@ export function StepGenerate({ store }: StepGenerateProps) {
     setBulkResults(allResults);
 
     // Process a single bulk result
-    const processResult = async (result: BulkGeneratedResult) => {
+    const processResult = async (
+      result: BulkGeneratedResult,
+      enqueue: (task: FollowUpTask) => void,
+    ) => {
       if (signal.aborted) {
         updateBulkResult(result.id, { status: "cancelled", error: "Cancelled by user" });
         return;
@@ -1923,37 +2406,61 @@ export function StepGenerate({ store }: StepGenerateProps) {
       const collectedCosts: StepCost[] = [];
       let retrySteps: StepCost[] | undefined;
 
-      const generate = async () => {
+      // ── Per-result invariants, hoisted out of `generate` so the quality inspector
+      //    can grade against the SAME values the render was built from. A bulk run's
+      //    fit and lengths come from the product folder, not the global styling
+      //    state, so grading against the globals would flag correct renders as wrong.
+      //    Hoisting also means a repair attempt reuses the identical accessory draw
+      //    and scene rather than re-rolling them.
+      const effFit = combo.primaryFolder.fit !== undefined ? combo.primaryFolder.fit : fit;
+      const effSleeveLength =
+        combo.primaryFolder.sleeveLength !== undefined ? combo.primaryFolder.sleeveLength : sleeveLength;
+      const effTopwearLength =
+        combo.primaryFolder.topwearLength !== undefined ? combo.primaryFolder.topwearLength : topwearLength;
+      const effBottomwearLength =
+        combo.primaryFolder.bottomwearLength !== undefined
+          ? combo.primaryFolder.bottomwearLength
+          : bottomwearLength;
+
+      // Reference-driven photoshoot: background carried by frozenScene (image/replication)
+      // or as text (text bg). The background IMAGE is attached separately for scene
+      // consistency (see sceneRefFile); it is not fed as a BackgroundConfig here.
+      const refCtx = result.referencePhotoshoot;
+      const effBackground: BackgroundConfig = refCtx
+        ? { mode: "text", textDescription: refCtx.backgroundText ?? "" }
+        : effectiveBg;
+      const effFrozenScene = refCtx ? refCtx.frozenScene : frozenSceneDescription;
+      // Scene image attached to the generator for cross-output consistency. Reference
+      // results store it at creation; standard results derive it from the combo background.
+      const sceneRefFile = result.sceneReferenceFile ?? (refCtx ? undefined : inspirationFileOf(effectiveBg));
+      // Reference image attached as the COMPOSITION & FRAMING reference (reference-photoshoot only).
+      const compRef = refCtx && result.compositionReferenceFile
+        ? { file: result.compositionReferenceFile, mode: refCtx.mode, replicateFootwearAccessories: garmentType === "complete-outfit" }
+        : undefined;
+      // On-model garment (per product): the wearer-free description + flag for this folder.
+      const folderOnModel = combo.primaryFolder.onModelGarment === true && !isFootwear;
+      const folderGarmentDesc = folderOnModel ? garmentDescCache.get(combo.primaryFolder.id) : undefined;
+
+      // Materialize bucket-backed accessories with a per-product draw keyed on
+      // the product folder id, so each folder gets its own consistent pick.
+      const accessories = materializeAccessories(
+        poseAccessories[result.pose.id] || [],
+        combo.primaryFolder.id
+      );
+
+      /**
+       * One render attempt — see the single-mode twin for the contract. Returns
+       * null when the infographic sub-pipeline already wrote a final result.
+       */
+      const generate = async (
+        previousMismatchFeedback?: string,
+        isRepair = false,
+      ): Promise<AttemptProduct | null> => {
         collectedCosts.length = 0;
         updateBulkResult(result.id, { status: "generating-prompt", error: undefined });
 
-        // Reference-driven photoshoot: background carried by frozenScene (image/replication)
-        // or as text (text bg). The background IMAGE is attached separately for scene
-        // consistency (see sceneRefFile); it is not fed as a BackgroundConfig here.
-        const refCtx = result.referencePhotoshoot;
-        const effBackground: BackgroundConfig = refCtx
-          ? { mode: "text", textDescription: refCtx.backgroundText ?? "" }
-          : effectiveBg;
-        const effFrozenScene = refCtx ? refCtx.frozenScene : frozenSceneDescription;
-        // Scene image attached to the generator for cross-output consistency. Reference
-        // results store it at creation; standard results derive it from the combo background.
-        const sceneRefFile = result.sceneReferenceFile ?? (refCtx ? undefined : inspirationFileOf(effectiveBg));
-        // Reference image attached as the COMPOSITION & FRAMING reference (reference-photoshoot only).
-        const compRef = refCtx && result.compositionReferenceFile
-          ? { file: result.compositionReferenceFile, mode: refCtx.mode, replicateFootwearAccessories: garmentType === "complete-outfit" }
-          : undefined;
-        // On-model garment (per product): the wearer-free description + flag for this folder.
-        const folderOnModel = combo.primaryFolder.onModelGarment === true && !isFootwear;
-        const folderGarmentDesc = folderOnModel ? garmentDescCache.get(combo.primaryFolder.id) : undefined;
         // Persist the exact frozen scene + scene image + garment desc so a HARD retry reproduces them.
         updateBulkResult(result.id, { frozenSceneUsed: effFrozenScene, sceneReferenceFile: sceneRefFile, garmentDescriptionUsed: folderGarmentDesc });
-
-        // Materialize bucket-backed accessories with a per-product draw keyed on
-        // the product folder id, so each folder gets its own consistent pick.
-        const accessories = materializeAccessories(
-          poseAccessories[result.pose.id] || [],
-          combo.primaryFolder.id
-        );
 
         // ── Infographic custom pose. The card's plan is product-agnostic in bulk, so it is
         // always re-specialised against THIS folder's product images before rendering.
@@ -2009,7 +2516,8 @@ export function StepGenerate({ store }: StepGenerateProps) {
             editHistory: [],
             costBreakdown: { steps: [...collectedCosts], totalCost: igTotal + igRetry, retrySteps },
           });
-          return;
+          // Null tells the caller this result is already final — do not grade it.
+          return null;
         }
 
         const promptResult = await generateVTONPrompt({
@@ -2020,19 +2528,11 @@ export function StepGenerate({ store }: StepGenerateProps) {
           garmentImages: pgImages,
           garmentType,
           footwearType,
-          fit: combo.primaryFolder.fit !== undefined ? combo.primaryFolder.fit : fit,
-          sleeveLength:
-            combo.primaryFolder.sleeveLength !== undefined
-              ? combo.primaryFolder.sleeveLength
-              : sleeveLength,
-          topwearLength:
-            combo.primaryFolder.topwearLength !== undefined
-              ? combo.primaryFolder.topwearLength
-              : topwearLength,
-          bottomwearLength:
-            combo.primaryFolder.bottomwearLength !== undefined
-              ? combo.primaryFolder.bottomwearLength
-              : bottomwearLength,
+          previousMismatchFeedback,
+          fit: effFit,
+          sleeveLength: effSleeveLength,
+          topwearLength: effTopwearLength,
+          bottomwearLength: effBottomwearLength,
           innerwearSubtype,
           complementaryImages: cgImages,
           accessories,
@@ -2087,33 +2587,26 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateBulkResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
+          // On a repair the verify loop owns the badge — see the single-mode twin.
+          ...(isRepair
+            ? {}
+            : { validationStatus: skipValidationRef.current ? "skipped" : "validating" }),
         });
 
-        if (skipValidationRef.current) return;
-        validateGeneratedImage({
-          apiKey,
-          textGenModel,
-          originalImages: pgImages.map((g) => g.file),
-          generatedImageData: imageResult.imageData,
-          productCategory,
-          abortSignal: signal,
-        }).then((v) => {
-          if (v.cost) collectedCosts.push(v.cost);
-          const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
-          const retryCost = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
-          updateBulkResult(result.id, {
-            validationStatus: v.status,
-            validationMessage: v.message,
-            costBreakdown: { steps: [...collectedCosts], totalCost: mainCost + retryCost, retrySteps },
-          });
-        });
+        return {
+          imageData: imageResult.imageData,
+          prompt: promptResult.text,
+          imageGenResponseContent: imageResult.responseContent,
+          editHistory: [],
+          steps: [...collectedCosts],
+        };
       };
 
+      let product: AttemptProduct | null = null;
       try {
-        await generate();
+        product = await generate();
       } catch {
         if (signal.aborted) {
           updateBulkResult(result.id, { status: "cancelled", error: "Cancelled by user" });
@@ -2127,7 +2620,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
             updateBulkResult(result.id, { status: "cancelled", error: "Cancelled by user" });
             return;
           }
-          await generate();
+          product = await generate();
         } catch (retryError) {
           if (signal.aborted) {
             updateBulkResult(result.id, { status: "cancelled", error: "Cancelled by user" });
@@ -2140,28 +2633,76 @@ export function StepGenerate({ store }: StepGenerateProps) {
             error: retryError instanceof Error ? retryError.message : "Unknown error occurred",
             costBreakdown: totalCost > 0 ? { steps: collectedCosts, totalCost, retrySteps } : undefined,
           });
+          return;
         }
       }
+
+      // Infographic custom poses already wrote their final state.
+      if (!product) return;
+      if (skipValidationRef.current) return;
+
+      const attemptOne = product;
+      if (retrySteps) attemptOne.steps.unshift(...retrySteps);
+      enqueue({
+        id: result.id,
+        run: () =>
+          runVerifyAndRepair(attemptOne, buildRepairHooks({
+            resultId: result.id,
+            update: (patch) => updateBulkResult(result.id, patch as Partial<BulkGeneratedResult>),
+            pose: result.pose,
+            customPose: result.customPose,
+            accessories,
+            poseIsProductOnly,
+            poseIsGhostMannequin,
+            frozenScene: effFrozenScene,
+            sceneReferenceFile: sceneRefFile,
+            regenerate: (feedback) => generate(feedback, true),
+            signal,
+            // Bulk grades against the product folder's own inputs, not the globals.
+            garmentImagesOverride: pgImages,
+            complementaryImagesOverride: cgImages,
+            modelImageOverride: bulkModelImg,
+            modelViewsOverride: bulkModelViews,
+            backgroundOverride: effBackground,
+            fitOverride: effFit,
+            sleeveLengthOverride: effSleeveLength,
+            topwearLengthOverride: effTopwearLength,
+            bottomwearLengthOverride: effBottomwearLength,
+            garmentDescriptionOverride: folderGarmentDesc,
+          })),
+      });
     };
 
-    // Concurrency is gated on the image backend (one atomic enrich+image unit per
-    // result). gpt-image-2 funnels through the server-side endpoint pool (rate-limit
-    // + rotation + 429 failover) so it sustains ~10 in flight; Gemini is capped at 5.
-    const CONCURRENCY_LIMIT = imageGenModel === "gpt-image-2" ? 10 : 5;
-    for (let i = 0; i < allResults.length; i += CONCURRENCY_LIMIT) {
-      if (signal.aborted) break;
-      const batch = allResults.slice(i, i + CONCURRENCY_LIMIT);
-      await Promise.all(batch.map(processResult));
-    }
+    // Two lanes — see the single-mode call site and src/lib/two-lane-runner.ts.
+    const FRESH_CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : VTON_FRESH_CONCURRENCY;
+    await runTwoLanes<BulkGeneratedResult>({
+      items: allResults,
+      freshWorkers: FRESH_CONCURRENCY,
+      followUpWorkers: VTON_REPAIR_CONCURRENCY,
+      runFresh: processResult,
+      onAbandon: (task) => finalizeAbandonedRepair(task, updateBulkResult),
+      signal,
+    });
 
-    // Sweep any remaining pending bulk results into cancelled.
-    if (signal.aborted) {
-      setBulkResults((prev) =>
-        prev.map((r) =>
-          r.status === "pending" ? { ...r, status: "cancelled", error: "Cancelled by user" } : r
-        )
-      );
-    }
+    // Sweep anything the lanes never reached — see the single-mode twin. Runs
+    // unconditionally so a repair task that threw outside its own handler cannot
+    // leave a badge spinning.
+    setBulkResults((prev) =>
+      prev.map((r) => {
+        if (r.status === "pending") {
+          return { ...r, status: "cancelled" as const, error: "Cancelled by user" };
+        }
+        if (r.validationStatus === "validating" || r.validationStatus === "retrying") {
+          return {
+            ...r,
+            validationStatus: "skipped" as const,
+            validationMessage: "Verification cancelled",
+            validationAttempt: undefined,
+          };
+        }
+        return r;
+      })
+    );
 
     // Process UGC scenes — one per combination × scene
     if (ugcScenes.length > 0) {
@@ -2312,6 +2853,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       setIsGenerating(false);
     }
   }, [
+    buildRepairHooks,
     bulkCombinations,
     selectedPoses,
     customPoses,
@@ -2352,7 +2894,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
 
   // Retry/regenerate a single result (single mode) — works for both errored and completed results
   const handleRetrySingle = useCallback(
-    async (result: GeneratedResult) => {
+    async (result: GeneratedResult, signal?: AbortSignal) => {
       if (result.status === "pending" || !apiKey) return;
       const poseIsProductOnly = result.customPose
         ? customPoseIsProductOnly(result.customPose)
@@ -2360,10 +2902,17 @@ export function StepGenerate({ store }: StepGenerateProps) {
       const poseIsGhostMannequin = result.pose.framing === "ghost-mannequin";
       if (!poseIsProductOnly && !selectedModel && !modelImage) return;
 
+      // The per-card retry button has no batch to cancel, so it runs against a
+      // signal that never aborts; "Regenerate Mismatched" passes the real one.
+      const effSignal = signal ?? new AbortController().signal;
+
       const collectedCosts: StepCost[] = [];
       let retrySteps: StepCost[] | undefined;
 
-      const generate = async () => {
+      const generate = async (
+        previousMismatchFeedback?: string,
+        isRepair = false,
+      ): Promise<AttemptProduct | null> => {
         collectedCosts.length = 0;
         updateResult(result.id, { status: "generating-prompt", error: undefined });
         // Reuse the same per-product bucket draw as the original generation
@@ -2433,12 +2982,14 @@ export function StepGenerate({ store }: StepGenerateProps) {
             editHistory: [],
             costBreakdown: { steps: [...collectedCosts], totalCost: igTotal + igRetry, retrySteps },
           });
-          return;
+          // Already final — do not grade an infographic render.
+          return null;
         }
 
         const promptResult = await generateVTONPrompt({
           apiKey,
           textGenModel,
+          previousMismatchFeedback,
           productCategory,
           gender,
           garmentImages,
@@ -2499,39 +3050,32 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           validationMessage: undefined,
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
+          ...(isRepair
+            ? {}
+            : { validationStatus: skipValidationRef.current ? "skipped" : "validating" }),
         });
 
-        if (skipValidationRef.current) return;
-        validateGeneratedImage({
-          apiKey,
-          textGenModel,
-          originalImages: garmentImages.map((g) => g.file),
-          generatedImageData: imageResult.imageData,
-          productCategory,
-        }).then((v) => {
-          if (v.cost) collectedCosts.push(v.cost);
-          const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
-          const retryCost = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
-          updateResult(result.id, {
-            validationStatus: v.status,
-            validationMessage: v.message,
-            costBreakdown: { steps: [...collectedCosts], totalCost: mainCost + retryCost, retrySteps },
-          });
-        });
+        return {
+          imageData: imageResult.imageData,
+          prompt: promptResult.text,
+          imageGenResponseContent: imageResult.responseContent,
+          editHistory: [],
+          steps: [...collectedCosts],
+        };
       };
 
+      let product: AttemptProduct | null = null;
       try {
-        await generate();
+        product = await generate();
       } catch {
         try {
           retrySteps = [...collectedCosts];
           updateResult(result.id, { status: "auto-retrying", error: undefined });
           await new Promise((r) => setTimeout(r, 1000));
-          await generate();
+          product = await generate();
         } catch (retryError) {
           const allCosts = [...(retrySteps || []), ...collectedCosts];
           const totalCost = allCosts.reduce((s, c) => s + c.totalCost, 0);
@@ -2540,8 +3084,31 @@ export function StepGenerate({ store }: StepGenerateProps) {
             error: retryError instanceof Error ? retryError.message : "Unknown error occurred",
             costBreakdown: totalCost > 0 ? { steps: collectedCosts, totalCost, retrySteps } : undefined,
           });
+          return;
         }
       }
+
+      if (!product) return;
+      if (skipValidationRef.current) return;
+
+      // One card, so grade inline rather than through a lane.
+      const attemptOne = product;
+      if (retrySteps) attemptOne.steps.unshift(...retrySteps);
+      const accessories = materializeAccessories(poseAccessories[result.pose.id] || [], "single");
+      await runVerifyAndRepair(attemptOne, buildRepairHooks({
+        resultId: result.id,
+        update: (patch) => updateResult(result.id, patch as Partial<GeneratedResult>),
+        pose: result.pose,
+        customPose: result.customPose,
+        accessories,
+        poseIsProductOnly,
+        poseIsGhostMannequin,
+        frozenScene: result.frozenSceneUsed,
+        sceneReferenceFile: result.sceneReferenceFile,
+        garmentDescriptionOverride: result.garmentDescriptionUsed,
+        regenerate: (feedback) => generate(feedback, true),
+        signal: effSignal,
+      }));
     },
     [
       apiKey,
@@ -2570,12 +3137,13 @@ export function StepGenerate({ store }: StepGenerateProps) {
       textGenModel,
       generateVTONImageRouted,
       updateResult,
+      buildRepairHooks,
     ]
   );
 
   // Retry/regenerate a single bulk result — works for both errored and completed results
   const handleRetryBulk = useCallback(
-    async (result: BulkGeneratedResult) => {
+    async (result: BulkGeneratedResult, signal?: AbortSignal) => {
       if (result.status === "pending" || !apiKey) return;
       const combo = bulkCombinations.find((c) => c.id === result.combinationId);
       if (!combo) return;
@@ -2614,18 +3182,25 @@ export function StepGenerate({ store }: StepGenerateProps) {
         : result.pose.requiresModel === false;
       const poseIsGhostMannequin = result.pose.framing === "ghost-mannequin";
 
+      // Per-card retry has no batch to cancel; "Regenerate Mismatched" passes the real signal.
+      const effSignal = signal ?? new AbortController().signal;
+
       const collectedCosts: StepCost[] = [];
       let retrySteps: StepCost[] | undefined;
 
-      const generate = async () => {
+      // Reuse the same per-product bucket draw as the original bulk generation
+      // (keyed on the product folder id) so retries keep the same prop image.
+      const accessories = materializeAccessories(
+        poseAccessories[result.pose.id] || [],
+        combo.primaryFolder.id
+      );
+
+      const generate = async (
+        previousMismatchFeedback?: string,
+        isRepair = false,
+      ): Promise<AttemptProduct | null> => {
         collectedCosts.length = 0;
         updateBulkResult(result.id, { status: "generating-prompt", error: undefined });
-        // Reuse the same per-product bucket draw as the original bulk generation
-        // (keyed on the product folder id) so retries keep the same prop image.
-        const accessories = materializeAccessories(
-          poseAccessories[result.pose.id] || [],
-          combo.primaryFolder.id
-        );
 
         // HARD RETRY reproduces the EXACT original inputs: same reference-photoshoot mode,
         // the frozen scene stored at generation, the same background config, and the same
@@ -2689,12 +3264,14 @@ export function StepGenerate({ store }: StepGenerateProps) {
             editHistory: [],
             costBreakdown: { steps: [...collectedCosts], totalCost: igTotal + igRetry, retrySteps },
           });
-          return;
+          // Already final — do not grade an infographic render.
+          return null;
         }
 
         const promptResult = await generateVTONPrompt({
           apiKey,
           textGenModel,
+          previousMismatchFeedback,
           productCategory,
           gender,
           garmentImages: pgImages,
@@ -2763,39 +3340,32 @@ export function StepGenerate({ store }: StepGenerateProps) {
         updateBulkResult(result.id, {
           imageData: imageResult.imageData,
           status: "completed",
-          validationStatus: skipValidationRef.current ? "skipped" : "validating",
           validationMessage: undefined,
           imageGenResponseContent: imageResult.responseContent,
           editHistory: [],
+          ...(isRepair
+            ? {}
+            : { validationStatus: skipValidationRef.current ? "skipped" : "validating" }),
         });
 
-        if (skipValidationRef.current) return;
-        validateGeneratedImage({
-          apiKey,
-          textGenModel,
-          originalImages: pgImages.map((g) => g.file),
-          generatedImageData: imageResult.imageData,
-          productCategory,
-        }).then((v) => {
-          if (v.cost) collectedCosts.push(v.cost);
-          const mainCost = collectedCosts.reduce((s, c) => s + c.totalCost, 0);
-          const retryCost = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
-          updateBulkResult(result.id, {
-            validationStatus: v.status,
-            validationMessage: v.message,
-            costBreakdown: { steps: [...collectedCosts], totalCost: mainCost + retryCost, retrySteps },
-          });
-        });
+        return {
+          imageData: imageResult.imageData,
+          prompt: promptResult.text,
+          imageGenResponseContent: imageResult.responseContent,
+          editHistory: [],
+          steps: [...collectedCosts],
+        };
       };
 
+      let product: AttemptProduct | null = null;
       try {
-        await generate();
+        product = await generate();
       } catch {
         try {
           retrySteps = [...collectedCosts];
           updateBulkResult(result.id, { status: "auto-retrying", error: undefined });
           await new Promise((r) => setTimeout(r, 1000));
-          await generate();
+          product = await generate();
         } catch (retryError) {
           const allCosts = [...(retrySteps || []), ...collectedCosts];
           const totalCost = allCosts.reduce((s, c) => s + c.totalCost, 0);
@@ -2804,10 +3374,46 @@ export function StepGenerate({ store }: StepGenerateProps) {
             error: retryError instanceof Error ? retryError.message : "Unknown error occurred",
             costBreakdown: totalCost > 0 ? { steps: collectedCosts, totalCost, retrySteps } : undefined,
           });
+          return;
         }
       }
+
+      if (!product) return;
+      if (skipValidationRef.current) return;
+
+      const attemptOne = product;
+      if (retrySteps) attemptOne.steps.unshift(...retrySteps);
+      await runVerifyAndRepair(attemptOne, buildRepairHooks({
+        resultId: result.id,
+        update: (patch) => updateBulkResult(result.id, patch as Partial<BulkGeneratedResult>),
+        pose: result.pose,
+        customPose: result.customPose,
+        accessories,
+        poseIsProductOnly,
+        poseIsGhostMannequin,
+        frozenScene: result.frozenSceneUsed,
+        sceneReferenceFile: result.sceneReferenceFile,
+        regenerate: (feedback) => generate(feedback, true),
+        signal: effSignal,
+        garmentImagesOverride: pgImages,
+        complementaryImagesOverride: cgImages,
+        modelImageOverride: bulkModelImg,
+        modelViewsOverride: bulkModelViews,
+        backgroundOverride: effectiveBg,
+        fitOverride: combo.primaryFolder.fit !== undefined ? combo.primaryFolder.fit : fit,
+        sleeveLengthOverride:
+          combo.primaryFolder.sleeveLength !== undefined ? combo.primaryFolder.sleeveLength : sleeveLength,
+        topwearLengthOverride:
+          combo.primaryFolder.topwearLength !== undefined ? combo.primaryFolder.topwearLength : topwearLength,
+        bottomwearLengthOverride:
+          combo.primaryFolder.bottomwearLength !== undefined
+            ? combo.primaryFolder.bottomwearLength
+            : bottomwearLength,
+        garmentDescriptionOverride: result.garmentDescriptionUsed,
+      }));
     },
     [
+      buildRepairHooks,
       apiKey,
       productCategory,
       gender,
@@ -2834,37 +3440,37 @@ export function StepGenerate({ store }: StepGenerateProps) {
     ]
   );
 
+  /**
+   * Each retried card now owns a full grade-and-repair cycle, so one worker per
+   * card is the right unit and the pool is a sliding window rather than batches.
+   *
+   * These previously called `setIsGenerating(true)` WITHOUT `beginGeneration()`,
+   * so no AbortController existed and the Stop button did nothing for them.
+   * Minting one here makes Stop actually work.
+   */
   const handleRetryAllMismatchedSingle = useCallback(async () => {
     const mismatched = results.filter((r) => r.validationStatus === "warning" && r.status === "completed");
     if (mismatched.length === 0 || isGenerating) return;
-    setIsGenerating(true);
+    const ctrl = beginGeneration();
     try {
-      // Retries re-run the routed VTON image call, so gate on the image backend.
-      const CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : 5;
-      for (let i = 0; i < mismatched.length; i += CONCURRENCY) {
-        const batch = mismatched.slice(i, i + CONCURRENCY);
-        await Promise.all(batch.map((r) => handleRetrySingle(r)));
-      }
+      const CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : VTON_FRESH_CONCURRENCY;
+      await runPool(mismatched, CONCURRENCY, (r) => handleRetrySingle(r, ctrl.signal), ctrl.signal);
     } finally {
       setIsGenerating(false);
     }
-  }, [results, isGenerating, handleRetrySingle, setIsGenerating, imageGenModel]);
+  }, [results, isGenerating, handleRetrySingle, setIsGenerating, imageGenModel, beginGeneration]);
 
   const handleRetryAllMismatchedBulk = useCallback(async () => {
     const mismatched = bulkResults.filter((r) => r.validationStatus === "warning" && r.status === "completed");
     if (mismatched.length === 0 || isGenerating) return;
-    setIsGenerating(true);
+    const ctrl = beginGeneration();
     try {
-      // Retries re-run the routed VTON image call, so gate on the image backend.
-      const CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : 5;
-      for (let i = 0; i < mismatched.length; i += CONCURRENCY) {
-        const batch = mismatched.slice(i, i + CONCURRENCY);
-        await Promise.all(batch.map((r) => handleRetryBulk(r)));
-      }
+      const CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : VTON_FRESH_CONCURRENCY;
+      await runPool(mismatched, CONCURRENCY, (r) => handleRetryBulk(r, ctrl.signal), ctrl.signal);
     } finally {
       setIsGenerating(false);
     }
-  }, [bulkResults, isGenerating, handleRetryBulk, setIsGenerating, imageGenModel]);
+  }, [bulkResults, isGenerating, handleRetryBulk, setIsGenerating, imageGenModel, beginGeneration]);
 
   // ======================================================================
   // MULTI-TURN EDIT HANDLERS
@@ -5984,9 +6590,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-foreground">
-                {isGenerating
-                  ? "Generating..."
-                  : `${completedBulkResults}/${totalBulkResults} completed`}
+                {laneSummary(bulkResults, completedBulkResults, totalBulkResults, isGenerating)}
               </p>
               <div className="flex items-center gap-2">
                 {isGenerating && (
@@ -6050,7 +6654,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                 }}
               />
             </div>
-            {validationFilterBar(bulkResults)}
+            {validationFilterBar(bulkResults, { scored: true })}
           </div>
         )}
 
@@ -6147,7 +6751,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                                     className="w-full h-full object-cover"
                                   />
                                   <CostBreakdownPopover costBreakdown={result.costBreakdown} skip={skipValidation} />
-                                  <ValidationBadge status={result.validationStatus} message={result.validationMessage} />
+                                  <ValidationBadge status={result.validationStatus} message={result.validationMessage} score={result.validationScore} attempt={result.validationAttempt} defects={result.validationDefects} weightedMean={result.validationWeightedMean} cappedBy={result.validationCappedBy} attempts={result.validationAttempts} correctionSent={result.validationCorrectionSent} />
                                 </>
                               ) : result.status === "error" ? (
                                 <div className="flex flex-col items-center gap-3 p-4 text-center">
@@ -6593,9 +7197,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           {totalCount > 0 && (
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-foreground">
-                {isGenerating
-                  ? "Generating..."
-                  : `${completedCount}/${totalCount} completed`}
+                {laneSummary(results, completedCount, totalCount, isGenerating)}
               </p>
               <div className="flex items-center gap-2">
                 {isGenerating && (
@@ -6662,7 +7264,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
               }}
             />
           </div>
-          {validationFilterBar(results)}
+          {validationFilterBar(results, { scored: true })}
         </div>
       )}
 
@@ -6685,7 +7287,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                       className="w-full h-full object-cover"
                     />
                     <CostBreakdownPopover costBreakdown={result.costBreakdown} skip={skipValidation} />
-                    <ValidationBadge status={result.validationStatus} message={result.validationMessage} />
+                    <ValidationBadge status={result.validationStatus} message={result.validationMessage} score={result.validationScore} attempt={result.validationAttempt} defects={result.validationDefects} weightedMean={result.validationWeightedMean} cappedBy={result.validationCappedBy} attempts={result.validationAttempts} correctionSent={result.validationCorrectionSent} />
                   </>
                 ) : result.status === "error" ? (
                   <div className="flex flex-col items-center gap-3 p-6 text-center">

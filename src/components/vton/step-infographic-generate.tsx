@@ -253,8 +253,9 @@ export function StepInfographicGenerate({ store }: { store: VTONStore }) {
 
     // Concurrency is gated on the image backend, not the text model. gpt-image-2
     // funnels through the Azure endpoint pool (+ 429 failover) so it sustains ~10
-    // in flight. For Gemini the real cap is enforced server-side (global 4
-    // concurrent across all tabs, see src/lib/gemini-image-gate.ts); this per-tab
+    // in flight. For Gemini the real cap is enforced server-side (a global
+    // concurrency gate shared across all tabs, see src/lib/gemini-image-gate.ts);
+    // this per-tab
     // value just avoids over-queuing on the server.
     const concurrency = imageGenModel === "gpt-image-2" ? 10 : 4;
     let idx = 0;

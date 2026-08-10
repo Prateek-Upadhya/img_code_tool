@@ -19,7 +19,25 @@
  * Never import this from client code — it is server coordination state.
  */
 
-const MAX_CONCURRENT = 4;
+/**
+ * Ceiling on concurrent Gemini image calls across all tabs.
+ *
+ * Sized for the VTON two-lane scheduler: 15 concurrent fresh generations plus 15
+ * concurrent repair generations (see src/lib/two-lane-runner.ts and the
+ * VTON_FRESH_CONCURRENCY / VTON_REPAIR_CONCURRENCY constants in
+ * step-generate.tsx). A single tab at full tilt therefore offers exactly 30 and
+ * never queues; a second tab queues behind it.
+ *
+ * MEMORY WARNING: this was previously 4, and the comment in
+ * `/api/gemini/generate/route.ts` records that even four concurrent 2K/4K
+ * requests once spiked the single pm2 Node heap into OOM territory (which is why
+ * the response is shallow-copied rather than deep-cloned). Thirty in flight —
+ * plus the ungated `gemini-3.1-pro-preview` judge calls that accompany them —
+ * is a large multiple of that. If the host starts dropping connections under
+ * bulk + 4K, this constant is the first thing to lower, and giving Node an
+ * explicit `--max-old-space-size` for the instance is the first thing to add.
+ */
+const MAX_CONCURRENT = 30;
 
 /** Number of slots currently handed out (in-flight requests). */
 let active = 0;

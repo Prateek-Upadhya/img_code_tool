@@ -514,11 +514,129 @@ export interface VTONConfig {
   apiKey: string;
 }
 
-export type ValidationStatus = "idle" | "validating" | "passed" | "warning" | "error" | "skipped";
+/**
+ * `retrying` is VTON-only: the image scored below the pass mark and a correction
+ * attempt is in flight. The result's own `status` stays `"completed"` throughout,
+ * so the card keeps rendering the current best image while the repair lane works.
+ * Every other feature only ever produces the original six states.
+ */
+export type ValidationStatus = "idle" | "validating" | "retrying" | "passed" | "warning" | "error" | "skipped";
 
 export interface ValidationResult {
   status: ValidationStatus;
   message?: string;
+}
+
+// --- VTON Scored Validation ---
+
+/**
+ * The nine quality axes the VTON inspector grades. Weights live in
+ * `VTON_SCORE_WEIGHTS` (gemini.ts). The total is computed client-side by
+ * `computeVtonTotalScore` and is never asked of the model, which keeps the
+ * rubric auditable and makes the hard caps actually enforceable.
+ */
+export type VtonScoreDimension =
+  | "garmentFidelity"
+  | "garmentColor"
+  | "garmentShape"
+  | "garmentLength"
+  | "skinRealism"
+  | "characterConsistency"
+  | "backgroundComposition"
+  | "framing"
+  | "propPlacement";
+
+export const VTON_SCORE_DIMENSION_KEYS: readonly VtonScoreDimension[] = [
+  "garmentFidelity",
+  "garmentColor",
+  "garmentShape",
+  "garmentLength",
+  "skinRealism",
+  "characterConsistency",
+  "backgroundComposition",
+  "framing",
+  "propPlacement",
+] as const;
+
+/**
+ * One graded axis. For a passing axis the prose fields are empty; for a failing
+ * one they carry the evidence that drives BOTH the UI breakdown and the
+ * correction sent back to the model — one source, two renderings.
+ */
+export interface VtonDefect {
+  dimension: VtonScoreDimension;
+  /** 0-100. Meaningless when `applicable` is false. */
+  score: number;
+  applicable: boolean;
+  severity: "critical" | "major" | "minor" | "none";
+  /** What the references / configuration called for. "" when passing. */
+  expected: string;
+  /** What the generated image actually shows. "" when passing. */
+  observed: string;
+  /** Imperative, image-specific fix. "" when passing. */
+  fix: string;
+  /** Coarse spatial hint, e.g. "garment body", "sleeves", "hemline", "face". */
+  region: string;
+  /** Effective weight AFTER renormalisation over the applicable set; 0 when N/A. */
+  weight: number;
+}
+
+export interface VtonScoreResult {
+  /** Final 0-100 after weighting AND hard caps. This is the number the UI shows. */
+  score: number;
+  /** Weighted mean before caps — diagnostics only. */
+  weightedMean: number;
+  /** Dimensions whose hard cap actually bound the total. */
+  cappedBy: VtonScoreDimension[];
+  /** All nine axes, passing and failing. */
+  defects: VtonDefect[];
+  /** Applicable dimensions scoring below the pass mark, worst first. */
+  failedDimensions: VtonScoreDimension[];
+  /** Short human summary for the badge tooltip. */
+  summary: string;
+}
+
+export type VtonScoreOutcome =
+  | ({ ok: true; cost?: StepCost } & VtonScoreResult)
+  | { ok: false; cost?: StepCost; error: string };
+
+/**
+ * One entry per attempt, kept on the result so the tooltip can show the score
+ * history and `buildScoreFeedback` can diff attempts to detect regressions.
+ * Deliberately carries no image data — this lives in React state for the whole
+ * session and a bulk run holds hundreds of them.
+ */
+export interface VtonAttemptRecord {
+  /** 1-based. */
+  attempt: number;
+  strategy: "initial" | "surgical" | "reroll";
+  /** null when the judge itself failed for this attempt. */
+  score: number | null;
+  summary: string;
+  defects: VtonDefect[];
+}
+
+/**
+ * Scored-validation fields shared by the single and bulk VTON result types. All
+ * optional and additive: results from every other feature simply never set them,
+ * and `ValidationBadge` falls back to its binary rendering when `validationScore`
+ * is absent.
+ */
+export interface VtonScoreFields {
+  /** Final score of the KEPT attempt. Presence of this field switches the UI to scored mode. */
+  validationScore?: number;
+  /** Per-dimension breakdown of the kept attempt. */
+  validationDefects?: VtonDefect[];
+  /** Attempt currently in flight (1-based); only meaningful while `validationStatus === "retrying"`. */
+  validationAttempt?: number;
+  /** Every attempt made, in order — drives the score-history line and regression diffing. */
+  validationAttempts?: VtonAttemptRecord[];
+  /** Dimensions whose hard cap bound the kept attempt's total. */
+  validationCappedBy?: VtonScoreDimension[];
+  /** Pre-cap weighted mean of the kept attempt. */
+  validationWeightedMean?: number;
+  /** Exact correction text sent to the model for the last retry — surfaced behind a UI expander. */
+  validationCorrectionSent?: string;
 }
 
 // --- Multi-Turn Edit Types ---
@@ -529,7 +647,7 @@ export interface EditHistoryEntry {
   modelResponseContent: unknown;
 }
 
-export interface GeneratedResult {
+export interface GeneratedResult extends VtonScoreFields {
   id: string;
   prompt: string;
   imageData: string; // base64
@@ -955,7 +1073,7 @@ export interface BulkPoseOverride {
   complementaryFolderId?: string | null;
 }
 
-export interface BulkGeneratedResult {
+export interface BulkGeneratedResult extends VtonScoreFields {
   id: string;
   combinationId: string;
   combinationLabel: string;

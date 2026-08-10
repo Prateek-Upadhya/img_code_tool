@@ -54,11 +54,17 @@ async function generateContent(
     wireConfig = restConfig;
   }
 
+  // Advertise image calls in a header so the route can take its concurrency slot
+  // BEFORE parsing the multi-MB body — a queued request then costs almost no
+  // heap. The route trusts this only to decide gating, never to pick a model.
+  const isImageCall = rest.model === "gemini-3.1-flash-image";
+
   const response = await fetch("/api/gemini/generate", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-google-backend": googleBackend,
+      ...(isImageCall ? { "x-gemini-image": "1" } : {}),
     },
     body: JSON.stringify({ ...rest, config: wireConfig }),
     signal: abortSignal,

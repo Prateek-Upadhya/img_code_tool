@@ -1,4 +1,4 @@
-import { HarmBlockThreshold, HarmCategory, ThinkingLevel } from "@google/genai";
+import { HarmBlockThreshold, HarmCategory, ThinkingLevel, Type } from "@google/genai";
 import type { PartMediaResolutionLevel } from "@google/genai";
 import { getGeminiClient } from "./gemini-client";
 import { getTextClient } from "./text-client";
@@ -56,6 +56,11 @@ import {
   InfographicPlan,
   InfographicTextMode,
   InfographicTextPoint,
+  VtonDefect,
+  VtonScoreDimension,
+  VtonScoreOutcome,
+  VtonScoreResult,
+  VTON_SCORE_DIMENSION_KEYS,
 } from "./types";
 import {
   ACCESSORY_CATEGORIES,
@@ -1424,6 +1429,7 @@ export async function generateVTONPrompt({
   isOnModelGarment = false,
   garmentDescription,
   dynamicSeed,
+  previousMismatchFeedback,
   abortSignal,
 }: {
   apiKey: string;
@@ -1492,10 +1498,27 @@ export async function generateVTONPrompt({
    * Ignored for non-dynamic poses.
    */
   dynamicSeed?: string;
+  /**
+   * Scored-validation feedback from earlier attempts at THIS shot, built by
+   * `buildScoreFeedback` (vton-verify-retry.ts). Present only on a full re-roll
+   * (score below `VTON_SURGICAL_RETRY_FLOOR`); near-misses take the surgical
+   * multi-turn edit path instead and never reach this function again.
+   *
+   * Mirrors the `previousMismatchFeedback` contract already used by
+   * `generateModelSwapPrompt` and `generateRoomStagingPrompt`.
+   */
+  previousMismatchFeedback?: string;
   /** Optional client-side AbortSignal — cancels the in-flight Gemini request. */
   abortSignal?: AbortSignal;
 }): Promise<{ text: string; cost: StepCost }> {
   const ai = getTextClient(textGenModel);
+
+  // Correction from a rejected earlier attempt at this exact shot. Appended to
+  // whichever closing instruction runs (footwear or clothing) so the meta-prompter
+  // sees the failures immediately before it starts writing.
+  const correctionBlock = previousMismatchFeedback?.trim()
+    ? buildVtonCorrectionBlock(previousMismatchFeedback.trim())
+    : "";
 
   // Build content parts
   const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
@@ -3090,6 +3113,7 @@ The product reference photos may be taken on cluttered floors, shelves, or outdo
 ${accessories.length > 0 ? `\nACCESSORY NOTE: For accessories with reference images, instruct exact reproduction. For AI-chosen accessories, analyze the footwear style and select accessories that are STYLISTICALLY COHERENT (e.g., formal shoes pair with refined accessories, athletic shoes with sporty gear, ethnic footwear with traditional items). Describe each AI-chosen accessory with specific material, color, and style details.${applyAccessoriesToAllPoses ? " CONSISTENCY: Use IDENTICAL accessory descriptions word-for-word — no creative variation between poses." : ""}${accessories.some((a) => a.category === "custom") ? " For custom-described accessories, follow the user's description precisely while ensuring garment-style coherence." : ""}` : ""}
 ${accessories.some((a) => a.bucketId && a.image) ? `\nPROP NOTE: One or more PROP reference images are attached (tagged [PROP]). Your output prompt MUST instruct the image generator to replicate each prop PIXEL-FOR-PIXEL from its reference (exact shape, color, material, logos/text, proportions — no restyle/recolor/substitution) AND to have the model interact with it naturally (hold/wear/lean on/gaze at) with realistic contact, scale, and lighting.${applyAccessoriesToAllPoses ? " The same prop must stay pixel-identical across every pose — only the interaction adapts." : ""}` : ""}
 
+${correctionBlock}
 Now write the footwear image generation prompt following the mandatory structure.`,
     });
   } else {
@@ -3131,6 +3155,7 @@ ${accessories.length > 0 ? `\nACCESSORY INSTRUCTION: For accessories with refere
 Describe each AI-chosen accessory with SPECIFIC detail (exact material, color, style variant).${applyAccessoriesToAllPoses ? "\nCONSISTENCY: This is a multi-pose batch with identical accessories. Use EXACTLY the same accessory descriptions word-for-word across every pose — no synonym swapping, no creative variation." : ""}${accessories.some((a) => a.category === "custom") ? "\nFor custom-described accessories, follow the user's text description precisely while ensuring visual coherence with the garment style." : ""}` : ""}
 ${accessories.some((a) => a.bucketId && a.image) ? `\nPROP INSTRUCTION: One or more PROP reference images are attached (tagged [PROP]). Your output prompt MUST instruct the image generator to replicate each prop PIXEL-FOR-PIXEL from its reference image (exact shape, color, material, logos/text, proportions — no restyling, recoloring, substitution, or "improving") AND to integrate it naturally so the model plausibly interacts with it (holds/wears/leans on/gazes at) with realistic contact, scale, perspective, and scene lighting.${applyAccessoriesToAllPoses ? " The same prop must stay pixel-identical across every pose — only the interaction adapts to the pose." : ""}` : ""}
 
+${correctionBlock}
 Now write the ${isGhostMannequin ? "ghost mannequin" : isProductOnlyShot ? "product-only" : "VTON"} image generation prompt.`,
     });
   }
@@ -5270,6 +5295,602 @@ function parseDataUrl(dataUrl: string): [string, string] {
   const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
   if (match) return [match[1], match[2]];
   return ["image/png", dataUrl];
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  VTON SCORED VALIDATION — percentage quality gate + auto-repair
+// ═══════════════════════════════════════════════════════════════
+//
+// `validateGeneratedImage` above stays exactly as it is: Model Swap, Room
+// Staging, UGC and set-product still get the binary MATCH/REASON verdict. VTON
+// instead runs `scoreVTONImage`, which grades nine weighted axes and returns a
+// 0-100 percentage plus a structured defect record per axis. Those records drive
+// both the UI breakdown and the correction fed back into the retry — one source,
+// two renderings.
+
+/** A result at or above this scores as `passed`; below it triggers a repair attempt. */
+export const VTON_SCORE_PASS_THRESHOLD = 80;
+/**
+ * At or above this we assume the render is fundamentally right and only a detail
+ * is wrong, so a surgical multi-turn edit preserves what already works. Below it
+ * the composition is considered unsalvageable and we re-roll from a fresh prompt.
+ */
+export const VTON_SURGICAL_RETRY_FLOOR = 60;
+/** Total image generations per result, initial attempt included. */
+export const VTON_MAX_ATTEMPTS = 3;
+
+/**
+ * Relative importance of each axis. Garment truth dominates (fidelity + colour +
+ * shape + length = 63%) because a beautiful photo of the wrong product is worthless,
+ * while scene axes are refinements. Renormalised over the applicable set when a
+ * shot has no human model — see `computeVtonTotalScore`.
+ */
+export const VTON_SCORE_WEIGHTS: Record<VtonScoreDimension, number> = {
+  garmentFidelity: 0.22,
+  garmentColor: 0.18,
+  garmentShape: 0.13,
+  garmentLength: 0.10,
+  characterConsistency: 0.10,
+  skinRealism: 0.08,
+  backgroundComposition: 0.07,
+  framing: 0.07,
+  propPlacement: 0.05,
+};
+
+export const VTON_DIMENSION_LABELS: Record<VtonScoreDimension, string> = {
+  garmentFidelity: "Garment fidelity",
+  garmentColor: "Colour & shade",
+  garmentShape: "Shape & fit",
+  garmentLength: "Length retention",
+  skinRealism: "Natural skin",
+  characterConsistency: "Model consistency",
+  backgroundComposition: "Background",
+  framing: "Framing",
+  propPlacement: "Prop placement",
+};
+
+/**
+ * Hard caps stop a strong average from masking a fatal defect. Without them a
+ * render with the wrong garment colour but a gorgeous background scores ~82 and
+ * ships. Every cap whose condition holds is applied; the total is the minimum of
+ * the weighted mean and all firing caps.
+ */
+export const VTON_HARD_CAPS: ReadonlyArray<{
+  dimension: VtonScoreDimension;
+  below: number;
+  capTotalAt: number;
+}> = [
+  // Critical axes VETO a pass outright: below 80 on either, the total cannot reach 80.
+  { dimension: "garmentColor", below: 80, capTotalAt: VTON_SCORE_PASS_THRESHOLD - 1 },
+  { dimension: "garmentFidelity", below: 80, capTotalAt: VTON_SCORE_PASS_THRESHOLD - 1 },
+  // Catastrophic on a critical axis drags the total into full-re-roll territory.
+  { dimension: "garmentColor", below: 55, capTotalAt: VTON_SURGICAL_RETRY_FLOOR - 10 },
+  { dimension: "garmentFidelity", below: 55, capTotalAt: VTON_SURGICAL_RETRY_FLOOR - 10 },
+  // Secondary garment axes block a pass but stay in surgical-repair range.
+  { dimension: "garmentShape", below: 60, capTotalAt: 72 },
+  { dimension: "garmentLength", below: 60, capTotalAt: 72 },
+  { dimension: "characterConsistency", below: 50, capTotalAt: 70 },
+  { dimension: "skinRealism", below: 45, capTotalAt: 70 },
+];
+
+/**
+ * Hand-written corrective directive per axis. The judge supplies what is wrong
+ * with THIS image; the playbook supplies the phrasing that reliably fixes it.
+ * Neither alone is enough — the playbook is generic, and the judge's wording
+ * varies call to call — so the retry prompt always carries both.
+ */
+export const VTON_CORRECTION_PLAYBOOK: Record<VtonScoreDimension, string> = {
+  garmentColor:
+    "Name the exact colour of every zone of the garment as read off the reference photos (hue family plus a plain-English shade, e.g. \"deep navy, not royal blue\"), state where each colour sits on the garment, and forbid any brightening, saturation boost or hue drift under the scene light.",
+  garmentFidelity:
+    "Enumerate the specific construction and graphic elements — print motif with its scale and position, seam and panel layout, neckline, closure, pockets, cuffs, trims, hardware, brand marks and their exact letterforms — and require that they be reproduced character-for-character from the reference photos, with nothing added, removed or \"improved\".",
+  garmentShape:
+    "Restate the authoritative fit by name, describe how the fabric hangs (volume at chest, waist and hip; sleeve break; stiff versus fluid drape), and explicitly forbid the wrong silhouette that came back.",
+  garmentLength:
+    "Restate every configured hem as a hard anatomical measurement (\"the sleeve hem terminates at mid-bicep\", \"the outseam terminates at the ankle bone\") and state that these measurements override any visual reading of the reference photos.",
+  skinRealism:
+    "Demand visible skin micro-texture (pores, vellus hair, subsurface warmth), one consistent skin tone across face, neck, arms, hands and legs, and correct hand anatomy with five separated fingers; explicitly forbid airbrushed, waxy, plastic or over-smoothed skin.",
+  characterConsistency:
+    "Enumerate the model's identity features from the model reference image — face shape, eye and brow shape, nose, jaw, lips, skin tone, hair colour, texture, parting and length, apparent age, build and height — and state that this EXACT individual must appear, not a lookalike.",
+  backgroundComposition:
+    "Restate the frozen scene verbatim — surfaces, materials, palette, depth and the camera's position within the space — forbid re-inventing, re-decorating or re-shooting the environment, and require tonal separation between the garment and the backdrop.",
+  framing:
+    "Commit to the crop anchor by anatomical landmark, the camera height and angle, the subject's share of the frame height, and its placement in the frame; state that no part of the product may touch a frame edge.",
+  propPlacement:
+    "Restate where each prop and accessory sits, its scale relative to the model, which surface it rests on and how the model contacts it; forbid any prop from covering the garment's print, logo, closure or hem, and forbid inventing objects that were not requested.",
+};
+
+/**
+ * Wrap a score report (built by `buildScoreFeedback`) in the instruction frame
+ * the meta-prompter needs. The report itself already carries the per-dimension
+ * playbook directives; this adds the "you must act on it, and do not echo it"
+ * envelope. Mirrors the Model Swap correction block.
+ */
+export function buildVtonCorrectionBlock(report: string): string {
+  return `
+═══ CORRECTION FROM PREVIOUS ATTEMPT ═══
+A previous render of THIS EXACT shot was graded by our quality-control inspector and FAILED. Here is the score report:
+
+${report}
+
+You MUST write a prompt that makes every one of those failures impossible this time. Address each flagged dimension explicitly and measurably — a generic "preserve all details" sentence does NOT count. Where the report gives you a directive for a dimension, fold that directive into the relevant section of your prompt.
+
+Anything the report lists under "HOLD" is already correct: carry it through unchanged and do not let a correction elsewhere disturb it.
+
+Do NOT copy this correction block into your output prompt, and do not mention the inspector, the scores or the previous attempt. Express every correction as a positive, forceful, measurable instruction in the appropriate section of the image-generation prompt.
+═══ END CORRECTION ═══
+`;
+}
+
+/**
+ * Weighted mean + hard caps, computed HERE rather than asked of the model.
+ *
+ * Keeping the arithmetic client-side is what makes the rubric auditable and the
+ * caps enforceable — a judge asked for a total would quietly average away the
+ * very failures the caps exist to catch.
+ */
+export function computeVtonTotalScore(
+  raw: Array<{ dimension: VtonScoreDimension; score: number; applicable: boolean }>,
+): Pick<VtonScoreResult, "score" | "weightedMean" | "cappedBy" | "failedDimensions"> & {
+  weights: Record<VtonScoreDimension, number>;
+} {
+  const zeroWeights = Object.fromEntries(
+    VTON_SCORE_DIMENSION_KEYS.map((d) => [d, 0]),
+  ) as Record<VtonScoreDimension, number>;
+
+  const applicable = raw.filter((r) => r.applicable);
+  if (applicable.length === 0) {
+    return { score: 0, weightedMean: 0, cappedBy: [], failedDimensions: [], weights: zeroWeights };
+  }
+
+  // Renormalise over the applicable set so an N/A axis redistributes its weight
+  // rather than silently dragging the total down.
+  const totalWeight = applicable.reduce((s, r) => s + VTON_SCORE_WEIGHTS[r.dimension], 0);
+  const weights = { ...zeroWeights };
+  for (const r of applicable) {
+    weights[r.dimension] = totalWeight > 0 ? VTON_SCORE_WEIGHTS[r.dimension] / totalWeight : 0;
+  }
+
+  const weightedMean = Math.max(
+    0,
+    Math.min(100, applicable.reduce((s, r) => s + r.score * weights[r.dimension], 0)),
+  );
+
+  const scoreOf = new Map(applicable.map((r) => [r.dimension, r.score]));
+  const firing = VTON_HARD_CAPS.filter((c) => {
+    const s = scoreOf.get(c.dimension);
+    return s !== undefined && s < c.below;
+  });
+
+  const score = Math.round(
+    firing.reduce((acc, c) => Math.min(acc, c.capTotalAt), weightedMean),
+  );
+
+  // Only report a cap as binding if it actually pulled the total down.
+  const cappedBy = Array.from(
+    new Set(firing.filter((c) => c.capTotalAt < weightedMean).map((c) => c.dimension)),
+  );
+
+  const failedDimensions = applicable
+    .filter((r) => r.score < VTON_SCORE_PASS_THRESHOLD)
+    .sort((a, b) => a.score - b.score)
+    .map((r) => r.dimension);
+
+  return { score, weightedMean: Math.round(weightedMean), cappedBy, failedDimensions, weights };
+}
+
+/**
+ * Structured output. The old validator parsed `MATCH:` lines with `startsWith`,
+ * so one stray preamble line silently became a pass. A response schema makes the
+ * shape contractual, and it is plain JSON data so it survives the
+ * stringify -> /api/gemini/generate -> parse round-trip in gemini-client.ts intact.
+ */
+const VTON_SCORE_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    dimensions: {
+      type: Type.ARRAY,
+      minItems: String(VTON_SCORE_DIMENSION_KEYS.length),
+      maxItems: String(VTON_SCORE_DIMENSION_KEYS.length),
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          dimension: { type: Type.STRING, enum: [...VTON_SCORE_DIMENSION_KEYS] },
+          score: { type: Type.INTEGER },
+          applicable: { type: Type.BOOLEAN },
+          severity: { type: Type.STRING, enum: ["critical", "major", "minor", "none"] },
+          expected: { type: Type.STRING },
+          observed: { type: Type.STRING },
+          fix: { type: Type.STRING },
+          region: { type: Type.STRING },
+        },
+        required: ["dimension", "score", "applicable", "severity", "expected", "observed", "fix", "region"],
+        propertyOrdering: ["dimension", "score", "applicable", "severity", "expected", "observed", "fix", "region"],
+      },
+    },
+    summary: { type: Type.STRING },
+  },
+  required: ["dimensions", "summary"],
+  propertyOrdering: ["dimensions", "summary"],
+};
+
+interface RawJudgeDimension {
+  dimension: VtonScoreDimension;
+  score: number;
+  applicable: boolean;
+  severity: VtonDefect["severity"];
+  expected: string;
+  observed: string;
+  fix: string;
+  region: string;
+}
+
+/** Strip a ```json fence if the model wrapped its JSON despite the schema. */
+function stripJsonFence(text: string): string {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
+const SEVERITIES: ReadonlyArray<VtonDefect["severity"]> = ["critical", "major", "minor", "none"];
+
+/**
+ * Parse + validate the judge payload. Unlike the binary validator this does NOT
+ * fail open: a missing axis is recorded as unreported rather than assumed good,
+ * because the verdict now decides whether we spend two more image generations.
+ */
+function parseJudgePayload(text: string): { dimensions: RawJudgeDimension[]; summary: string } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonFence(text));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const dims = (parsed as { dimensions?: unknown }).dimensions;
+  if (!Array.isArray(dims)) return null;
+  const rawSummary = (parsed as { summary?: unknown }).summary;
+  const summary = typeof rawSummary === "string" ? rawSummary.trim() : "";
+
+  const byKey = new Map<VtonScoreDimension, RawJudgeDimension>();
+  for (const entry of dims) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const dimension = e.dimension as VtonScoreDimension;
+    if (!VTON_SCORE_DIMENSION_KEYS.includes(dimension)) continue;
+    const score = Number(e.score);
+    if (!Number.isFinite(score)) continue;
+    const severity = SEVERITIES.includes(e.severity as VtonDefect["severity"])
+      ? (e.severity as VtonDefect["severity"])
+      : "none";
+    byKey.set(dimension, {
+      dimension,
+      score: Math.max(0, Math.min(100, Math.round(score))),
+      applicable: e.applicable !== false,
+      severity,
+      expected: typeof e.expected === "string" ? e.expected.trim() : "",
+      observed: typeof e.observed === "string" ? e.observed.trim() : "",
+      fix: typeof e.fix === "string" ? e.fix.trim() : "",
+      region: typeof e.region === "string" ? e.region.trim() : "",
+    });
+  }
+
+  // Nothing usable came back — treat as a judge failure, not a pass.
+  if (byKey.size === 0) return null;
+
+  // A missing axis is recorded as unreported (applicable: false), never assumed
+  // good. The old validator's `?? true` fail-open would now cost real money.
+  const dimensions = VTON_SCORE_DIMENSION_KEYS.map(
+    (d) =>
+      byKey.get(d) ?? {
+        dimension: d,
+        score: 0,
+        applicable: false,
+        severity: "none" as const,
+        expected: "",
+        observed: "",
+        fix: "",
+        region: "",
+      },
+  );
+
+  return { dimensions, summary };
+}
+
+/**
+ * Grade a generated VTON image across nine weighted axes.
+ *
+ * Unlike `validateGeneratedImage` this receives the FULL generation context —
+ * model reference, scene reference, frozen scene text, pose spec and the
+ * configured garment attributes — because axes like character consistency,
+ * background composition and length retention cannot be judged against the
+ * garment photos alone.
+ *
+ * Attachments are deliberately capped: with fifteen judges in flight, each one
+ * carrying every reference at hi-res is a direct route to exhausting the Node heap.
+ */
+export async function scoreVTONImage({
+  textGenModel = "gemini",
+  generatedImageData,
+  garmentImages,
+  modelImage,
+  modelViews,
+  sceneReferenceFile,
+  frozenSceneDescription,
+  backgroundTextDescription,
+  pose,
+  customPose,
+  accessories = [],
+  productCategory = "clothing",
+  garmentType,
+  fit,
+  sleeveLength = null,
+  topwearLength = null,
+  bottomwearLength = null,
+  garmentDescription,
+  isProductOnlyShot = false,
+  isGhostMannequin = false,
+  attemptNumber = 1,
+  abortSignal,
+}: {
+  /** Provider for the judge call. Default: gemini. */
+  textGenModel?: TextGenModel;
+  generatedImageData: string;
+  garmentImages: GarmentImage[];
+  modelImage?: ModelImage | null;
+  modelViews?: LabeledModelView[];
+  sceneReferenceFile?: File;
+  frozenSceneDescription?: string;
+  backgroundTextDescription?: string;
+  pose: Pose;
+  customPose?: CustomPose;
+  accessories?: AccessoryItem[];
+  productCategory?: ProductCategory;
+  garmentType?: GarmentType;
+  fit?: FitType | null;
+  sleeveLength?: SleeveLength | null;
+  topwearLength?: TopwearLength | null;
+  bottomwearLength?: BottomwearLength | null;
+  garmentDescription?: string;
+  /** No human in frame — skin and character-consistency are forced N/A. */
+  isProductOnlyShot?: boolean;
+  /** Invisible-mannequin shot — likewise no human to grade. */
+  isGhostMannequin?: boolean;
+  /** 1-based; shown to the judge so it knows this is a re-inspection. */
+  attemptNumber?: number;
+  abortSignal?: AbortSignal;
+}): Promise<VtonScoreOutcome> {
+  const ai = getTextClient(textGenModel);
+  const hasHuman = !isProductOnlyShot && !isGhostMannequin;
+  const productLabel = productCategory === "footwear" ? "footwear" : "garment/clothing";
+
+  const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+
+  parts.push({ text: buildVtonJudgeRubric({ productLabel, hasHuman, attemptNumber }) });
+
+  // ── Reference block. Order matters: the judge reads references first, then the
+  //    written spec, then finally the image under inspection.
+  const cappedGarments = garmentImages.slice(0, 4);
+  parts.push({ text: `\n\nORIGINAL PRODUCT REFERENCE IMAGES (${cappedGarments.length}) — the authority on the product:` });
+  for (const g of cappedGarments) {
+    parts.push({ inlineData: { mimeType: g.file.type, data: await fileToBase64HiResCached(g.file) } });
+  }
+
+  if (hasHuman && modelImage?.file) {
+    parts.push({ text: `\n\nAI FASHION MODEL REFERENCE — the exact individual who must appear:` });
+    parts.push({ inlineData: { mimeType: modelImage.file.type, data: await fileToBase64Cached(modelImage.file) } });
+    const extraViews = (modelViews ?? []).filter((v) => v.file).slice(0, 3);
+    for (const v of extraViews) {
+      parts.push({ text: `Additional view of the same model${v.kind ? ` (${v.kind})` : ""}:` });
+      parts.push({ inlineData: { mimeType: v.file.type, data: await fileToBase64Cached(v.file) } });
+    }
+  }
+
+  if (sceneReferenceFile) {
+    parts.push({ text: `\n\nSCENE / BACKGROUND REFERENCE — the environment the shot must sit in:` });
+    parts.push({ inlineData: { mimeType: sceneReferenceFile.type, data: await fileToBase64Cached(sceneReferenceFile) } });
+  }
+
+  // ── Written specification the render was supposed to satisfy.
+  const spec: string[] = [];
+  if (garmentDescription?.trim()) spec.push(`GARMENT SPEC (authoritative): ${garmentDescription.trim()}`);
+  if (garmentType) spec.push(`Garment type: ${garmentType}`);
+  if (fit) spec.push(`Configured fit: ${fit}`);
+  if (sleeveLength) spec.push(`Configured sleeve length: ${sleeveLength}`);
+  if (topwearLength) spec.push(`Configured topwear length: ${topwearLength}`);
+  if (bottomwearLength) spec.push(`Configured bottomwear length: ${bottomwearLength}`);
+  if (frozenSceneDescription?.trim()) spec.push(`FROZEN SCENE (the background is locked to this): ${frozenSceneDescription.trim()}`);
+  else if (backgroundTextDescription?.trim()) spec.push(`BACKGROUND BRIEF: ${backgroundTextDescription.trim()}`);
+
+  const poseLabel = customPose?.description?.trim() || pose?.name || "unspecified";
+  spec.push(`Pose brief: ${poseLabel}`);
+  if (pose?.framing) spec.push(`Framing: ${pose.framing}`);
+  if (pose?.viewAngle) spec.push(`View angle: ${pose.viewAngle}`);
+  if (accessories.length > 0) {
+    const accLabels = accessories
+      .map((a) => (a.category === "custom" ? a.customDescription?.trim() || "custom accessory" : a.category))
+      .filter(Boolean);
+    if (accLabels.length > 0) spec.push(`Requested props / accessories: ${accLabels.join(", ")}`);
+  } else {
+    spec.push(`Requested props / accessories: none`);
+  }
+  if (!hasHuman) {
+    spec.push(
+      isGhostMannequin
+        ? `SHOT TYPE: ghost mannequin — there is deliberately NO human model in this image.`
+        : `SHOT TYPE: product-only — there is deliberately NO human model in this image.`,
+    );
+  }
+
+  parts.push({ text: `\n\nTHE SPECIFICATION THIS RENDER WAS SUPPOSED TO SATISFY:\n${spec.join("\n")}` });
+
+  const [mimeType, base64Data] = parseDataUrl(generatedImageData);
+  parts.push({ text: `\n\nTHE AI-GENERATED IMAGE UNDER INSPECTION:` });
+  parts.push({ inlineData: { mimeType, data: base64Data } });
+  parts.push({
+    text: `\n\nGrade all ${VTON_SCORE_DIMENSION_KEYS.length} dimensions now. Return JSON only. Do NOT output an overall total — per-dimension scores only.`,
+  });
+
+  // One immediate re-ask on a parse failure: a judge call is far cheaper than the
+  // two image generations a bogus verdict would trigger.
+  let lastError = "Validation check failed";
+  let lastCost: StepCost | undefined;
+
+  for (let judgeAttempt = 0; judgeAttempt < 2; judgeAttempt++) {
+    if (abortSignal?.aborted) return { ok: false, cost: lastCost, error: "aborted" };
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-pro-preview",
+        contents: parts,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: VTON_SCORE_SCHEMA,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+          abortSignal,
+        },
+      });
+
+      // Cost is captured on EVERY path, including failures — the old validator
+      // dropped it on error, so failed verifications were billed but untracked.
+      lastCost = computeStepCost(
+        textCostModel(textGenModel),
+        "Quality Score (Gemini 3.1 Pro)",
+        extractTokenUsage(response),
+      );
+
+      const payload = parseJudgePayload(response.text?.trim() ?? "");
+      if (!payload) {
+        lastError = "Inspector returned an unreadable verdict";
+        continue;
+      }
+
+      // Client-side applicability wins on the axes we can determine structurally,
+      // so a judge that ignores the N/A instruction cannot corrupt the total.
+      const adjusted = payload.dimensions.map((r) => {
+        if (!hasHuman && (r.dimension === "skinRealism" || r.dimension === "characterConsistency")) {
+          return { ...r, applicable: false };
+        }
+        if (r.dimension === "propPlacement" && accessories.length === 0) {
+          return { ...r, applicable: false };
+        }
+        return r;
+      });
+
+      const totals = computeVtonTotalScore(adjusted);
+      const defects: VtonDefect[] = adjusted.map((r) => ({
+        dimension: r.dimension,
+        score: r.score,
+        applicable: r.applicable,
+        severity: r.applicable ? r.severity : "none",
+        expected: r.expected,
+        observed: r.observed,
+        fix: r.fix,
+        region: r.region,
+        weight: totals.weights[r.dimension],
+      }));
+
+      return {
+        ok: true,
+        cost: lastCost,
+        score: totals.score,
+        weightedMean: totals.weightedMean,
+        cappedBy: totals.cappedBy,
+        failedDimensions: totals.failedDimensions,
+        defects,
+        summary: payload.summary || defaultSummary(totals.score, totals.failedDimensions),
+      };
+    } catch (error) {
+      if (abortSignal?.aborted) return { ok: false, cost: lastCost, error: "aborted" };
+      lastError = error instanceof Error ? error.message : "Validation check failed";
+    }
+  }
+
+  return { ok: false, cost: lastCost, error: lastError };
+}
+
+function defaultSummary(score: number, failed: VtonScoreDimension[]): string {
+  if (failed.length === 0) return `Scored ${score}% — all dimensions within tolerance.`;
+  return `Scored ${score}% — issues with ${failed.slice(0, 3).map((d) => VTON_DIMENSION_LABELS[d].toLowerCase()).join(", ")}.`;
+}
+
+/**
+ * The grading rubric. Every axis carries explicit numeric anchors because an
+ * unanchored 0-100 ask produces a narrow band of 70s and 80s that no threshold
+ * can act on.
+ */
+function buildVtonJudgeRubric({
+  productLabel,
+  hasHuman,
+  attemptNumber,
+}: {
+  productLabel: string;
+  hasHuman: boolean;
+  attemptNumber: number;
+}): string {
+  return `You are a senior quality-control inspector for AI-generated fashion photography. You are grading ONE generated image against the product references, the model reference, the scene reference and the written specification that follow.${attemptNumber > 1 ? `\n\nThis is inspection attempt ${attemptNumber} for this shot — an earlier render was rejected and corrected. Grade what you see now on its own merits.` : ""}
+
+Score each of the nine dimensions from 0 to 100 using these anchors:
+
+  95-100  Indistinguishable from a correct professional result.
+  80-94   Correct. Any deviation is a rendering nuance a client would not remark on.
+  60-79   Noticeably wrong in a way a client WOULD remark on, but the frame is salvageable by a targeted edit.
+  40-59   Substantively wrong. The render misrepresents the product or the brief.
+  0-39    Fundamentally wrong — wrong product, wrong person, or unusable image.
+
+THE NINE DIMENSIONS
+
+1. garmentFidelity — Does the ${productLabel} match the references in construction and graphics?
+   Judge: print/motif shape, scale and placement; seam and panel layout; neckline; closure; pockets; cuffs; trims; hardware; brand marks and their letterforms.
+   90+: every element present and correctly placed. 60-79: one element distorted, misplaced or resized. 40-59: an element is missing, invented, or the branding is wrong. <40: a different product.
+
+2. garmentColor — Is the colour and shade faithful?
+   Judge: hue, shade, saturation and where each colour sits. Ignore a global white-balance shift that affects the whole frame equally; do NOT ignore the garment reading as a different colour.
+   90+: shade-accurate. 60-79: right hue family, visibly wrong shade or saturation. 40-59: reads as a different colour. <40: unrelated colour or the colour blocking is scrambled.
+
+3. garmentShape — Silhouette, fit and drape versus the configured fit.
+   90+: matches the configured fit and the fabric hangs plausibly. 60-79: one grade off (a regular reading as slim). 40-59: a different silhouette. <40: the garment is deformed or fused to the body.
+
+4. garmentLength — Do the hems land where the specification says?
+   Judge sleeve, top and bottom hems against the CONFIGURED lengths in the specification; those override any visual reading of the references.
+   90+: every hem on its stated landmark. 60-79: one hem off by roughly one landmark (half sleeve rendered three-quarter). 40-59: a hem off by more than one landmark. <40: a different garment length category.
+
+5. skinRealism — Does the model's skin read as a photograph?${hasHuman ? "" : " (N/A for this shot — set applicable false.)"}
+   Judge: pore-level micro-texture, subsurface warmth, consistent tone across face/neck/arms/hands/legs, and hand anatomy.
+   90+: photographic. 60-79: slightly over-smoothed. 40-59: waxy, plastic or airbrushed; or a tone mismatch between face and body. <40: malformed hands or fingers, or an obviously synthetic surface.
+
+6. characterConsistency — Is this the SAME individual as the model reference?${hasHuman ? "" : " (N/A for this shot — set applicable false.)"}
+   Judge: face shape, eye and brow shape, nose, jaw, lips, skin tone, hair colour/texture/parting/length, apparent age and build. Judge identity, not lighting.
+   90+: unmistakably the same person. 60-79: a close relative — recognisably drifted. 40-59: a different person of similar type. <40: a different demographic entirely.
+
+7. backgroundComposition — Does the environment match the frozen scene / brief?
+   Judge: surfaces, materials, palette, depth, and that the environment was not re-invented. Also require tonal separation between garment and backdrop.
+   90+: the specified scene. 60-79: right scene, drifted materials or palette. 40-59: a re-decorated or re-shot environment. <40: an unrelated location.
+
+8. framing — Crop, camera height, distance and subject placement.
+   Judge against the framing and view angle in the specification. A product touching or bleeding off a frame edge is never above 60.
+   90+: crop lands on the specified landmarks. 60-79: crop drifted by roughly one landmark, or the subject is off-centre against the brief. 40-59: a different shot size than requested. <40: the product is cut off or the composition is unusable.
+
+9. propPlacement — Are props and accessories present, correctly placed, and not obstructive?
+   90+: every requested prop present, plausibly scaled and contacted. 60-79: a prop floats, is mis-scaled, or is missing. 40-59: a prop covers the garment's print, logo, closure or hem. <40: invented objects that were never requested, or props that break the scene.
+
+APPLICABILITY
+Set "applicable": false ONLY when a dimension cannot exist in this image — for example skinRealism and characterConsistency on a product-only or ghost-mannequin shot, or propPlacement when no props were requested. A dimension you simply cannot assess well is still applicable; score it on the evidence you have.
+
+EVIDENCE — this is the most important part of your output
+For every dimension you score BELOW 80 you MUST fill:
+  "expected"  — what the references or the written specification called for, concretely. Name the colour, the landmark, the element. Not "the correct colour".
+  "observed"  — what this image actually shows, concretely and comparably. "Rendered as royal blue, roughly two stops brighter" — not "the colour is off".
+  "fix"       — ONE imperative sentence telling the generator what to do differently. "End the sleeve hem at mid-bicep, not mid-forearm."
+  "region"    — where in the frame the defect sits: e.g. "garment body", "sleeves", "hemline", "face", "hands", "background-left", "whole frame".
+  "severity"  — "critical" if it misrepresents the product or the person, "major" if a client would reject it, "minor" if a client would merely notice it.
+
+For a dimension scoring 80 or above, leave expected/observed/fix/region as empty strings and severity "none".
+
+Be specific and be harsh. A vague finding cannot be corrected, and a generous score ships a defective image.
+
+"summary": one sentence, 25 words maximum, naming the most serious problem — or confirming the render is clean.
+
+Return JSON matching the schema. No prose outside the JSON. Do NOT output an overall total.`;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -7977,7 +8598,7 @@ Output ONLY the final image-generation prompt as flowing prose. It MUST restate,
 /**
  * Step 2 — render the model with gemini-3.1-flash-image (Nano Banana 2)
  * from the enriched prompt (+ optional face reference). Funnels through
- * `/api/gemini/generate`, so the global 4-concurrent image gate applies.
+ * `/api/gemini/generate`, so the global image-concurrency gate applies.
  */
 export async function generateModelImage({
   apiKey,
@@ -8340,7 +8961,7 @@ Output a single photorealistic edited image at the SAME aspect ratio and framing
  * Edit-models — Step 2. Renders the edited image with
  * gemini-3.1-flash-image from the source image (Image 1, preserved),
  * an optional reference (Image 2), and the enrichment snippet. Funnels through
- * `/api/gemini/generate`, so the global 4-concurrent image gate applies.
+ * `/api/gemini/generate`, so the global image-concurrency gate applies.
  */
 export async function generateModelEditImage({
   apiKey,
