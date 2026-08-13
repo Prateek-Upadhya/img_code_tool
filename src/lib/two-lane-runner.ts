@@ -52,10 +52,12 @@ export interface TwoLaneOptions<T> {
    */
   runFresh: (item: T, enqueue: (task: FollowUpTask) => void) => Promise<void>;
   /**
-   * Called for every task still queued when the signal aborts, so the caller can
-   * finalize a result rather than leaving its badge spinning forever.
+   * Called for every task the repair lane will not produce a verdict for, so the
+   * caller can finalize a result rather than leaving its badge spinning forever.
+   * `"aborted"` — still queued when the user hit Stop; `"failed"` — it ran and
+   * threw.
    */
-  onAbandon?: (task: FollowUpTask) => void;
+  onAbandon?: (task: FollowUpTask, reason: "aborted" | "failed") => void;
   signal?: AbortSignal;
 }
 
@@ -96,11 +98,22 @@ export async function runTwoLanes<T>(o: TwoLaneOptions<T>): Promise<void> {
   const onAbort = () => wake();
   o.signal?.addEventListener("abort", onAbort, { once: true });
 
+  // A worker body that throws must take down only its own item, never its lane.
+  // If `Promise.all(fresh)` rejects, `freshDone = true` and the `wake()` after it
+  // never run, so every repair worker parked on `notify` sleeps forever and the
+  // caller's post-run sweep — the thing that clears orphaned badges — is skipped.
+  // Both call sites are documented as non-throwing, but "documented" is not a
+  // guarantee: `runVerifyAndRepair` says it never throws while its own judge call
+  // does base64 and data-URL work outside its try block.
   const freshWorker = async () => {
     while (!o.signal?.aborted) {
       const i = cursor++;
       if (i >= o.items.length) return;
-      await o.runFresh(o.items[i], enqueue);
+      try {
+        await o.runFresh(o.items[i], enqueue);
+      } catch (error) {
+        console.error("[two-lane] fresh worker item failed:", error);
+      }
     }
   };
 
@@ -112,10 +125,18 @@ export async function runTwoLanes<T>(o: TwoLaneOptions<T>): Promise<void> {
         // instead of running it — that finalizes the result without firing more
         // network calls.
         if (o.signal?.aborted) {
-          o.onAbandon?.(task);
+          o.onAbandon?.(task, "aborted");
           continue;
         }
-        await task.run();
+        try {
+          await task.run();
+        } catch (error) {
+          console.error("[two-lane] follow-up task failed:", error);
+          // The result would otherwise keep whatever in-progress badge the task
+          // set before it threw. `onAbandon` is the caller's existing finalizer
+          // for exactly this — a task that will never produce a verdict.
+          o.onAbandon?.(task, "failed");
+        }
         continue;
       }
       if (freshDone || o.signal?.aborted) return;
@@ -161,7 +182,13 @@ export async function runPool<T>(
     while (!signal?.aborted) {
       const i = cursor++;
       if (i >= items.length) return;
-      await fn(items[i]);
+      // Same rule as the two-lane workers: one bad item must not reject the pool
+      // and strand every item its siblings had not reached yet.
+      try {
+        await fn(items[i]);
+      } catch (error) {
+        console.error("[run-pool] item failed:", error);
+      }
     }
   };
   await Promise.all(

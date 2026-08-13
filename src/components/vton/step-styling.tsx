@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { AI_MODELS } from "@/lib/constants";
+import { AI_MODELS, FOOTWEAR_BACKGROUND_PRESET_OPTIONS } from "@/lib/constants";
 import type { VTONStore } from "@/store/vton-store";
 import type { BackgroundConfig, BackgroundImageMode, BackgroundMode, BulkBackground, BulkModelImage, ModelSwapBackgroundMode, SavedModel, ModelReferenceViewKind } from "@/lib/types";
 import { MODEL_SWAP_BG_OPTIONS } from "@/lib/constants";
@@ -612,6 +612,17 @@ export function StepStyling({ store }: StepStylingProps) {
   const maleModels = AI_MODELS.filter((m) => m.gender === "male");
   const femaleModels = AI_MODELS.filter((m) => m.gender === "female");
 
+  // Footwear ships with a ready-made background treatment selected. While one is
+  // active it IS the background — the mode buttons, the upload zone and the text
+  // box are hidden so there is a single source of truth on screen — and it brings
+  // its own lighting, so the even-lighting override is switched off and disabled.
+  //
+  // Model Swap shares this whole section but runs its own prompt builders, which
+  // do not read `footwearBackgroundPreset`. Showing the card there would hide the
+  // text box behind a preset that has no effect on the output.
+  const showBgPresets = isFootwear && !isModelSwap;
+  const activePreset = showBgPresets ? background.footwearBackgroundPreset : undefined;
+
   // Background section is shared between modes
   const backgroundSection = (
     <div className="space-y-4">
@@ -622,6 +633,77 @@ export function StepStyling({ store }: StepStylingProps) {
         </p>
       </div>
 
+      {showBgPresets && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {FOOTWEAR_BACKGROUND_PRESET_OPTIONS.map((opt) => {
+            const isActive = activePreset === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() =>
+                  setBackground({
+                    ...background,
+                    footwearBackgroundPreset: opt.value,
+                    // The preset supplies its own high-key lighting AND keeps a
+                    // contact shadow; the even-lighting directive forbids every
+                    // shadow. Leaving both on would send the model contradictory
+                    // rules, so selecting a preset clears the toggle.
+                    evenLighting: false,
+                  })
+                }
+                className={cn(
+                  "text-left rounded-xl border p-4 transition-all duration-200 relative",
+                  isActive
+                    ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                    : "border-border hover:border-primary/40 hover:bg-muted/30"
+                )}
+              >
+                {isActive && (
+                  <span className="absolute top-3 right-3 inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary text-white">
+                    <Check className="w-3 h-3" />
+                  </span>
+                )}
+                <div className="flex items-start gap-3">
+                  <span className="text-2xl leading-none">{opt.icon}</span>
+                  <div className="min-w-0 pr-6">
+                    <span className="text-sm font-medium text-foreground">{opt.label}</span>
+                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{opt.description}</p>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => setBackground({ ...background, footwearBackgroundPreset: undefined })}
+            className={cn(
+              "text-left rounded-xl border p-4 transition-all duration-200 relative",
+              !activePreset
+                ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                : "border-border hover:border-primary/40 hover:bg-muted/30"
+            )}
+          >
+            {!activePreset && (
+              <span className="absolute top-3 right-3 inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary text-white">
+                <Check className="w-3 h-3" />
+              </span>
+            )}
+            <div className="flex items-start gap-3">
+              <span className="text-2xl leading-none">🎨</span>
+              <div className="min-w-0 pr-6">
+                <span className="text-sm font-medium text-foreground">Custom Background</span>
+                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                  Describe your own scene or upload an inspiration image instead
+                </p>
+              </div>
+            </div>
+          </button>
+        </div>
+      )}
+
+      {!activePreset && (
+      <>
       <div className="flex gap-2">
         <button
           onClick={() => handleBgModeChange("inspiration")}
@@ -706,33 +788,43 @@ export function StepStyling({ store }: StepStylingProps) {
           className="resize-none rounded-lg border-border bg-muted/30 focus:bg-background transition-colors"
         />
       )}
+      </>
+      )}
 
-      {/* Custom lighting: even high-key, shadowless. Works on top of any background mode. */}
+      {/* Custom lighting: even high-key, shadowless. Works on top of any background
+          mode — but NOT alongside a preset, which brings its own lighting and keeps
+          a contact shadow this directive would strip. */}
       <button
         type="button"
+        disabled={!!activePreset}
         onClick={() => setBackground({ ...background, evenLighting: !background.evenLighting })}
         className={cn(
           "w-full flex items-start gap-3 px-4 py-3 rounded-lg text-left transition-colors duration-200 border",
-          background.evenLighting
-            ? "bg-card border-primary shadow-sm"
-            : "bg-card text-muted-foreground border-border hover:border-primary/50 hover:text-foreground"
+          activePreset
+            ? "bg-card border-border opacity-60 cursor-not-allowed"
+            : background.evenLighting
+              ? "bg-card border-primary shadow-sm"
+              : "bg-card text-muted-foreground border-border hover:border-primary/50 hover:text-foreground"
         )}
       >
         <div
           className={cn(
             "mt-0.5 w-5 h-5 rounded-md flex items-center justify-center border flex-shrink-0 transition-colors",
-            background.evenLighting ? "btn-gradient border-transparent text-white" : "border-border bg-background"
+            background.evenLighting && !activePreset
+              ? "btn-gradient border-transparent text-white"
+              : "border-border bg-background"
           )}
         >
-          {background.evenLighting && <Check className="w-3.5 h-3.5" />}
+          {background.evenLighting && !activePreset && <Check className="w-3.5 h-3.5" />}
         </div>
         <div className="space-y-0.5">
-          <p className={cn("text-sm font-medium", background.evenLighting ? "text-foreground" : "")}>
+          <p className={cn("text-sm font-medium", background.evenLighting && !activePreset ? "text-foreground" : "")}>
             Even high-key lighting (no shadows)
           </p>
           <p className="text-[11px] text-muted-foreground leading-snug">
-            Lights the model and background evenly at one uniform intensity with no cast shadows
-            anywhere — flat, bright, shadowless high-key studio light.
+            {activePreset
+              ? "Not available with a background preset — the preset already sets flat high-key lighting, and keeps the subtle contact shadow this option would remove."
+              : "Lights the model and background evenly at one uniform intensity with no cast shadows anywhere — flat, bright, shadowless high-key studio light."}
           </p>
         </div>
       </button>

@@ -119,9 +119,18 @@ import { customPoseNeedsModel } from "@/lib/custom-pose";
 import { saveModel } from "@/lib/model-library";
 import { dataUrlToFile } from "@/lib/model-creation-client";
 
+/**
+ * `footwearBackgroundPreset` ships pre-selected: a footwear run that says nothing
+ * about its background now lands on the Clean White Studio preset rather than the
+ * looser default-fallback branch in `generateVTONPrompt`. It is read ONLY when
+ * `productCategory === "footwear"`, so a clothing run carries the field in state
+ * and ignores it — as do `videoBackground` and `roomBackground`, which seed from
+ * this same object but never reach the VTON prompt builders.
+ */
 const defaultBackground: BackgroundConfig = {
   mode: "text",
   textDescription: "",
+  footwearBackgroundPreset: "clean-white-studio",
 };
 
 /**

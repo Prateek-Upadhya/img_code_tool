@@ -24,6 +24,21 @@ import type { GoogleAuthOptions } from "google-auth-library";
  *      recommended local-dev path (no key material at rest).
  */
 
+/**
+ * Wall-clock ceiling on a single upstream Google call, in milliseconds.
+ *
+ * These clients used to be constructed with no `httpOptions`, which left every
+ * Vertex/Gemini request unbounded: a wedged upstream call never returned, so the
+ * route's `finally` never ran and — for image calls — its `gemini-image-gate`
+ * slot stayed claimed for the life of the process.
+ *
+ * Sits ABOVE every client-side deadline in `src/lib/request-deadline.ts` (the
+ * largest is the 240s image budget) so the browser is normally the one that
+ * gives up first and the user sees a precise message. This is the backstop for
+ * the case where the browser is gone and its disconnect never propagated.
+ */
+const GOOGLE_REQUEST_TIMEOUT_MS = 270_000;
+
 let cached: GoogleGenAI | null = null;
 
 function resolveAuthOptions(): GoogleAuthOptions | undefined {
@@ -71,6 +86,7 @@ export function getVertexClient(): GoogleGenAI {
     project,
     location,
     googleAuthOptions: resolveAuthOptions(),
+    httpOptions: { timeout: GOOGLE_REQUEST_TIMEOUT_MS },
   });
   return cached;
 }
@@ -105,7 +121,10 @@ export function getGeminiApiClient(): GoogleGenAI {
     );
   }
 
-  cachedGemini = new GoogleGenAI({ apiKey });
+  cachedGemini = new GoogleGenAI({
+    apiKey,
+    httpOptions: { timeout: GOOGLE_REQUEST_TIMEOUT_MS },
+  });
   return cachedGemini;
 }
 

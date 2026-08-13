@@ -1,4 +1,4 @@
-import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, InnerwearSubtype, ModelAgeGroup, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SoleConstructionLayerCount, SwatchShape, TextGenModel, TopwearLength } from "./types";
+import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearBackgroundPreset, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, InnerwearSubtype, ModelAgeGroup, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SoleConstructionLayerCount, SwatchShape, TextGenModel, TopwearLength } from "./types";
 
 export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; description: string }[] = [
   { value: "clothing", label: "Clothing", description: "Apparel, garments, and fashion items" },
@@ -3294,6 +3294,35 @@ export const INFOGRAPHIC_CATEGORY_OPTIONS: { value: ProductCategory; label: stri
   { value: "footwear", label: "Footwear", icon: "👟", description: "Shoes, boots, sneakers, sandals — floating & sole-construction layouts" },
   { value: "clothing", label: "Clothing", icon: "👕", description: "Apparel infographics — coming soon", comingSoon: true },
 ];
+
+/**
+ * Ready-made VTON background treatments offered when the product category is
+ * footwear, in place of writing a text description or uploading an inspiration
+ * image. Selecting one makes it the sole background source for the batch.
+ *
+ * Prompt text lives in `FOOTWEAR_CLEAN_WHITE_BACKGROUND_DIRECTIVE` (gemini.ts),
+ * not here — same split the rest of the pipeline uses, and the reason this array
+ * carries no snippet field.
+ */
+export const FOOTWEAR_BACKGROUND_PRESET_OPTIONS: { value: FootwearBackgroundPreset; label: string; icon: string; description: string }[] = [
+  { value: "clean-white-studio", label: "Clean White Studio", icon: "⬜", description: "Pure #FFFFFF seamless backdrop with flat, high-key commercial lighting — no shadows except a subtle contact shadow under the sole" },
+];
+
+/**
+ * True when a footwear background preset is the ACTIVE background source for this
+ * config, i.e. it overrides the text description and the inspiration image.
+ *
+ * The category check is not optional. `defaultBackground` pre-selects the preset
+ * for every run so footwear starts on it without a UI effect, which means a
+ * clothing config also carries the field — reading it without gating on the
+ * category would silently discard a clothing user's inspiration image.
+ */
+export function footwearBgPresetActive(
+  bg: { footwearBackgroundPreset?: FootwearBackgroundPreset } | undefined | null,
+  productCategory: ProductCategory,
+): boolean {
+  return productCategory === "footwear" && !!bg?.footwearBackgroundPreset;
+}
 
 export const INFOGRAPHIC_BACKGROUND_OPTIONS: { value: InfographicBackgroundStyle; label: string; icon: string; description: string }[] = [
   { value: "solid-uniform", label: "Solid Uniform", icon: "⬛", description: "A flat, even color that contrasts the footwear — no gradients or texture" },

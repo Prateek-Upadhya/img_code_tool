@@ -208,6 +208,19 @@ export type BackgroundMode = "inspiration" | "text";
  */
 export type BackgroundImageMode = "inspiration" | "replica";
 
+/**
+ * Ready-made background treatments for footwear, selectable instead of writing a
+ * text description or uploading an inspiration image.
+ *
+ * - `"clean-white-studio"`: pure #FFFFFF seamless backdrop with flat high-key
+ *   commercial product lighting and no shadow other than a low, subtle contact
+ *   shadow under the sole. Identical for every pose and framing in the batch.
+ *
+ * See `FOOTWEAR_BACKGROUND_PRESET_OPTIONS` in `constants.ts` for the UI copy and
+ * `FOOTWEAR_CLEAN_WHITE_BACKGROUND_DIRECTIVE` in `gemini.ts` for the prompt text.
+ */
+export type FootwearBackgroundPreset = "clean-white-studio";
+
 export interface BackgroundConfig {
   mode: BackgroundMode;
   inspirationImage?: {
@@ -227,6 +240,18 @@ export interface BackgroundConfig {
    * scene-driven lighting. See `EVEN_HIGH_KEY_LIGHTING_DIRECTIVE` in `gemini.ts`.
    */
   evenLighting?: boolean;
+  /**
+   * Footwear-only background preset. When set it is the SOLE source of the
+   * background: it overrides `mode`, `textDescription` and `inspirationImage`,
+   * renders identically across every pose and framing, and carries its own
+   * lighting — so `evenLighting` is forced off alongside it, since that
+   * directive's "no cast shadows anywhere" rule would strip the contact shadow
+   * this preset deliberately keeps.
+   *
+   * Read ONLY when `productCategory === "footwear"`; on a clothing run the field
+   * may be present in state and is ignored. See {@link FootwearBackgroundPreset}.
+   */
+  footwearBackgroundPreset?: FootwearBackgroundPreset;
 }
 
 export interface AIModel {

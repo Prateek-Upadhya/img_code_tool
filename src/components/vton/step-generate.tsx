@@ -40,11 +40,12 @@ import { cn, buildDynamicPoseSeed, pickBucketImage } from "@/lib/utils";
 import { generateVTONPrompt, generateVTONImage, generateModelSwapPrompt, generateModelSwapImage, validateGeneratedImage, checkHumanVisibility, generateSetProductPrompt, generateSetProductImage, generateUGCPrompt, generateUGCImage, buildVTONImageContentParts, contextualRetryVTONImage, buildModelSwapImageContentParts, editModelSwapImage, analyzeBackgroundScene, analyzeReferenceScene, describeGarmentFromImages, generateCustomPoseInfographicPrompt } from "@/lib/gemini";
 import { scoreVTONImage, VTON_DIMENSION_LABELS, VTON_MAX_ATTEMPTS, VTON_SCORE_PASS_THRESHOLD } from "@/lib/gemini";
 import { runTwoLanes, runPool, type FollowUpTask } from "@/lib/two-lane-runner";
+import { vtonLaneSizes } from "@/lib/transport-concurrency";
 import { runVerifyAndRepair, type AttemptProduct, type VtonRepairHooks } from "@/lib/vton-verify-retry";
 import { customPoseIsInfographic, customPoseIsProductOnly, customPoseNeedsModel, customPoseShotKindLabel, customPoseIsReadyToGenerate } from "@/lib/custom-pose";
 import { generateVTONImageAzure } from "@/lib/azure-image";
 import { resolveSourceNamedOutput, sourceBaseName, extensionForBlob, uniqueName } from "@/lib/output-naming";
-import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS } from "@/lib/constants";
+import { FRAMING_OPTIONS, SET_LAYOUT_OPTIONS, AI_MODELS, footwearBgPresetActive } from "@/lib/constants";
 import { ModelComboPicker } from "./model-combo-picker";
 import Image from "next/image";
 import type { VTONStore } from "@/store/vton-store";
@@ -74,6 +75,7 @@ import type {
   SleeveLength,
   StepCost,
   TopwearLength,
+  ProductCategory,
   UGCGeneratedResult,
   ValidationStatus,
   VtonAttemptRecord,
@@ -87,9 +89,21 @@ function getFramingShortLabel(framing: PoseFraming): string {
   return FRAMING_OPTIONS.find((f) => f.value === framing)?.shortLabel ?? framing;
 }
 
-/** The inspiration-image File of a background config, or undefined (text/default backgrounds). */
-function inspirationFileOf(bg: BackgroundConfig | undefined | null): File | undefined {
-  return bg && bg.mode === "inspiration" && bg.inspirationImage ? bg.inspirationImage.file : undefined;
+/**
+ * The inspiration-image File of a background config, or undefined (text/default
+ * backgrounds).
+ *
+ * Returns undefined while a footwear background preset is active: the preset IS
+ * the background, so attaching a scene reference to the image call would put a
+ * second, contradictory backdrop in front of the model. The image stays in state
+ * — deselecting the preset brings it straight back.
+ */
+function inspirationFileOf(
+  bg: BackgroundConfig | undefined | null,
+  productCategory: ProductCategory,
+): File | undefined {
+  if (!bg || footwearBgPresetActive(bg, productCategory)) return undefined;
+  return bg.mode === "inspiration" && bg.inspirationImage ? bg.inspirationImage.file : undefined;
 }
 
 /**
@@ -778,23 +792,43 @@ function CostBreakdownPopover({ costBreakdown, skip = false }: { costBreakdown?:
  * so a burst of retries can never starve fresh work. Both lanes together sit at
  * the server-side gate's ceiling (src/lib/gemini-image-gate.ts MAX_CONCURRENT).
  *
+ * The sizes are now chosen per run from the transport the browser actually has
+ * (`vtonLaneSizes()`): 15+15 is only reachable over HTTP/2 or HTTP/3. Over
+ * HTTP/1.1 the browser opens ~6 sockets per origin, so asking for 30 meant 24
+ * requests sat in the browser's own connection queue — invisible to us, and
+ * wearing the "Generating prompt…" badge the worker had already written. See
+ * src/lib/transport-concurrency.ts.
+ *
  * gpt-image-2 keeps its own smaller sizing — it funnels through the Azure
  * endpoint pool's rate limiter rather than the Gemini gate.
  */
-const VTON_FRESH_CONCURRENCY = 15;
-const VTON_REPAIR_CONCURRENCY = 15;
+const VTON_GPT_IMAGE_CONCURRENCY = 10;
 
 /**
- * A repair task that was queued but never ran because the user hit Stop. Without
- * this the card's badge would sit on "Validating" forever.
+ * Worker count for the single-lane "Regenerate Mismatched" pools. Each item there
+ * runs its own full grade-and-repair cycle, so there is no second lane to feed and
+ * the pool may spend the whole transport budget.
+ */
+function retryPoolSize(imageGenModel: string): number {
+  if (imageGenModel === "gpt-image-2") return VTON_GPT_IMAGE_CONCURRENCY;
+  const lanes = vtonLaneSizes();
+  return lanes.fresh + lanes.repair;
+}
+
+/**
+ * A repair task that will never produce a verdict — either it was still queued
+ * when the user hit Stop, or it ran and threw. Without this the card's badge
+ * would sit on "Validating" forever.
  */
 function finalizeAbandonedRepair(
   task: FollowUpTask,
   update: (id: string, patch: Record<string, unknown>) => void,
+  reason: "aborted" | "failed" = "aborted",
 ): void {
   update(task.id, {
     validationStatus: "skipped",
-    validationMessage: "Verification cancelled",
+    validationMessage:
+      reason === "failed" ? "Verification could not be completed" : "Verification cancelled",
     validationAttempt: undefined,
   });
 }
@@ -1390,10 +1424,14 @@ export function StepGenerate({ store }: StepGenerateProps) {
     // directly to the image-gen call (see `generateVTONImageRouted` below) with an
     // exact-replication directive. Frozen-scene + flat-lighting overrides would
     // contradict the user's intent to reproduce the reference verbatim.
+    // A footwear background preset also skips analysis: its backdrop is fixed, so
+    // analysing a leftover inspiration image would spend a Pro call producing a
+    // frozen scene that the preset then overrides anyway.
     const shouldAnalyzeScene =
       background.mode === "inspiration" &&
       !!background.inspirationImage &&
-      background.imageReferenceMode !== "replica";
+      background.imageReferenceMode !== "replica" &&
+      !footwearBgPresetActive(background, productCategory);
 
     // ── Ingestion progress: count the enrichment calls up-front so the indicator is
     // determinate, and run the WHOLE pre-pass under one continuous isIngestingScene span
@@ -1586,7 +1624,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
           // COMPOSITION reference (which also carries the scene), so no separate scene image;
           // variation/pose-lock attach the selected Styling background image for the scene.
           sceneReferenceFile:
-            referencePhotoshootMode === "replication" ? undefined : inspirationFileOf(background),
+            referencePhotoshootMode === "replication" ? undefined : inspirationFileOf(background, productCategory),
           // The reference image, always attached as the COMPOSITION & FRAMING reference.
           compositionReferenceFile: refImg.file,
           frozenSceneUsed: frozenScene,
@@ -1660,7 +1698,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         const effFrozenScene = refCtx ? refCtx.frozenScene : frozenSceneDescription;
         // Scene image attached to the generator for cross-output consistency. Reference
         // results store it at creation; standard results derive it from the background.
-        const sceneRefFile = result.sceneReferenceFile ?? (refCtx ? undefined : inspirationFileOf(background));
+        const sceneRefFile = result.sceneReferenceFile ?? (refCtx ? undefined : inspirationFileOf(background, productCategory));
         // Reference image attached as the COMPOSITION & FRAMING reference (reference-photoshoot only).
         const compRef = refCtx && result.compositionReferenceFile
           ? { file: result.compositionReferenceFile, mode: refCtx.mode, replicateFootwearAccessories: garmentType === "complete-outfit" }
@@ -1881,19 +1919,23 @@ export function StepGenerate({ store }: StepGenerateProps) {
       });
     };
 
-    // Two lanes, not one pool: the fresh lane sustains 15 concurrent generations
-    // while a separate 15-wide repair lane grades and corrects them. Running the
-    // judge and its retries inside the generating worker would drain the fresh
-    // lane — see src/lib/two-lane-runner.ts for why the hand-off is a queue push
-    // rather than a permit acquire. gpt-image-2 keeps its own pool sizing because
-    // it funnels through the Azure endpoint rate limiter instead of the Gemini gate.
-    const FRESH_CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : VTON_FRESH_CONCURRENCY;
+    // Two lanes, not one pool: the fresh lane sustains N concurrent generations
+    // while a separate repair lane grades and corrects them. Running the judge and
+    // its retries inside the generating worker would drain the fresh lane — see
+    // src/lib/two-lane-runner.ts for why the hand-off is a queue push rather than
+    // a permit acquire. Lane widths come from the transport (see
+    // src/lib/transport-concurrency.ts); gpt-image-2 keeps its own pool sizing
+    // because it funnels through the Azure endpoint rate limiter, not the Gemini
+    // gate, and is therefore bounded by that limiter rather than by sockets.
+    const lanes = vtonLaneSizes();
+    const FRESH_CONCURRENCY =
+      imageGenModel === "gpt-image-2" ? VTON_GPT_IMAGE_CONCURRENCY : lanes.fresh;
     await runTwoLanes<GeneratedResult>({
       items: initialResults,
       freshWorkers: FRESH_CONCURRENCY,
-      followUpWorkers: VTON_REPAIR_CONCURRENCY,
+      followUpWorkers: lanes.repair,
       runFresh: processPose,
-      onAbandon: (task) => finalizeAbandonedRepair(task, updateResult),
+      onAbandon: (task, reason) => finalizeAbandonedRepair(task, updateResult, reason),
       signal,
     });
 
@@ -2100,6 +2142,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
       // REPLICA-mode backgrounds skip the scene-analysis pre-pass — they are attached
       // directly to the image-gen call with an exact-replication directive instead.
       if (bg.imageReferenceMode === "replica") return;
+      // So do preset backgrounds: the preset replaces the image entirely, so the
+      // analysis would be paid for and then discarded.
+      if (footwearBgPresetActive(bg, productCategory)) return;
       const f = bg.inspirationImage.file;
       if (!uniqueInspirationFiles.includes(f)) uniqueInspirationFiles.push(f);
     };
@@ -2337,7 +2382,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
               // (which also carries the scene) → no separate scene image; variation/pose-lock attach
               // the product's selected Styling background image for the scene.
               sceneReferenceFile:
-                referencePhotoshootMode === "replication" ? undefined : inspirationFileOf(selBgConfig),
+                referencePhotoshootMode === "replication" ? undefined : inspirationFileOf(selBgConfig, productCategory),
               // The reference image, always attached as the COMPOSITION & FRAMING reference.
               compositionReferenceFile: refImg.file,
               frozenSceneUsed: frozenScene,
@@ -2432,7 +2477,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
       const effFrozenScene = refCtx ? refCtx.frozenScene : frozenSceneDescription;
       // Scene image attached to the generator for cross-output consistency. Reference
       // results store it at creation; standard results derive it from the combo background.
-      const sceneRefFile = result.sceneReferenceFile ?? (refCtx ? undefined : inspirationFileOf(effectiveBg));
+      const sceneRefFile = result.sceneReferenceFile ?? (refCtx ? undefined : inspirationFileOf(effectiveBg, productCategory));
       // Reference image attached as the COMPOSITION & FRAMING reference (reference-photoshoot only).
       const compRef = refCtx && result.compositionReferenceFile
         ? { file: result.compositionReferenceFile, mode: refCtx.mode, replicateFootwearAccessories: garmentType === "complete-outfit" }
@@ -2674,13 +2719,15 @@ export function StepGenerate({ store }: StepGenerateProps) {
     };
 
     // Two lanes — see the single-mode call site and src/lib/two-lane-runner.ts.
-    const FRESH_CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : VTON_FRESH_CONCURRENCY;
+    const lanes = vtonLaneSizes();
+    const FRESH_CONCURRENCY =
+      imageGenModel === "gpt-image-2" ? VTON_GPT_IMAGE_CONCURRENCY : lanes.fresh;
     await runTwoLanes<BulkGeneratedResult>({
       items: allResults,
       freshWorkers: FRESH_CONCURRENCY,
-      followUpWorkers: VTON_REPAIR_CONCURRENCY,
+      followUpWorkers: lanes.repair,
       runFresh: processResult,
-      onAbandon: (task) => finalizeAbandonedRepair(task, updateBulkResult),
+      onAbandon: (task, reason) => finalizeAbandonedRepair(task, updateBulkResult, reason),
       signal,
     });
 
@@ -2902,8 +2949,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
       const poseIsGhostMannequin = result.pose.framing === "ghost-mannequin";
       if (!poseIsProductOnly && !selectedModel && !modelImage) return;
 
-      // The per-card retry button has no batch to cancel, so it runs against a
-      // signal that never aborts; "Regenerate Mismatched" passes the real one.
+      // Every caller now passes a real signal — the per-card buttons through
+      // handleRetryCard*, "Regenerate Mismatched" through its pool. The fallback
+      // stays only so a future call site cannot silently crash on a missing arg.
       const effSignal = signal ?? new AbortController().signal;
 
       const collectedCosts: StepCost[] = [];
@@ -3071,12 +3119,28 @@ export function StepGenerate({ store }: StepGenerateProps) {
       try {
         product = await generate();
       } catch {
+        // Mirror the batch path's abort handling. Without these checks a
+        // cancelled — or, now, a timed-out-then-cancelled — retry would sleep a
+        // second and then fire a WHOLE second prompt+image generation that the
+        // user has already asked to stop.
+        if (effSignal.aborted) {
+          updateResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+          return;
+        }
         try {
           retrySteps = [...collectedCosts];
           updateResult(result.id, { status: "auto-retrying", error: undefined });
           await new Promise((r) => setTimeout(r, 1000));
+          if (effSignal.aborted) {
+            updateResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+            return;
+          }
           product = await generate();
         } catch (retryError) {
+          if (effSignal.aborted) {
+            updateResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+            return;
+          }
           const allCosts = [...(retrySteps || []), ...collectedCosts];
           const totalCost = allCosts.reduce((s, c) => s + c.totalCost, 0);
           updateResult(result.id, {
@@ -3182,7 +3246,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
         : result.pose.requiresModel === false;
       const poseIsGhostMannequin = result.pose.framing === "ghost-mannequin";
 
-      // Per-card retry has no batch to cancel; "Regenerate Mismatched" passes the real signal.
+      // See the single-mode twin: every caller now passes a real, cancellable signal.
       const effSignal = signal ?? new AbortController().signal;
 
       const collectedCosts: StepCost[] = [];
@@ -3361,12 +3425,26 @@ export function StepGenerate({ store }: StepGenerateProps) {
       try {
         product = await generate();
       } catch {
+        // See the single-mode twin: without these an aborted retry still fires a
+        // second full generation after the user pressed Stop.
+        if (effSignal.aborted) {
+          updateBulkResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+          return;
+        }
         try {
           retrySteps = [...collectedCosts];
           updateBulkResult(result.id, { status: "auto-retrying", error: undefined });
           await new Promise((r) => setTimeout(r, 1000));
+          if (effSignal.aborted) {
+            updateBulkResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+            return;
+          }
           product = await generate();
         } catch (retryError) {
+          if (effSignal.aborted) {
+            updateBulkResult(result.id, { status: "cancelled", error: "Cancelled by user" });
+            return;
+          }
           const allCosts = [...(retrySteps || []), ...collectedCosts];
           const totalCost = allCosts.reduce((s, c) => s + c.totalCost, 0);
           updateBulkResult(result.id, {
@@ -3453,8 +3531,9 @@ export function StepGenerate({ store }: StepGenerateProps) {
     if (mismatched.length === 0 || isGenerating) return;
     const ctrl = beginGeneration();
     try {
-      const CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : VTON_FRESH_CONCURRENCY;
-      await runPool(mismatched, CONCURRENCY, (r) => handleRetrySingle(r, ctrl.signal), ctrl.signal);
+      // One lane, not two: each retried card already owns its whole
+      // grade-and-repair cycle, so this pool may use the fresh AND repair budget.
+      await runPool(mismatched, retryPoolSize(imageGenModel), (r) => handleRetrySingle(r, ctrl.signal), ctrl.signal);
     } finally {
       setIsGenerating(false);
     }
@@ -3465,12 +3544,47 @@ export function StepGenerate({ store }: StepGenerateProps) {
     if (mismatched.length === 0 || isGenerating) return;
     const ctrl = beginGeneration();
     try {
-      const CONCURRENCY = imageGenModel === "gpt-image-2" ? 10 : VTON_FRESH_CONCURRENCY;
-      await runPool(mismatched, CONCURRENCY, (r) => handleRetryBulk(r, ctrl.signal), ctrl.signal);
+      await runPool(mismatched, retryPoolSize(imageGenModel), (r) => handleRetryBulk(r, ctrl.signal), ctrl.signal);
     } finally {
       setIsGenerating(false);
     }
   }, [bulkResults, isGenerating, handleRetryBulk, setIsGenerating, imageGenModel, beginGeneration]);
+
+  /**
+   * The single-card retry buttons used to call `handleRetry{Single,Bulk}` with no
+   * signal at all, which fell through to `new AbortController().signal` — a signal
+   * that can never fire. That retry was therefore uncancellable, and because
+   * `isGenerating` stayed false the Stop button was not even on screen to try.
+   *
+   * These wrappers give it the same lifecycle the batch paths already use:
+   * `beginGeneration()` mints a controller the Stop button can reach, and the
+   * `finally` releases the flag. Same shape as `handleRetryAllMismatched*` above.
+   */
+  const handleRetryCardSingle = useCallback(
+    async (result: GeneratedResult) => {
+      if (isGenerating) return;
+      const ctrl = beginGeneration();
+      try {
+        await handleRetrySingle(result, ctrl.signal);
+      } finally {
+        setIsGenerating(false);
+      }
+    },
+    [isGenerating, beginGeneration, handleRetrySingle, setIsGenerating],
+  );
+
+  const handleRetryCardBulk = useCallback(
+    async (result: BulkGeneratedResult) => {
+      if (isGenerating) return;
+      const ctrl = beginGeneration();
+      try {
+        await handleRetryBulk(result, ctrl.signal);
+      } finally {
+        setIsGenerating(false);
+      }
+    },
+    [isGenerating, beginGeneration, handleRetryBulk, setIsGenerating],
+  );
 
   // ======================================================================
   // MULTI-TURN EDIT HANDLERS
@@ -6763,7 +6877,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    onClick={() => handleRetryBulk(result)}
+                                    onClick={() => handleRetryCardBulk(result)}
                                     disabled={!apiKey}
                                     className="rounded-lg gap-1.5 h-8 text-xs"
                                   >
@@ -6830,7 +6944,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                                     <Button
                                       variant="outline"
                                       size="sm"
-                                      onClick={() => handleRetryBulk(result)}
+                                      onClick={() => handleRetryCardBulk(result)}
                                       className="rounded-md gap-1 h-7 px-2 text-[11px]"
                                       title="Regenerate"
                                     >
@@ -7299,7 +7413,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => handleRetrySingle(result)}
+                      onClick={() => handleRetryCardSingle(result)}
                       disabled={!apiKey || (!(result.customPose ? customPoseIsProductOnly(result.customPose) : result.pose.requiresModel === false) && !selectedModel && !modelImage)}
                       className="rounded-lg gap-1.5"
                     >
@@ -7422,7 +7536,7 @@ export function StepGenerate({ store }: StepGenerateProps) {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => handleRetrySingle(result)}
+                        onClick={() => handleRetryCardSingle(result)}
                         className="rounded-lg gap-1.5"
                       >
                         <RefreshCw className="w-3.5 h-3.5" />

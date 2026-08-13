@@ -2,7 +2,12 @@ import type {
   GenerateContentParameters,
   GenerateContentResponse,
 } from "@google/genai";
-import { getGeminiClient, type GeminiClient } from "./gemini-client";
+import {
+  getGeminiClient,
+  type GeminiClient,
+  type GenerateContentOptions,
+} from "./gemini-client";
+import { VTON_TIMEOUT_MS, rethrowWithDeadlineContext, withDeadline } from "./request-deadline";
 import type { TextGenModel } from "./types";
 
 /**
@@ -36,6 +41,7 @@ type AzureTextProvider = Exclude<TextGenModel, "gemini">;
 async function generateContentAzure(
   provider: AzureTextProvider,
   params: GenerateContentParameters,
+  options?: GenerateContentOptions,
 ): Promise<GenerateContentResponse> {
   // `abortSignal` lives inside `config` but can't be serialized — pull it out and
   // apply it to the fetch instead so cancellation still works (mirrors gemini-client).
@@ -51,12 +57,20 @@ async function generateContentAzure(
     wireConfig = restConfig;
   }
 
+  // Bounded, but generously — the route runs on its own undici Agent with 600s
+  // header/body timeouts precisely because gpt-5.4-pro legitimately exceeds 300s
+  // on large meta-prompts. The deadline exists to stop that route's 3-attempt
+  // retry loop stacking into a ~30-minute wait, not to cut a healthy call short.
+  const budgetMs = options?.timeoutMs ?? VTON_TIMEOUT_MS.promptAzure;
+
   const response = await fetch("/api/azure-text/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...rest, config: wireConfig, azureProvider: provider }),
-    signal: abortSignal,
-  });
+    signal: withDeadline(abortSignal, budgetMs),
+  }).catch((error: unknown) =>
+    rethrowWithDeadlineContext(error, "Prompt generation", budgetMs),
+  );
 
   if (!response.ok) {
     let message = `Azure text request failed (${response.status})`;
@@ -87,7 +101,9 @@ async function generateContentAzure(
 /** Builds a Gemini-shaped client bound to a specific Azure text provider. */
 function makeAzureClient(provider: AzureTextProvider): GeminiClient {
   return {
-    models: { generateContent: (params) => generateContentAzure(provider, params) },
+    models: {
+      generateContent: (params, options) => generateContentAzure(provider, params, options),
+    },
   };
 }
 

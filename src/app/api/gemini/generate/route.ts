@@ -56,7 +56,17 @@ export async function POST(request: NextRequest) {
       request.headers.get("x-google-backend") === "gemini" ? "gemini" : "vertex";
 
     const ai = getGoogleClient(backend);
-    const response = await ai.models.generateContent(params);
+
+    // Forward the client's disconnect into the SDK call. Without this a browser
+    // that gave up — Stop pressed, deadline blown, tab closed — left the upstream
+    // Google call running to completion, and because the slot is only released in
+    // the `finally` below, the gate stayed one slot smaller until it finished.
+    // Under retry churn that shrinks the effective pool to well under
+    // MAX_CONCURRENT and every later request queues behind ghosts.
+    const response = await ai.models.generateContent({
+      ...params,
+      config: { ...params.config, abortSignal: request.signal },
+    });
 
     // Shallow-copy own enumerable props (candidates, usageMetadata,
     // promptFeedback, ...). Avoids the JSON.stringify -> JSON.parse deep clone

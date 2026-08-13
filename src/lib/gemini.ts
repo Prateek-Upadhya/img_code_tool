@@ -2,6 +2,7 @@ import { HarmBlockThreshold, HarmCategory, ThinkingLevel, Type } from "@google/g
 import type { PartMediaResolutionLevel } from "@google/genai";
 import { getGeminiClient } from "./gemini-client";
 import { getTextClient } from "./text-client";
+import { VTON_TIMEOUT_MS } from "./request-deadline";
 import { fileToBase64Cached, fileToBase64HiResCached } from "./image-downscale";
 import { buildPropInteractionCue } from "./utils";
 import {
@@ -15,6 +16,7 @@ import {
   CustomPose,
   EditHistoryEntry,
   FitType,
+  FootwearBackgroundPreset,
   FootwearType,
   GarmentImage,
   GarmentType,
@@ -575,6 +577,76 @@ ADDITIONAL RULES for this lighting mode:
   • The light is colour-neutral (~5500K daylight). It must NOT warm, cool, or desaturate the garment — the garment renders at its TRUE colors from the product photos.
   • Do NOT lead with negations such as "no shadows" / "without shadows" as the primary description — always describe the even, wrapping high-key light first, then state the shadow-free result as the anchor sentence does.
 `;
+
+/**
+ * Background + lighting specification for the footwear "Clean White Studio"
+ * preset (`BackgroundConfig.footwearBackgroundPreset === "clean-white-studio"`).
+ *
+ * WHY THIS IS NOT `EVEN_HIGH_KEY_LIGHTING_DIRECTIVE`
+ * -------------------------------------------------
+ * That directive forbids cast shadows ANYWHERE, which is right for its own
+ * checkbox but wrong here: a shoe rendered with literally zero shadow reads as
+ * pasted onto the backdrop rather than standing on it. This preset keeps exactly
+ * one shadow — the tight contact shadow at the ground line — reusing the phrasing
+ * already proven in the footwear MANDATORY PROMPT STRUCTURE ("very subtle, soft,
+ * narrow drop shadow directly underneath the sole ... no long cast shadows") and
+ * the grounding rationale in `PRODUCT_STILL_LIFE_DIRECTIVE`. The two are mutually
+ * exclusive: selecting this preset forces `evenLighting` off.
+ *
+ * Follows the same phrasing rules as the neighbouring lighting directive: lead
+ * with the light that IS present, state the shadow-free result after, and give
+ * the meta-prompter a verbatim anchor sentence so every pose in the batch emits
+ * an identical BACKGROUND + LIGHTING section.
+ *
+ * The pose-independence clause is load-bearing: the frozen-scene path otherwise
+ * varies the backdrop by `backdropTier` (FULL / MID / CLOSE-UP), and a preset
+ * whose whole promise is "the same clean white regardless of pose" must opt out
+ * of that.
+ */
+const FOOTWEAR_CLEAN_WHITE_BACKGROUND_DIRECTIVE = `
+═══ BACKGROUND & LIGHTING: CLEAN WHITE STUDIO (USER-SELECTED PRESET — SOLE SOURCE OF TRUTH) ═══
+The user has explicitly selected the Clean White Studio preset for this batch. This REPLACES every other background source and OVERRIDES any scene, location, environment, or lighting language elsewhere in these instructions. Do NOT derive the background from the product reference photos, and do NOT invent scenery, props, or a location.
+
+Write the BACKGROUND and LIGHTING sections of your output prompt using POSITIVE, photographer-style phrasing. Copy the following anchor sentence into your output prompt VERBATIM:
+"The product is photographed in a pure white (#FFFFFF) seamless studio — an unbroken, gradient-free white sweep with no visible horizon line, wall-to-floor seam, corner, texture, prop, or scenery — lit with flat, even, high-key commercial product lighting from broad frontal and overhead diffusion that wraps the product uniformly at one single exposure, colour-neutral at ~5500K, with soft open highlights and no directional key light, no side-light, no rim light, no chiaroscuro, no falloff and no vignette; the backdrop itself carries no shadow of any kind, and the only shadow anywhere in the frame is a very subtle, soft-edged, low-opacity contact shadow hugging the line where the product meets the ground."
+
+ADDITIONAL RULES for this preset:
+  • BACKDROP: pure white #FFFFFF everywhere. State the hex value explicitly in the output prompt. The white is uniform — no grey gradient, no soft vignette at the edges, no warm or cool tint, no paper texture, no visible sweep curve.
+  • THE ONE PERMITTED SHADOW: a single contact shadow directly beneath the point(s) where the product touches the ground — under the outsole for product-only shots, under the shoes/feet for on-model shots. It is narrow, soft-edged, low-opacity, and stays tight to the contact line. It grounds the product and nothing more.
+  • FORBIDDEN SHADOWS: no long or directional cast shadow, no shadow thrown onto the backdrop or up a wall, no drop shadow offset away from the contact point, no shadow pooling around the product, and — on model shots — no shadow cast by the body or legs onto the floor or backdrop.
+  • LIGHTING IS COLOUR-NEUTRAL (~5500K daylight). It must NOT warm, cool, or desaturate the product — the footwear renders at its TRUE colors from the product photos. Keep highlights open and controlled; no blown-out hotspots on the material.
+  • IDENTICAL ACROSS EVERY POSE: this backdrop and this lighting are the same for every output in the batch regardless of the pose, the framing, or the camera distance — product-only, sole/detail close-up, feet close-up, half-body, full-body and ghost-mannequin shots all sit on the same pure white sweep under the same flat high-key light. Do NOT tighten, widen, tint, or restyle the backdrop as the framing changes.
+  • Do NOT lead with negations such as "no shadows" / "plain white background" as the primary description — always describe the seamless white sweep and the even high-key light first, then state the shadow behaviour as the anchor sentence does.
+
+BACKGROUND LOCK: The anchor sentence above is a FIXED SPECIFICATION. Copy it into every output prompt word-for-word — same wording, same hex value, same shadow rule. Do NOT paraphrase, swap synonyms, add creative embellishments, or reinterpret. Every image in this batch must render a pixel-consistent backdrop.
+`;
+
+/**
+ * Preset → meta-prompter directive. A `Record` over the union rather than a
+ * lookup with a default, so adding a preset to `FootwearBackgroundPreset` fails
+ * the build until its prompt text is written. Mirrors
+ * `INFOGRAPHIC_BACKGROUND_SNIPPETS`.
+ */
+const FOOTWEAR_BACKGROUND_PRESET_DIRECTIVES: Record<FootwearBackgroundPreset, string> = {
+  "clean-white-studio": FOOTWEAR_CLEAN_WHITE_BACKGROUND_DIRECTIVE,
+};
+
+/**
+ * The same preset restated for the image model, which sees this directly rather
+ * than through the meta-prompter's rewrite. Deliberately condensed: the full
+ * directive is authoring guidance for a prompt writer, whereas Nano Banana needs
+ * the rendering contract.
+ */
+const FOOTWEAR_BACKGROUND_PRESET_IMAGE_CLAUSES: Record<FootwearBackgroundPreset, string> = {
+  "clean-white-studio":
+    `\n\n═══ BACKGROUND & LIGHTING (CLEAN WHITE STUDIO — USER-SELECTED PRESET) ═══\n` +
+    `Place the product in a pure white (#FFFFFF) seamless studio: an unbroken, gradient-free white sweep with no horizon line, wall-to-floor seam, corner, texture, prop, or scenery. ` +
+    `Light it with flat, even, high-key commercial product lighting — broad frontal and overhead diffusion wrapping the product at one single exposure, colour-neutral ~5500K, soft open highlights, no directional key light, no side-light, no rim light, no chiaroscuro, no falloff, no vignette. ` +
+    `The backdrop carries no shadow of any kind. The ONLY shadow in the frame is a very subtle, soft-edged, low-opacity contact shadow hugging the line where the product meets the ground — under the outsole on product-only shots, under the shoes on model shots. ` +
+    `No long or directional cast shadows, no shadow on the backdrop, no offset drop shadow, and no shadow cast by the model's body or legs. ` +
+    `The light must not warm, cool, or desaturate the product: it renders at its TRUE colors from the reference photos. ` +
+    `This backdrop and lighting are identical for every pose, framing, and camera distance in the batch.`,
+};
 
 /**
  * Shared directive for PROP-BUCKET props (accessories carrying a `bucketId`). A
@@ -2907,24 +2979,33 @@ For reference-image accessories: reproduce the exact same accessory across all p
 
   // Background details — precedence:
   //   (1) per-pose customBackground (explicit text override)
-  //   (2) image-reference mode (adapted palette derived from the holistic reference image)
-  //   (3) REPLICA mode — global inspiration image with imageReferenceMode === "replica".
+  //   (2) footwear background preset — a user-selected ready-made treatment that
+  //       replaces every remaining source below. Sits under (1) because a per-pose
+  //       custom background is a deliberate, narrower override.
+  //   (3) image-reference mode (adapted palette derived from the holistic reference image)
+  //   (4) REPLICA mode — global inspiration image with imageReferenceMode === "replica".
   //       Image is also attached as input to the downstream image-gen call so Nano Banana 2
   //       can reproduce it pixel-for-pixel; meta-prompt stays terse to avoid contradicting
   //       the visual reference. See `buildVTONImageContentParts` for the matching directive.
-  //   (4) frozenSceneDescription — pre-analyzed wide-shot from analyzeBackgroundScene()
+  //   (5) frozenSceneDescription — pre-analyzed wide-shot from analyzeBackgroundScene()
   //       (replaces global inspiration image; reused VERBATIM across the whole batch)
-  //   (5) global inspiration image in classic inspiration mode (legacy fallback when
+  //   (6) global inspiration image in classic inspiration mode (legacy fallback when
   //       analysis was skipped or failed)
-  //   (6) global text description
-  //   (7) default fallback
+  //   (7) global text description
+  //   (8) default fallback
   const isReplicaBg =
     background.mode === "inspiration" &&
     background.imageReferenceMode === "replica" &&
     !!background.inspirationImage;
+  // Footwear-only, and only when the user actually picked one. The UI hides the
+  // text box and the upload zone while a preset is active, so in practice the
+  // later branches have nothing to contribute — this guard makes that explicit
+  // rather than relying on them being empty.
+  const useFootwearBgPreset = isFootwear && !!background.footwearBackgroundPreset;
   let bgInstruction = "";
   const useFrozenScene =
     !customPose?.customBackground &&
+    !useFootwearBgPreset &&
     !isCustomPoseImageMode &&
     !isReplicaBg &&
     !isReplicationMode &&
@@ -2934,6 +3015,8 @@ For reference-image accessories: reproduce the exact same accessory across all p
   const useReplicationScene = isReplicationMode && !!frozenSceneDescription;
   if (customPose?.customBackground) {
     bgInstruction = `Background/environment description (CUSTOM FOR THIS POSE — DETERMINISTIC): ${customPose.customBackground}\nBACKGROUND LOCK: Reproduce this description VERBATIM in every output prompt — identical wording, identical colors, identical elements. Do NOT paraphrase, add synonyms, introduce creative variations, or reinterpret. If colors are specified, repeat them as exact hex/RGB values. Every pose in this batch must share a pixel-identical backdrop.`;
+  } else if (useFootwearBgPreset && background.footwearBackgroundPreset) {
+    bgInstruction = FOOTWEAR_BACKGROUND_PRESET_DIRECTIVES[background.footwearBackgroundPreset];
   } else if (isCustomPoseImageMode) {
     bgInstruction = `Background/environment description (DERIVED FROM HOLISTIC IMAGE REFERENCE — DETERMINISTIC):\nThe background for this custom pose is NOT taken from the global SCENE PARAMETERS. Instead, derive it from the HOLISTIC IMAGE REFERENCE — EXTRACTION RULES block above. Specifically:\n  • Use the SCENE & ENVIRONMENT, LIGHTING & MOOD, and COMPOSITION & STYLING extracted from the reference (rendered in product-agnostic language).\n  • Use the ADAPTED BACKGROUND PALETTE (STEP 5C) as the literal color specification — write its 4-6 hex codes verbatim into the BACKGROUND section of your output prompt with their role labels intact.\n  • Maintain the reference image's mood and atmospheric character; the adapted palette only retunes hue/value/chroma to highlight the user's product, never the underlying mood.\nBACKGROUND LOCK: Once derived, lock the resulting backdrop description and the adapted hex codes for the entire batch. Reuse the SAME description and the SAME hex codes word-for-word across every pose so all outputs share one pixel-consistent stage. Do NOT re-derive between poses, do NOT introduce synonym swaps, do NOT drift toward white or any other unspecified color.`;
   } else if (isReplicaBg && background.inspirationImage) {
@@ -3043,7 +3126,13 @@ BACKGROUND LOCK: The FROZEN SCENE DESCRIPTION above replaces all other backgroun
   // Custom EVEN HIGH-KEY · SHADOWLESS lighting override (user-selected). Appended
   // to bgInstruction so it reaches BOTH the clothing and footwear meta-prompts via
   // SCENE PARAMETERS, and explicitly overrides the LIGHTING DIRECTIVE above.
-  if (background.evenLighting) {
+  //
+  // Never alongside a background preset: that directive's "no cast shadows
+  // anywhere" rule contradicts the preset's one deliberate contact shadow, and
+  // whichever the model obeyed would be a coin flip. The UI disables the toggle
+  // while a preset is selected; this guard also covers a stored bulk background
+  // config that predates that rule.
+  if (background.evenLighting && !useFootwearBgPreset) {
     bgInstruction += `\n${EVEN_HIGH_KEY_LIGHTING_DIRECTIVE}`;
   }
 
@@ -3336,8 +3425,14 @@ export async function buildVTONImageContentParts({
   // Use the labelled multi-angle block only when ≥2 views are supplied; a single
   // view (or none) keeps the original single-image behaviour for backward compat.
   const useMultiView = !!modelViews && modelViews.length >= 2;
+  // A footwear background preset outranks replica mode: the preset is the sole
+  // background source, so an inspiration image still sitting in state must not be
+  // attached to the call or given the exact-replication directive. Matches the
+  // precedence in generateVTONPrompt, where the preset branch comes first.
+  const usePresetBg = isFootwear && !!background?.footwearBackgroundPreset;
   const isReplicaBg =
     !!background &&
+    !usePresetBg &&
     background.mode === "inspiration" &&
     background.imageReferenceMode === "replica" &&
     !!background.inspirationImage;
@@ -3345,10 +3440,22 @@ export async function buildVTONImageContentParts({
   // the image-gen layer (Nano Banana sees this directly, in addition to the
   // anchor sentence already woven into `prompt` by the meta-prompter). Positive
   // phrasing first, shadow-free result stated after — see EVEN_HIGH_KEY_LIGHTING_DIRECTIVE.
-  const evenLightingClause = background?.evenLighting
-    ? `\n\n═══ LIGHTING (EVEN HIGH-KEY · SHADOWLESS — USER-SELECTED) ═══\n` +
-      `Light the entire frame with bright, soft, even high-key illumination that wraps the subject uniformly from all directions: the model and the background are lit at the same single even intensity, the backdrop is smooth and gradient-free, and the model casts no shadow onto the floor or backdrop — the scene contains no cast shadows anywhere, no harsh side-light, no chiaroscuro, and no rim light. The light is colour-neutral (~5500K) and must not shift the garment's true colours.`
-    : "";
+  // The footwear background preset owns both the backdrop and the lighting, so it
+  // replaces the even-lighting clause rather than stacking with it — the two give
+  // contradictory shadow rules. Mirrors the same precedence in generateVTONPrompt.
+  const footwearBgPresetClause =
+    usePresetBg && background?.footwearBackgroundPreset
+      ? FOOTWEAR_BACKGROUND_PRESET_IMAGE_CLAUSES[background.footwearBackgroundPreset]
+      : "";
+  // Reinforcement of the user-selected EVEN HIGH-KEY · SHADOWLESS lighting mode at
+  // the image-gen layer (Nano Banana sees this directly, in addition to the
+  // anchor sentence already woven into `prompt` by the meta-prompter). Positive
+  // phrasing first, shadow-free result stated after — see EVEN_HIGH_KEY_LIGHTING_DIRECTIVE.
+  const evenLightingClause =
+    background?.evenLighting && !footwearBgPresetClause
+      ? `\n\n═══ LIGHTING (EVEN HIGH-KEY · SHADOWLESS — USER-SELECTED) ═══\n` +
+        `Light the entire frame with bright, soft, even high-key illumination that wraps the subject uniformly from all directions: the model and the background are lit at the same single even intensity, the backdrop is smooth and gradient-free, and the model casts no shadow onto the floor or backdrop — the scene contains no cast shadows anywhere, no harsh side-light, no chiaroscuro, and no rim light. The light is colour-neutral (~5500K) and must not shift the garment's true colours.`
+      : "";
   const parts: ContentPart[] = [];
 
   // ═══ REPLICA-MODE PROMPT FRAGMENTS ═══
@@ -3516,6 +3623,7 @@ export async function buildVTONImageContentParts({
         `${!isProductOnlyShot ? "\n\n═══ FOOTWEAR SCALE, FIT & PROPORTION LOCK (ON-MODEL — MANDATORY) ═══\nThis is the single most critical on-model failure mode for footwear. Read and enforce every clause.\n\nSCALE ANCHOR (size the shoe by the model's anatomy): Render the footwear at the exact real-world scale of a shoe worn by THIS specific model. The outsole length equals ONE foot length — from the back of the model's heel to the tip of their longest toe, and no further. The shoe width matches the width of the model's own foot. Render the shoe as it would truly appear in a candid commercial photograph of this model wearing this product, NOT as a detached hero product scaled up for drama.\n\nFIT ANCHOR (positive-framing): The collar/topline hugs the ankle with the heel seated flush against the heel counter; the upper wraps the forefoot smoothly and closely; the tongue sits naturally over the instep; the laces (if any) close the throat cleanly. The fit reads as clean, contoured, and true-to-size — with no gapping, no bulging, no tenting, no cavernous opening around the ankle, and no slippage. The sole makes flat, stable ground contact and the ankle line is anatomically correct.\n\nPROPORTION LOCK (copy these attributes PIXEL-FOR-PIXEL from the PRODUCT REFERENCE IMAGES above — never invent, exaggerate, or stylize them): SOLE THICKNESS, midsole stack height, toe-spring, heel height, toe-box volume and depth, collar height, upper-to-sole height ratio, and outsole length-to-width ratio are all identical to the reference product. Keep the sole slim when the reference sole is slim; keep the midsole flat when the reference midsole is flat; keep the toe box shallow when the reference toe box is shallow. Do NOT thicken the sole, inflate the midsole into a chunkier stack, enlarge the toe box, heighten the heel, or push the shoe toward a sportier/chunkier silhouette than the reference shows. The rendered shoe on the model's foot must look like the EXACT SAME product in the reference photos — just worn on a real foot." : ""}` +
         `${!isProductOnlyShot && (useMultiView || modelImage) ? `\n\nMODEL IDENTITY: Generate the EXACT same person from the model reference image${useMultiView ? "s (use the FULL BODY, FACE CLOSE-UP and BACK OF HEAD views together)" : ""} — same face, skin tone, hair color/style, and body type.` : ""}` +
         `${isProductOnlyShot ? "\n\nPRODUCT-ONLY SHOT: No human model, feet, legs, or any body parts should appear in the generated image. Show ONLY the footwear product." : ""}` +
+        footwearBgPresetClause +
         evenLightingClause,
     });
   } else {
@@ -5739,16 +5847,23 @@ export async function scoreVTONImage({
   for (let judgeAttempt = 0; judgeAttempt < 2; judgeAttempt++) {
     if (abortSignal?.aborted) return { ok: false, cost: lastCost, error: "aborted" };
     try {
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: parts,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: VTON_SCORE_SCHEMA,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
-          abortSignal,
+      const response = await ai.models.generateContent(
+        {
+          model: "gemini-3.1-pro-preview",
+          contents: parts,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: VTON_SCORE_SCHEMA,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            abortSignal,
+          },
         },
-      });
+        // Tighter than the shared Pro-model default: this loop runs TWICE on a
+        // parse failure, and a card whose judge is wedged still has a usable
+        // image — giving up sooner and marking verification inconclusive beats
+        // holding a repair-lane worker for three minutes per attempt.
+        { timeoutMs: VTON_TIMEOUT_MS.judge },
+      );
 
       // Cost is captured on EVERY path, including failures — the old validator
       // dropped it on error, so failed verifications were billed but untracked.
