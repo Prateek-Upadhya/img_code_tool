@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   Archive,
   Camera,
@@ -8,351 +8,70 @@ import {
   History,
   Loader2,
   RefreshCw,
+  Square,
   ThumbsUp,
   Undo2,
   Upload,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  generateModelViewImage,
-  generateModelEditInstruction,
-  generateModelEditImage,
-} from "@/lib/gemini";
-import {
-  generateModelViewImageAzure,
-  generateModelEditImageAzure,
-} from "@/lib/azure-image";
-import { dataUrlToFile, imageAspectRatio } from "@/lib/model-creation-client";
 import { downloadModelZip } from "@/lib/model-zip";
 import { ModelEditControls } from "./model-edit-controls";
-import type { VTONStore } from "@/store/vton-store";
-import type { ModelAgeGroup, ModelVersion, ModelViewKind, ModelViewResult } from "@/lib/types";
+import { VIEW_META } from "@/hooks/use-model-refine-ops";
+import type {
+  ModelRefineData,
+  ModelRefinePatch,
+  RefineOpState,
+} from "@/hooks/use-model-refine-ops";
+import type { ModelVersion, ModelViewKind, ModelViewResult } from "@/lib/types";
 
-/** The refine-able slice of a ModelCreationResult or SavedModel. */
-export interface ModelRefineData {
-  name: string;
-  /** Full-body image as a data URL. */
-  imageData: string;
-  /**
-   * Life stage of the subject, driving `personGeneration` on every refine
-   * render. Optional so pre-existing library entries without an age still load;
-   * those fall back to adult in the image helpers.
-   */
-  ageGroup?: ModelAgeGroup;
-  faceCloseUp?: ModelViewResult;
-  backHead?: ModelViewResult;
-  versions?: ModelVersion[];
-}
-
-export type ModelRefinePatch = Partial<
-  Pick<ModelRefineData, "imageData" | "faceCloseUp" | "backHead" | "versions">
->;
+export type { ModelRefineData, ModelRefinePatch };
 
 interface Props {
-  store: VTONStore;
+  /** Stable identity of the model this panel is bound to. */
+  refineKey: string;
   data: ModelRefineData;
-  /** Shallow-merged into the backing ModelCreationResult / SavedModel. */
-  onChange: (patch: ModelRefinePatch) => void;
-}
-
-function uid(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  /** Transient per-model state owned by the step (pending edit, stage, errors). */
+  opState: RefineOpState;
+  busy: boolean;
+  onGenerateShots: () => void;
+  onRegenerateView: (view: ModelViewKind) => void;
+  onApproveView: (view: ModelViewKind) => void;
+  onApplyEdit: (directive: string, label: string, categoryKeys: string[]) => void;
+  onApproveEdit: () => void;
+  onDiscardEdit: () => void;
+  onRevert: (v: ModelVersion) => void;
+  onUpload: (slotKind: "full-body" | ModelViewKind, file: File) => void;
+  /** Cancels every in-flight render for THIS model only. */
+  onStop: () => void;
 }
 
 /**
- * What the full body must copy from an edited face close-up on re-sync.
- * Complexion is included deliberately: the close-up is the identity source of
- * truth, so a skin-tone edit there has to travel to the body — otherwise a
- * re-toned head ends up on a body still at the old shade. The image prompt's
- * companion clause (MODEL_EDIT_COMPLEXION_SYNC_CLAUSE) spells out the full skin
- * inventory; this names the intent.
+ * Per-model refine panel: the three view slots with their approve/regenerate
+ * loop, the structured facial-edit controls, the pending-edit review card,
+ * version history, and zip export.
+ *
+ * Purely presentational — every operation and all transient state live in
+ * `useModelRefineOps`, owned by the Refine step. That is what lets many panels
+ * run at once: each is bound to its own `refineKey`, and the step drives the
+ * same operations for a single card or for a whole batch.
  */
-const FACE_SYNC_INSTRUCTION =
-  "the model's face, facial features, skin tone and complexion, hairstyle, hair color and makeup exactly match the REFERENCE image, with that complexion carried evenly across every area of exposed skin on the whole body";
-const FACE_SYNC_REFERENCE_DIRECTIVE =
-  "the face, skin tone and complexion, hairstyle, hair color and makeup";
-
-const VIEW_META: Record<ModelViewKind, { key: "faceCloseUp" | "backHead"; title: string }> = {
-  "face-closeup": { key: "faceCloseUp", title: "Face close-up" },
-  "back-head": { key: "backHead", title: "Back of head" },
-};
-
-/**
- * Per-model refine panel: reference-shot generation with an approve/regenerate
- * loop, the structured facial-edit pipeline (face close-up is the identity
- * source of truth), linear version history with revert, and zip export.
- * Used by the wizard's Refine step (bound to a ModelCreationResult) and by the
- * Model Library (bound to a SavedModel).
- */
-export function ModelRefinePanel({ store, data, onChange }: Props) {
-  const { apiKey, textGenModel, imageGenModel, setIsModelRefineGenerating } = store;
-
-  const [pendingEdit, setPendingEdit] = useState<{ label: string; imageData: string } | null>(null);
-  const [editStage, setEditStage] = useState<"idle" | "editing" | "syncing-body" | "syncing-back">("idle");
-  const [editError, setEditError] = useState<string | null>(null);
-  const [opCount, setOpCount] = useState(0);
-
-  // Pure local counter of in-flight renders — several can overlap (the two
-  // reference shots generate concurrently). Keep the updaters side-effect free.
-  const beginOp = useCallback(() => setOpCount((n) => n + 1), []);
-  const endOp = useCallback(() => setOpCount((n) => Math.max(0, n - 1)), []);
-
-  const busy =
-    opCount > 0 ||
-    editStage !== "idle" ||
-    data.faceCloseUp?.status === "generating" ||
-    data.backHead?.status === "generating";
-
-  // Mirror the panel's busy state into the wizard-level flag that gates step
-  // navigation and mode switching. This has to be an effect, never a call from
-  // inside a setState updater: updaters run during render, so setting another
-  // component's state there triggers React's "Cannot update a component
-  // (`VTONWizard`) while rendering a different component" warning — and, being
-  // impure, fires twice under dev StrictMode. Same lesson as togglePoseBucket
-  // in the store.
-  useEffect(() => {
-    setIsModelRefineGenerating(busy);
-  }, [busy, setIsModelRefineGenerating]);
-
-  // Clear the flag if the panel unmounts mid-run (e.g. the user deselects the
-  // model card), otherwise wizard navigation stays disabled for good.
-  useEffect(() => () => setIsModelRefineGenerating(false), [setIsModelRefineGenerating]);
-
-  /** Renders one reference shot from a full-body data URL. Returns the image. */
-  const runView = useCallback(
-    async (view: ModelViewKind, sourceDataUrl: string): Promise<string | undefined> => {
-      const { key } = VIEW_META[view];
-      const patchView = (v: ModelViewResult): ModelRefinePatch =>
-        key === "faceCloseUp" ? { faceCloseUp: v } : { backHead: v };
-      onChange(patchView({ status: "generating" }));
-      beginOp();
-      try {
-        const file = dataUrlToFile(sourceDataUrl, "full-body.png");
-        const aspectRatio = await imageAspectRatio(file);
-        const res =
-          imageGenModel === "gpt-image-2"
-            ? await generateModelViewImageAzure({
-                sourceImage: { file },
-                view,
-                aspectRatio,
-                imageSize: "2K",
-              })
-            : await generateModelViewImage({
-                apiKey,
-                sourceImage: { file },
-                view,
-                ageGroup: data.ageGroup,
-                aspectRatio,
-                imageSize: "2K",
-              });
-        onChange(
-          patchView({
-            status: "completed",
-            imageData: res.imageData,
-            approved: false,
-            costBreakdown: { steps: [res.cost], totalCost: res.cost.totalCost },
-          })
-        );
-        return res.imageData;
-      } catch (err) {
-        onChange(
-          patchView({
-            status: "error",
-            error: err instanceof Error ? err.message : "Generation failed",
-          })
-        );
-        return undefined;
-      } finally {
-        endOp();
-      }
-    },
-    [apiKey, imageGenModel, onChange, beginOp, endOp]
-  );
-
-  const handleGenerateShots = useCallback(() => {
-    void runView("face-closeup", data.imageData);
-    void runView("back-head", data.imageData);
-  }, [runView, data.imageData]);
-
-  const approveView = useCallback(
-    (view: ModelViewKind) => {
-      const { key } = VIEW_META[view];
-      const current = data[key];
-      if (!current?.imageData) return;
-      const approved: ModelViewResult = { ...current, approved: true };
-      onChange(key === "faceCloseUp" ? { faceCloseUp: approved } : { backHead: approved });
-    },
-    [data, onChange]
-  );
-
-  /** Stage 1 — apply the composed directive to the face close-up only. */
-  const handleApplyEdit = useCallback(
-    async (directive: string, label: string, categoryKeys: string[] = []) => {
-      const closeUp = data.faceCloseUp?.imageData;
-      if (!closeUp || busy) return;
-      // A complexion edit has to be exempted from the "preserve skin tone"
-      // rule, or the preservation clause cancels the very change requested.
-      // Driven off the structured selection, so there is no text sniffing.
-      const releaseSkinTone = categoryKeys.includes("skin-tone");
-      setEditError(null);
-      setEditStage("editing");
-      beginOp();
-      try {
-        const file = dataUrlToFile(closeUp, "face-closeup.png");
-        const aspectRatio = await imageAspectRatio(file);
-        const instr = await generateModelEditInstruction({
-          textGenModel,
-          sourceImage: { file },
-          changeDirective: directive,
-        });
-        const res =
-          imageGenModel === "gpt-image-2"
-            ? await generateModelEditImageAzure({
-                editInstruction: instr.editInstruction,
-                sourceImage: { file },
-                releaseSkinTone,
-                aspectRatio,
-                imageSize: "2K",
-              })
-            : await generateModelEditImage({
-                apiKey,
-                editInstruction: instr.editInstruction,
-                sourceImage: { file },
-                releaseSkinTone,
-                ageGroup: data.ageGroup,
-                aspectRatio,
-                imageSize: "2K",
-              });
-        setPendingEdit({ label, imageData: res.imageData });
-      } catch (err) {
-        setEditError(err instanceof Error ? err.message : "Edit failed");
-      } finally {
-        endOp();
-        setEditStage("idle");
-      }
-    },
-    [data.faceCloseUp, busy, apiKey, textGenModel, imageGenModel, beginOp, endOp]
-  );
-
-  /**
-   * Stage 2 — the user approved the edited close-up: snapshot the current
-   * state into the version history, promote the edit, re-sync the full body
-   * from it, then regenerate the back-of-head from the new full body.
-   */
-  const handleApproveEdit = useCallback(async () => {
-    if (!pendingEdit) return;
-    const snapshot: ModelVersion = {
-      id: uid("mv"),
-      label: `Before: ${pendingEdit.label}`,
-      createdAt: Date.now(),
-      imageData: data.imageData,
-      faceCloseUp: data.faceCloseUp?.imageData,
-      backHead: data.backHead?.imageData,
-    };
-    const editedCloseUp = pendingEdit.imageData;
-    setPendingEdit(null);
-    setEditError(null);
-    onChange({
-      faceCloseUp: { status: "completed", imageData: editedCloseUp, approved: true },
-      versions: [...(data.versions ?? []), snapshot],
-    });
-
-    setEditStage("syncing-body");
-    beginOp();
-    try {
-      const bodyFile = dataUrlToFile(data.imageData, "full-body.png");
-      const refFile = dataUrlToFile(editedCloseUp, "face-closeup.png");
-      const aspectRatio = await imageAspectRatio(bodyFile);
-      const res =
-        imageGenModel === "gpt-image-2"
-          ? await generateModelEditImageAzure({
-              editInstruction: FACE_SYNC_INSTRUCTION,
-              sourceImage: { file: bodyFile },
-              referenceImage: { file: refFile },
-              referenceDirective: FACE_SYNC_REFERENCE_DIRECTIVE,
-              identityFromReference: true,
-              aspectRatio,
-              imageSize: "2K",
-            })
-          : await generateModelEditImage({
-              apiKey,
-              editInstruction: FACE_SYNC_INSTRUCTION,
-              sourceImage: { file: bodyFile },
-              referenceImage: { file: refFile },
-              referenceDirective: FACE_SYNC_REFERENCE_DIRECTIVE,
-              identityFromReference: true,
-              ageGroup: data.ageGroup,
-              aspectRatio,
-              imageSize: "2K",
-            });
-      onChange({ imageData: res.imageData });
-      setEditStage("syncing-back");
-      await runView("back-head", res.imageData);
-    } catch (err) {
-      setEditError(
-        err instanceof Error
-          ? `Full-body re-sync failed: ${err.message}`
-          : "Full-body re-sync failed"
-      );
-    } finally {
-      endOp();
-      setEditStage("idle");
-    }
-  }, [pendingEdit, data, apiKey, imageGenModel, onChange, runView, beginOp, endOp]);
-
-  /** Restore a version as current; the replaced state is appended to history. */
-  const handleRevert = useCallback(
-    (v: ModelVersion) => {
-      if (busy) return;
-      const snapshot: ModelVersion = {
-        id: uid("mv"),
-        label: `Before revert to "${v.label}"`,
-        createdAt: Date.now(),
-        imageData: data.imageData,
-        faceCloseUp: data.faceCloseUp?.imageData,
-        backHead: data.backHead?.imageData,
-      };
-      onChange({
-        imageData: v.imageData,
-        faceCloseUp: v.faceCloseUp
-          ? { status: "completed", imageData: v.faceCloseUp, approved: true }
-          : undefined,
-        backHead: v.backHead
-          ? { status: "completed", imageData: v.backHead, approved: true }
-          : undefined,
-        versions: [...(data.versions ?? []), snapshot],
-      });
-    },
-    [busy, data, onChange]
-  );
-
-  const handleDownload = useCallback(() => {
-    void downloadModelZip({
-      name: data.name,
-      imageData: data.imageData,
-      faceCloseUp: data.faceCloseUp?.imageData,
-      backHead: data.backHead?.imageData,
-    });
-  }, [data]);
-
-  /** Upload an image into a slot as an alternative to generating it. */
-  const handleUpload = useCallback(
-    (slotKind: "full-body" | ModelViewKind, file: File) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        if (slotKind === "full-body") {
-          onChange({ imageData: dataUrl });
-        } else {
-          const view: ModelViewResult = { status: "completed", imageData: dataUrl, approved: true };
-          onChange(slotKind === "face-closeup" ? { faceCloseUp: view } : { backHead: view });
-        }
-      };
-      reader.readAsDataURL(file);
-    },
-    [onChange]
-  );
+export function ModelRefinePanel({
+  refineKey,
+  data,
+  opState,
+  busy,
+  onGenerateShots,
+  onRegenerateView,
+  onApproveView,
+  onApplyEdit,
+  onApproveEdit,
+  onDiscardEdit,
+  onRevert,
+  onUpload,
+  onStop,
+}: Props) {
+  const { pendingEdit, editStage, editError } = opState;
 
   const hasAnyView = !!data.faceCloseUp || !!data.backHead;
   const canEdit = data.faceCloseUp?.status === "completed" && !!data.faceCloseUp.imageData;
@@ -367,17 +86,46 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
     [data]
   );
 
+  const handleDownload = () => {
+    void downloadModelZip({
+      name: data.name,
+      imageData: data.imageData,
+      faceCloseUp: data.faceCloseUp?.imageData,
+      backHead: data.backHead?.imageData,
+    });
+  };
+
   return (
-    <div className="space-y-6 rounded-xl border border-border/60 bg-muted/10 p-4">
+    <div
+      id={`refine-panel-${refineKey}`}
+      className={cn(
+        "space-y-6 rounded-xl border bg-muted/10 p-4 transition-colors",
+        busy ? "border-primary/40" : "border-border/60"
+      )}
+    >
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h4 className="text-sm font-semibold text-foreground">{data.name}</h4>
+        <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          {data.name}
+          {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
+        </h4>
         <div className="flex items-center gap-2">
+          {/* Per-model Stop — cancels only this model's renders. */}
+          {busy && (
+            <button
+              onClick={onStop}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-red-600/90 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-red-600"
+              title={`Stop every in-flight render for ${data.name}`}
+            >
+              <Square className="h-3 w-3 fill-current" />
+              Stop
+            </button>
+          )}
           {!hasAnyView && (
             <button
-              onClick={handleGenerateShots}
+              onClick={onGenerateShots}
               disabled={busy}
-              className="btn-gradient inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium text-white disabled:opacity-50 disabled:pointer-events-none"
+              className="btn-gradient inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium text-white disabled:pointer-events-none disabled:opacity-50"
             >
               <Camera className="h-4 w-4" />
               Generate reference shots
@@ -400,9 +148,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
           <div key={slot.title} className="space-y-1.5">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
               {slot.title}
-              {slot.state?.approved && (
-                <Check className="ml-1 inline h-3 w-3 text-emerald-500" />
-              )}
+              {slot.state?.approved && <Check className="ml-1 inline h-3 w-3 text-emerald-500" />}
             </p>
             <div className="relative aspect-[3/4] overflow-hidden rounded-xl border border-border bg-muted/20">
               {slot.imageData ? (
@@ -416,7 +162,14 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
                       <span className="text-[11px]">Rendering…</span>
                     </>
                   ) : slot.state?.status === "error" ? (
-                    <span className="text-[11px] text-red-500">{slot.state.error}</span>
+                    <span
+                      className={cn(
+                        "text-[11px]",
+                        slot.state.error === "Cancelled" ? "text-muted-foreground" : "text-red-500"
+                      )}
+                    >
+                      {slot.state.error}
+                    </span>
                   ) : (
                     <span className="text-[11px]">Not generated yet</span>
                   )}
@@ -427,7 +180,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
               <div className="flex gap-1.5">
                 {slot.view && slot.state?.status === "completed" && !slot.state.approved && (
                   <button
-                    onClick={() => approveView(slot.view!)}
+                    onClick={() => onApproveView(slot.view!)}
                     disabled={busy}
                     className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-emerald-600/90 px-2 py-1.5 text-[11px] font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
                   >
@@ -437,7 +190,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
                 )}
                 {slot.view && slot.state && (
                   <button
-                    onClick={() => void runView(slot.view!, data.imageData)}
+                    onClick={() => onRegenerateView(slot.view!)}
                     disabled={busy}
                     className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-border bg-card px-2 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted/40 disabled:opacity-50"
                   >
@@ -461,7 +214,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
                     disabled={busy}
                     onChange={(e) => {
                       const file = e.target.files?.[0];
-                      if (file) handleUpload(slot.kind, file);
+                      if (file) onUpload(slot.kind, file);
                       e.target.value = "";
                     }}
                   />
@@ -496,15 +249,15 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
           </div>
           <div className="flex gap-2">
             <button
-              onClick={() => void handleApproveEdit()}
+              onClick={onApproveEdit}
               disabled={busy}
               className="btn-gradient inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
             >
               <Check className="h-3.5 w-3.5" />
-              Approve & sync all views
+              Approve &amp; sync all views
             </button>
             <button
-              onClick={() => setPendingEdit(null)}
+              onClick={onDiscardEdit}
               disabled={busy}
               className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted/40 disabled:opacity-50"
             >
@@ -522,11 +275,20 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
           {editStage === "editing"
             ? "Applying edit to the face close-up…"
             : editStage === "syncing-body"
-            ? "Re-syncing the full-body shot from the edited face…"
-            : "Regenerating the back-of-head shot…"}
+              ? "Re-syncing the full-body shot from the edited face…"
+              : "Regenerating the back-of-head shot…"}
         </p>
       )}
-      {editError && <p className="text-xs text-red-500">{editError}</p>}
+      {editError && (
+        <p
+          className={cn(
+            "text-xs",
+            editError.startsWith("Cancelled") ? "text-muted-foreground" : "text-red-500"
+          )}
+        >
+          {editError}
+        </p>
+      )}
 
       {/* Structured + freeform facial edits */}
       <div className="space-y-2 border-t border-border/60 pt-4">
@@ -541,7 +303,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
         )}
         <ModelEditControls
           disabled={!canEdit || busy}
-          onApply={(d, l, keys) => void handleApplyEdit(d, l, keys)}
+          onApply={(d, l, keys) => onApplyEdit(d, l, keys)}
         />
       </div>
 
@@ -563,7 +325,7 @@ export function ModelRefinePanel({ store, data, onChange }: Props) {
                   {v.label}
                 </p>
                 <button
-                  onClick={() => handleRevert(v)}
+                  onClick={() => onRevert(v)}
                   disabled={busy}
                   className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-border bg-card px-1.5 py-1 text-[10px] font-medium text-foreground hover:bg-muted/40 disabled:opacity-50"
                 >

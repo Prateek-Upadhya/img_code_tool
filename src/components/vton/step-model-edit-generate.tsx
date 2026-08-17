@@ -9,16 +9,26 @@ import {
   Check,
   RefreshCw,
   Shirt,
+  Square,
   Trash2,
   AlertCircle,
   Library,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ModelComboPicker } from "./model-combo-picker";
-import { generateModelEditInstruction, generateModelEditImage } from "@/lib/gemini";
+import {
+  generateModelEditInstruction,
+  generateModelEditImage,
+  ImageSafetyBlockError,
+  PersonGenerationNotAllowlistedError,
+} from "@/lib/gemini";
 import { generateModelEditImageAzure } from "@/lib/azure-image";
 import { loadSavedModels, saveModel, deleteSavedModel } from "@/lib/model-library";
 import { dataUrlToFile, imageAspectRatio } from "@/lib/model-creation-client";
+import { modelAgeGroup } from "@/lib/constants";
+import { runPool } from "@/lib/two-lane-runner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { VTONStore } from "@/store/vton-store";
 import type {
   AspectRatio,
@@ -51,6 +61,36 @@ function isBusy(status: ModelEditResult["status"]) {
   );
 }
 
+/**
+ * Turns a thrown edit error into copy the user can act on. Mirrors the helper of
+ * the same name in step-model-generate.tsx so a content refusal reads the same
+ * on both backends.
+ */
+function friendlyError(err: unknown): string {
+  if (err instanceof PersonGenerationNotAllowlistedError) return err.message;
+  if (err instanceof ImageSafetyBlockError) {
+    return "Blocked by the provider's content filters. Try a different source image or edit directive.";
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  const lower = message.toLowerCase();
+  if (lower.includes("moderation_blocked") || lower.includes("content_policy")) {
+    return "Blocked by the provider's content filters. Try a different source image or edit directive.";
+  }
+  if (lower.includes("aborted")) return "Edit cancelled.";
+  return message || "Edit failed";
+}
+
+/**
+ * A refusal is deterministic — the same request will be refused again — so
+ * retrying one only burns a second full instruction + image pipeline.
+ */
+function isRetryable(err: unknown): boolean {
+  return !(
+    err instanceof ImageSafetyBlockError ||
+    err instanceof PersonGenerationNotAllowlistedError
+  );
+}
+
 function statusLabel(status: ModelEditResult["status"]) {
   switch (status) {
     case "generating-instruction":
@@ -61,6 +101,8 @@ function statusLabel(status: ModelEditResult["status"]) {
       return "Retrying…";
     case "pending":
       return "Queued…";
+    case "cancelled":
+      return "Cancelled";
     default:
       return "";
   }
@@ -85,6 +127,8 @@ export function StepModelEditGenerate({ store }: Props) {
     updateModelEditResult,
     isModelEditGenerating,
     setIsModelEditGenerating,
+    beginModelEditGeneration,
+    cancelModelEditGeneration,
     savedModels,
     setSavedModels,
     setModelImage,
@@ -117,17 +161,24 @@ export function StepModelEditGenerate({ store }: Props) {
     async (
       editInstruction: string,
       source: ModelEditSource,
-      aspectRatio: AspectRatio
+      aspectRatio: AspectRatio,
+      signal: AbortSignal
     ): Promise<{ imageData: string; cost: StepCost }> => {
       const refImage = modelEditReference ? { file: modelEditReference.file } : undefined;
+      // Drives `personGeneration` and selects the age-appropriate texture anchor.
+      // Previously omitted entirely, so every edit silently ran as an adult —
+      // which refuses outright on the non-adult bands.
+      const ageGroup = modelAgeGroup(modelAgeRange);
       if (imageGenModel === "gpt-image-2") {
         return generateModelEditImageAzure({
           editInstruction,
           sourceImage: { file: source.file },
           referenceImage: refImage,
           referenceDirective: modelEditReferenceDirective,
+          ageGroup,
           aspectRatio,
           imageSize,
+          signal,
         });
       }
       return generateModelEditImage({
@@ -136,17 +187,39 @@ export function StepModelEditGenerate({ store }: Props) {
         sourceImage: { file: source.file },
         referenceImage: refImage,
         referenceDirective: modelEditReferenceDirective,
+        ageGroup,
         aspectRatio,
         imageSize,
+        abortSignal: signal,
       });
     },
-    [apiKey, imageGenModel, imageSize, modelEditReference, modelEditReferenceDirective]
+    [apiKey, imageGenModel, imageSize, modelAgeRange, modelEditReference, modelEditReferenceDirective]
   );
 
   const runOne = useCallback(
-    async (result: ModelEditResult, source: ModelEditSource) => {
+    async (result: ModelEditResult, source: ModelEditSource, signal: AbortSignal) => {
       const collected: StepCost[] = [];
       let retrySteps: StepCost[] | undefined;
+
+      /** Mark this slot cancelled, keeping whatever cost was already incurred. */
+      const markCancelled = () => {
+        const spent = collected.reduce((s, c) => s + c.totalCost, 0);
+        const retrySpent = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
+        updateModelEditResult(result.id, {
+          status: "cancelled",
+          error: "Cancelled by user",
+          costBreakdown:
+            spent + retrySpent > 0
+              ? { steps: [...collected], totalCost: spent + retrySpent, retrySteps }
+              : undefined,
+        });
+      };
+
+      // The user hit Stop before a worker reached this slot — burn no requests.
+      if (signal.aborted) {
+        markCancelled();
+        return;
+      }
 
       const generate = async () => {
         collected.length = 0;
@@ -157,6 +230,7 @@ export function StepModelEditGenerate({ store }: Props) {
           referenceImage: modelEditReference ? { file: modelEditReference.file } : undefined,
           changeDirective: modelEditDirective,
           referenceDirective: modelEditReferenceDirective,
+          abortSignal: signal,
         });
         collected.push(instr.cost);
 
@@ -165,7 +239,7 @@ export function StepModelEditGenerate({ store }: Props) {
           editInstruction: instr.editInstruction,
         });
 
-        const img = await runImage(instr.editInstruction, source, result.aspectRatio);
+        const img = await runImage(instr.editInstruction, source, result.aspectRatio, signal);
         collected.push(img.cost);
 
         const mainCost = collected.reduce((s, c) => s + c.totalCost, 0);
@@ -180,16 +254,39 @@ export function StepModelEditGenerate({ store }: Props) {
 
       try {
         await generate();
-      } catch {
+      } catch (err) {
+        // Checked FIRST: an abort looks like an ordinary transport failure, and
+        // this path previously swallowed the error entirely (`catch {}`) and
+        // retried unconditionally — so one Stop click would have kicked off a
+        // full retry for every in-flight slot.
+        if (signal.aborted) {
+          markCancelled();
+          return;
+        }
+        // A content refusal is deterministic — retrying only burns a second
+        // instruction + image cycle to be refused again.
+        if (!isRetryable(err)) {
+          updateModelEditResult(result.id, { status: "error", error: friendlyError(err) });
+          return;
+        }
         try {
           retrySteps = [...collected];
           updateModelEditResult(result.id, { status: "auto-retrying", error: undefined });
           await new Promise((r) => setTimeout(r, 1000));
+          // Stop may have landed during the backoff.
+          if (signal.aborted) {
+            markCancelled();
+            return;
+          }
           await generate();
         } catch (err2) {
+          if (signal.aborted) {
+            markCancelled();
+            return;
+          }
           updateModelEditResult(result.id, {
             status: "error",
-            error: err2 instanceof Error ? err2.message : "Edit failed",
+            error: friendlyError(err2),
           });
         }
       }
@@ -206,45 +303,68 @@ export function StepModelEditGenerate({ store }: Props) {
 
   const handleGenerate = useCallback(async () => {
     if (!canGenerate) return;
-    setIsModelEditGenerating(true);
+    // Begun BEFORE the aspect-ratio pre-pass so the Stop button appears
+    // immediately rather than only once the first render starts.
+    const { signal } = beginModelEditGeneration();
 
-    const sources = modelEditSources;
-    // Derive each source's aspect ratio so the edit keeps the original framing.
-    const ratios = await Promise.all(sources.map((s) => imageAspectRatio(s.file)));
+    try {
+      const sources = modelEditSources;
+      // Derive each source's aspect ratio so the edit keeps the original framing.
+      const ratios = await Promise.all(sources.map((s) => imageAspectRatio(s.file)));
+      // Stopped during the pre-pass — nothing has been rendered yet.
+      if (signal.aborted) return;
 
-    planRef.current = new Map();
-    const initial: ModelEditResult[] = sources.map((s, i) => {
-      const id = uid("me-result");
-      planRef.current.set(id, s);
-      return {
-        id,
-        sourceId: s.id,
-        sourceName: s.file.name,
-        aspectRatio: ratios[i],
-        status: "pending",
-      };
-    });
-    setModelEditResults(initial);
+      planRef.current = new Map();
+      const initial: ModelEditResult[] = sources.map((s, i) => {
+        const id = uid("me-result");
+        planRef.current.set(id, s);
+        return {
+          id,
+          sourceId: s.id,
+          sourceName: s.file.name,
+          aspectRatio: ratios[i],
+          status: "pending",
+        };
+      });
+      setModelEditResults(initial);
 
-    const concurrency = imageGenModel === "gpt-image-2" ? 10 : 4;
-    let idx = 0;
-    const next = async (): Promise<void> => {
-      while (idx < initial.length) {
-        const i = idx++;
-        await runOne(initial[i], sources[i]);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, initial.length) }, () => next()));
-
-    setIsModelEditGenerating(false);
-  }, [canGenerate, modelEditSources, imageGenModel, runOne, setModelEditResults, setIsModelEditGenerating]);
+      // Zip up front so a worker never has to search for its source.
+      const tasks = initial.map((result, i) => ({ result, source: sources[i] }));
+      const concurrency = imageGenModel === "gpt-image-2" ? 10 : 4;
+      await runPool(tasks, concurrency, (t) => runOne(t.result, t.source, signal), signal);
+    } finally {
+      // Sweep anything the workers never reached — a row still `pending` would
+      // otherwise spin forever. Also the last-resort net for a task that threw
+      // outside its own handler.
+      setModelEditResults((prev) =>
+        prev.map((r) =>
+          r.status === "pending"
+            ? { ...r, status: "cancelled" as const, error: "Cancelled by user" }
+            : r
+        )
+      );
+      // In a `finally` so an unexpected throw can never strand the flag `true`
+      // and leave wizard navigation permanently disabled.
+      setIsModelEditGenerating(false);
+    }
+  }, [
+    canGenerate,
+    modelEditSources,
+    imageGenModel,
+    runOne,
+    beginModelEditGeneration,
+    setModelEditResults,
+    setIsModelEditGenerating,
+  ]);
 
   const handleRegenerate = useCallback(
     (result: ModelEditResult) => {
       if (isBusy(result.status)) return;
       const source = planRef.current.get(result.id);
       if (!source) return;
-      void runOne(result, source);
+      // A single regenerate runs outside any batch and has no Stop button on
+      // screen, so it gets a controller that is never aborted.
+      void runOne(result, source, new AbortController().signal);
     },
     [runOne]
   );
@@ -365,6 +485,25 @@ export function StepModelEditGenerate({ store }: Props) {
             "Upload images on the first step."
           )}
         </p>
+        <div className="flex items-center gap-2">
+        {isModelEditGenerating && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={cancelModelEditGeneration}
+                className="inline-flex items-center gap-2 rounded-xl bg-red-600/90 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-600"
+              >
+                <Square className="h-3.5 w-3.5 fill-current" />
+                Stop
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              Cancels queued and in-flight edits so you can go back and change the directive. Edits
+              that already finished are kept. Requests already in flight may still incur a charge on
+              the provider&apos;s side.
+            </TooltipContent>
+          </Tooltip>
+        )}
         <button
           onClick={handleGenerate}
           disabled={!canGenerate}
@@ -377,6 +516,7 @@ export function StepModelEditGenerate({ store }: Props) {
           )}
           {isModelEditGenerating ? "Editing…" : "Apply edit"}
         </button>
+        </div>
       </div>
 
       {/* Results */}
@@ -420,6 +560,15 @@ export function StepModelEditGenerate({ store }: Props) {
                           <>
                             <AlertCircle className="h-6 w-6 text-red-500" />
                             <span className="px-3 text-center text-[11px] text-red-500">{r.error}</span>
+                          </>
+                        ) : r.status === "cancelled" ? (
+                          // Without this branch a cancelled card falls through to
+                          // the spinner and spins forever under a blank label.
+                          <>
+                            <X className="h-6 w-6" />
+                            <span className="px-3 text-center text-[11px]">
+                              Cancelled — retry to run it again
+                            </span>
                           </>
                         ) : (
                           <>
@@ -472,7 +621,7 @@ export function StepModelEditGenerate({ store }: Props) {
                     </div>
                   )}
 
-                  {r.status === "error" && (
+                  {(r.status === "error" || r.status === "cancelled") && (
                     <button
                       onClick={() => handleRegenerate(r)}
                       className="absolute inset-x-0 bottom-0 bg-black/60 py-1.5 text-[11px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100"

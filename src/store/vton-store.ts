@@ -514,6 +514,31 @@ export function useVTONStore() {
   const [savedModels, setSavedModels] = useState<SavedModel[]>([]);
   const [isModelCreationGenerating, setIsModelCreationGenerating] = useState(false);
 
+  // The in-flight AbortController for the active model-creation batch. Kept in a
+  // ref for the same reason as `generationAbortControllerRef` above: rotating it
+  // must not re-render, and the batch loop needs a stable handle to break out of.
+  // Deliberately SEPARATE from the VTON controller — sharing one would make Stop
+  // on either feature cancel the other's batch.
+  //
+  // Same caveat as the VTON path: AbortSignal is a CLIENT-ONLY operation. It
+  // cancels the in-flight HTTP request but does NOT stop the work on the
+  // provider's side, so partial usage may still be billed.
+  const modelCreationAbortControllerRef = useRef<AbortController | null>(null);
+
+  const beginModelCreationGeneration = useCallback((): AbortController => {
+    const ctrl = new AbortController();
+    modelCreationAbortControllerRef.current = ctrl;
+    setIsModelCreationGenerating(true);
+    return ctrl;
+  }, []);
+
+  const cancelModelCreationGeneration = useCallback(() => {
+    modelCreationAbortControllerRef.current?.abort();
+    // `isModelCreationGenerating` deliberately stays true here so the batch loop
+    // can finish its cleanup pass (marking in-flight + pending results
+    // "cancelled"); the loop's own `finally` block clears it.
+  }, []);
+
   // --- AI Model Creation Actions ---
   const addModelBox = useCallback(() => {
     setModelBoxes((prev) => [
@@ -570,7 +595,47 @@ export function useVTONStore() {
   }, []);
 
   // --- Model Refine (reference shots + facial edits, step 4) ---
-  const [isModelRefineGenerating, setIsModelRefineGenerating] = useState(false);
+  // Refine runs MANY models at once, so "is something running" is tracked as a
+  // SET OF KEYS rather than one boolean. A single flag was last-writer-wins: the
+  // first panel to finish would clear it while its siblings were still rendering,
+  // unlocking wizard navigation mid-batch, and unmounting any one panel cleared
+  // it for all of them.
+  const [modelRefineBusyKeys, setModelRefineBusyKeys] = useState<Set<string>>(new Set());
+
+  /** Mark one refine target busy / idle. Keyed, so panels never clobber each other. */
+  const setModelRefineBusy = useCallback((key: string, busy: boolean) => {
+    setModelRefineBusyKeys((prev) => {
+      if (prev.has(key) === busy) return prev; // no-op keeps the effect from looping
+      const next = new Set(prev);
+      if (busy) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
+
+  // Derived so `anyGenerating` in the wizard keeps working unchanged.
+  const isModelRefineGenerating = modelRefineBusyKeys.size > 0;
+
+  // One AbortController per refine target, so Stop on model A leaves model B
+  // running. Entries are replaced on each new op and removed when it settles.
+  const modelRefineAbortRefs = useRef<Map<string, AbortController>>(new Map());
+
+  const beginModelRefineOp = useCallback((key: string): AbortController => {
+    // Abort any previous op for this same target before replacing it, so a
+    // superseded controller can never leak an unstoppable request.
+    modelRefineAbortRefs.current.get(key)?.abort();
+    const ctrl = new AbortController();
+    modelRefineAbortRefs.current.set(key, ctrl);
+    return ctrl;
+  }, []);
+
+  const cancelModelRefineOp = useCallback((key: string) => {
+    modelRefineAbortRefs.current.get(key)?.abort();
+  }, []);
+
+  const cancelAllModelRefineOps = useCallback(() => {
+    for (const ctrl of modelRefineAbortRefs.current.values()) ctrl.abort();
+  }, []);
 
   /** Patch a saved model in state AND persist the merged record to IndexedDB. */
   const updateSavedModel = useCallback((id: string, update: Partial<SavedModel>) => {
@@ -591,6 +656,21 @@ export function useVTONStore() {
   const [modelEditReference, setModelEditReferenceState] = useState<ModelReferenceImage | undefined>(undefined);
   const [modelEditResults, setModelEditResults] = useState<ModelEditResult[]>([]);
   const [isModelEditGenerating, setIsModelEditGenerating] = useState(false);
+
+  // Model-edit batch controller — same contract as the model-creation pair above.
+  const modelEditAbortControllerRef = useRef<AbortController | null>(null);
+
+  const beginModelEditGeneration = useCallback((): AbortController => {
+    const ctrl = new AbortController();
+    modelEditAbortControllerRef.current = ctrl;
+    setIsModelEditGenerating(true);
+    return ctrl;
+  }, []);
+
+  const cancelModelEditGeneration = useCallback(() => {
+    modelEditAbortControllerRef.current?.abort();
+    // Flag cleared by the batch loop's `finally`, not here — see above.
+  }, []);
 
   const addModelEditSources = useCallback((files: File[]) => {
     setModelEditSources((prev) => [
@@ -3014,7 +3094,9 @@ export function useVTONStore() {
     modelCreationResults, setModelCreationResults, updateModelCreationResult, resetModelCreationResults,
     savedModels, setSavedModels, updateSavedModel,
     isModelCreationGenerating, setIsModelCreationGenerating,
-    isModelRefineGenerating, setIsModelRefineGenerating,
+    beginModelCreationGeneration, cancelModelCreationGeneration,
+    isModelRefineGenerating, modelRefineBusyKeys, setModelRefineBusy,
+    beginModelRefineOp, cancelModelRefineOp, cancelAllModelRefineOps,
     // AI Model Editing (sub-mode)
     modelCreationMode, setModelCreationMode,
     modelEditSources, addModelEditSources, removeModelEditSource,
@@ -3023,6 +3105,7 @@ export function useVTONStore() {
     modelEditReference, setModelEditReference,
     modelEditResults, setModelEditResults, updateModelEditResult, resetModelEditResults,
     isModelEditGenerating, setIsModelEditGenerating,
+    beginModelEditGeneration, cancelModelEditGeneration,
   };
 }
 

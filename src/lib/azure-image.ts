@@ -22,12 +22,19 @@ import type {
   ComplementaryImage,
   GarmentImage,
   LabeledModelView,
+  ModelAgeGroup,
   ModelImage,
   ModelViewKind,
   StepCost,
   TokenUsage,
 } from "./types";
-import { buildModelViewPrompt, CLEAR_SKIN_ANCHOR, MODEL_EDIT_COMPLEXION_SYNC_CLAUSE } from "./gemini";
+import {
+  buildHumanTextureAnchor,
+  buildModelEditSurfacePreservationClause,
+  buildModelViewPrompt,
+  CLEAR_SKIN_ANCHOR,
+  MODEL_EDIT_COMPLEXION_SYNC_CLAUSE,
+} from "./gemini";
 
 // --- Size resolver -------------------------------------------------------
 
@@ -146,6 +153,13 @@ export interface AzureVTONImageArgs {
   layoutReference?: File;
   /** Optional brand logo, appended after the layout reference and named in the prose. */
   brandLogo?: { file: File; placementInstructions?: string };
+  /**
+   * Optional client-side AbortSignal — cancels the in-flight request when the
+   * user hits Stop. Mirrors `abortSignal` on the Gemini helpers. Note this is a
+   * CLIENT-ONLY cancel: the browser drops the request, but work already started
+   * on Azure's side may still be billed.
+   */
+  signal?: AbortSignal;
 }
 
 /** Prose sentence naming the model views by their `image[]` order. */
@@ -184,6 +198,7 @@ export async function generateVTONImageAzure({
   isProductOnlyShot = false,
   layoutReference,
   brandLogo,
+  signal,
 }: AzureVTONImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
   const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
 
@@ -236,6 +251,7 @@ export async function generateVTONImageAzure({
   const response = await fetch("/api/azure-image/generate", {
     method: "POST",
     body: form,
+    signal,
   });
 
   if (!response.ok) {
@@ -280,8 +296,16 @@ export interface AzureModelImageArgs {
   prompt: string;
   /** Optional face reference. When absent, the route uses /images/generations. */
   referenceImage?: { file: File };
+  /**
+   * Life stage of the subject. Selects the age-appropriate human-texture anchor
+   * (adults get pore structure; children are correctly pore-free). Defaults to
+   * adult for callers that predate the parameter.
+   */
+  ageGroup?: ModelAgeGroup;
   aspectRatio: AspectRatio;
   imageSize: "1K" | "2K" | "4K";
+  /** Client-side cancel — see {@link AzureVTONImageArgs.signal}. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -295,16 +319,23 @@ export interface AzureModelImageArgs {
 export async function generateModelImageAzure({
   prompt,
   referenceImage,
+  ageGroup = "adult",
   aspectRatio,
   imageSize,
+  signal,
 }: AzureModelImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
   const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
 
   const form = new FormData();
-  // Mirrors the anchor `generateModelImage` appends on the Gemini side. Unlike
+  // Mirrors the anchors `generateModelImage` appends on the Gemini side. Unlike
   // that path this function has no prompt wrapper of its own, so without this
-  // line the Azure backend would be the only route with no clear-skin guard.
-  form.append("prompt", `${prompt}\n\n${CLEAR_SKIN_ANCHOR}`);
+  // line the Azure backend would be the only route with no clear-skin guard and
+  // no surface-texture floor. CLEAR_SKIN_ANCHOR governs pigmentation; the
+  // texture anchor governs surface relief — both are needed, see gemini.ts.
+  form.append(
+    "prompt",
+    `${prompt}\n\n═══ HUMAN SURFACE — NON-NEGOTIABLE ═══\n${CLEAR_SKIN_ANCHOR}\n\n${buildHumanTextureAnchor(ageGroup, "full-body")}`
+  );
   form.append("model", "gpt-image-2");
   form.append("n", "1");
   form.append("size", size);
@@ -316,6 +347,7 @@ export async function generateModelImageAzure({
   const response = await fetch("/api/azure-image/generate", {
     method: "POST",
     body: form,
+    signal,
   });
 
   if (!response.ok) {
@@ -355,8 +387,12 @@ export async function generateModelImageAzure({
 export interface AzureModelViewImageArgs {
   sourceImage: { file: File };
   view: ModelViewKind;
+  /** Life stage — selects the age-appropriate human-texture anchor. */
+  ageGroup?: ModelAgeGroup;
   aspectRatio: AspectRatio;
   imageSize: "1K" | "2K" | "4K";
+  /** Client-side cancel — see {@link AzureVTONImageArgs.signal}. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -368,12 +404,14 @@ export interface AzureModelViewImageArgs {
 export async function generateModelViewImageAzure({
   sourceImage,
   view,
+  ageGroup = "adult",
   aspectRatio,
   imageSize,
+  signal,
 }: AzureModelViewImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
   const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
 
-  const prompt = `The attached image is a full-body studio photograph of a fashion model — the definitive reference for this person's identity, hair, skin tone, background and lighting. ${buildModelViewPrompt(view)} Output a single photorealistic photograph.`;
+  const prompt = `The attached image is a full-body studio photograph of a fashion model — the definitive reference for this person's identity, hair, skin tone, background and lighting. ${buildModelViewPrompt(view, ageGroup)} Output a single photorealistic photograph.`;
 
   const form = new FormData();
   form.append("prompt", prompt);
@@ -386,6 +424,7 @@ export async function generateModelViewImageAzure({
   const response = await fetch("/api/azure-image/generate", {
     method: "POST",
     body: form,
+    signal,
   });
 
   if (!response.ok) {
@@ -435,8 +474,12 @@ export interface AzureModelEditImageArgs {
   identityFromReference?: boolean;
   /** The edit is itself a complexion change, so skin tone is not pinned to the SOURCE. */
   releaseSkinTone?: boolean;
+  /** Life stage — selects the age-appropriate human-texture anchor. */
+  ageGroup?: ModelAgeGroup;
   aspectRatio: AspectRatio;
   imageSize: "1K" | "2K" | "4K";
+  /** Client-side cancel — see {@link AzureVTONImageArgs.signal}. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -453,8 +496,10 @@ export async function generateModelEditImageAzure({
   referenceDirective,
   identityFromReference = false,
   releaseSkinTone = false,
+  ageGroup = "adult",
   aspectRatio,
   imageSize,
+  signal,
 }: AzureModelEditImageArgs): Promise<{ imageData: string; cost: StepCost; responseContent: unknown }> {
   const { size, quality } = resolveAzureImageSize(aspectRatio, imageSize);
 
@@ -482,7 +527,17 @@ export async function generateModelEditImageAzure({
   );
   const preserved = preservedParts.join(", ");
   const complexionClause = identityFromReference ? ` ${MODEL_EDIT_COMPLEXION_SYNC_CLAUSE}` : "";
-  const prompt = `Edit the first attached image (the SOURCE). Change ONLY: ${editInstruction.trim()}.${refClause}${complexionClause} Maintain the identical ${preserved} from the source image — every region the change does not touch stays exactly the same. Output a single photorealistic edited image keeping the same framing as the source.`;
+  // Texture wash-out is the dominant edit failure mode: the model "cleans up"
+  // surfaces the change never asked about. Applied on every branch, like the
+  // Nano Banana path — see buildModelEditSurfacePreservationClause in gemini.ts.
+  const surfaceClause = ` ${buildModelEditSurfacePreservationClause()}`;
+  // Skin-touching edits additionally restate the full age-appropriate anchor so
+  // the re-synced body keeps the same micro-texture as the source.
+  const textureClause =
+    identityFromReference || releaseSkinTone
+      ? `\n\n${buildHumanTextureAnchor(ageGroup, identityFromReference ? "full-body" : "portrait")}`
+      : "";
+  const prompt = `Edit the first attached image (the SOURCE). Change ONLY: ${editInstruction.trim()}.${refClause}${complexionClause} Maintain the identical ${preserved} from the source image — every region the change does not touch stays exactly the same.${surfaceClause} Output a single photorealistic edited image keeping the same framing as the source.${textureClause}`;
 
   const form = new FormData();
   form.append("prompt", prompt);
@@ -498,6 +553,7 @@ export async function generateModelEditImageAzure({
   const response = await fetch("/api/azure-image/generate", {
     method: "POST",
     body: form,
+    signal,
   });
 
   if (!response.ok) {

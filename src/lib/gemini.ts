@@ -435,12 +435,218 @@ EXCEPTION: several of these words appear once, deliberately, inside the verbatim
 
 FORBIDDEN VOCABULARY — PLASTIC SKIN (do NOT use these either — clear skin must never become waxy, doll-like skin):
 flawless, perfect, porcelain, doll-like, CGI, 3D render, render, plastic, waxy, smooth skin, beauty filter, airbrushed.
+EXCEPTION: some of these words appear once, deliberately, inside the anchored negation sentence of the HUMAN SURFACE FIDELITY DIRECTIVE that follows this one ("not airbrushed, not beauty-filter-smooth, not waxy and not plastic"). That anchored negation is required and must NOT be removed or softened. Outside it, none of these words may appear anywhere in your output.
 
 PREFERRED VOCABULARY (use these when describing the complexion):
 clear, healthy, even-toned, uniform, natural, authentic, photographic, hydrated, fine grain, real-skin.
 
-THE BALANCE TO STRIKE: the complexion is CLEAR and EVEN, not RETOUCHED. Keep the fine grain, the faint vellus hair and the soft subsurface glow of real photographed skin — remove the markings, never the texture.
+THE BALANCE TO STRIKE: the complexion is CLEAR and EVEN, not RETOUCHED. Keep the fine grain, the faint vellus hair and the soft subsurface glow of real photographed skin — remove the markings, never the texture. The HUMAN SURFACE FIDELITY DIRECTIVE that follows spells out, in full, what that texture is.
 `;
+
+/**
+ * Age-honest dentition, shared by {@link buildChildAnatomyDirective} and
+ * {@link buildHumanTextureAnchor}. Lifted to module scope so the anatomy block
+ * and the texture anchor can never drift into describing different teeth.
+ */
+function ageHonestDentition(group: ModelAgeGroup): string {
+  switch (group) {
+    case "baby":
+      return "gums are bare or show at most a couple of small lower milk teeth";
+    case "toddler":
+      return "a set of small, even, widely spaced milk teeth";
+    case "kid":
+      return "mixed dentition — small milk teeth alongside newer, larger adult teeth, with natural gaps where teeth are still coming through";
+    case "teen":
+      return "a full set of natural, unwhitened adolescent teeth";
+    default:
+      return "a full set of natural, unwhitened adult teeth";
+  }
+}
+
+/** Which surfaces {@link buildHumanTextureAnchor} should cover. */
+export type HumanTextureScope = "full-body" | "portrait" | "back-of-head";
+
+/**
+ * The surface counterpart to {@link CLEAR_SKIN_ANCHOR}, and the second half of
+ * the model-creation skin contract.
+ *
+ * Why this exists: `CLEAR_SKIN_ANCHOR` governs PIGMENTATION only — even tone,
+ * no markings. It says nothing about surface STRUCTURE, and an image model given
+ * a colour instruction with no structure instruction defaults to a featureless
+ * shell. That output passes as "clear skin" and fails as human skin. Everything
+ * below supplies the missing half: the sub-millimetre structure of skin, hair,
+ * eyes, teeth and lips that makes a subject indistinguishable from a photograph
+ * of a real person. It is emitted for every generated subject regardless of what
+ * the brief says or which reference images were supplied.
+ *
+ * Design notes:
+ *   - AGE-BRANCHED, unlike CLEAR_SKIN_ANCHOR. That anchor is deliberately
+ *     pore-free so one string can serve adults and children (see its doc
+ *     comment); this one cannot be, because pore structure is the single
+ *     strongest adult-skin signal while `buildChildAnatomyDirective` mandates
+ *     "no visible pores". So this is a builder and that one stays a const.
+ *   - SCOPED, so a face close-up is not told about toes and a back-of-head shot
+ *     is not told about lips.
+ *   - POSITIVE-FIRST with ONE anchored negation, matching the house style: the
+ *     text describes the surface that IS present and closes with a single
+ *     exclusion sentence rather than leading with negatives.
+ *   - It describes SURFACE FINISH only, never FEATURE GEOMETRY, so it cannot
+ *     fight the identity lock when `lockToReferenceFace` is on.
+ *   - VOCABULARY: deliberately avoids every word on the two FORBIDDEN
+ *     VOCABULARY lists (including "render"/"rendered" and bare "smooth")
+ *     except inside the one permitted negation sentence.
+ */
+export function buildHumanTextureAnchor(
+  ageGroup: ModelAgeGroup = "adult",
+  scope: HumanTextureScope = "full-body",
+): string {
+  const isChild = ageGroup !== "adult";
+  const isInfant = ageGroup === "baby" || ageGroup === "toddler";
+
+  // ── SKIN ────────────────────────────────────────────────────────────────
+  // Adults get pore structure; children get the same micro-relief described
+  // WITHOUT pores, matching buildChildAnatomyDirective's "no visible pores".
+  const skin = isChild
+    ? // "no visible pores" is carried verbatim from buildChildAnatomyDirective —
+      // children's skin is correctly pore-free, and stating it in the same words
+      // keeps the two blocks from reading as a contradiction. It is the ONLY
+      // place the word may appear on a child prompt (see the child rule in
+      // buildHumanTextureDirective).
+      `SKIN AT THE MICRO SCALE: The skin reads as living young human tissue at full resolution — a soft matte surface with no visible pores, carrying instead a fine, even dermal micro-relief whose ridges and furrows break every highlight into a low granular sheen; downy vellus hair standing along the temples, the outer cheeks, the forearms and the nape, lit from behind into a soft halo; and strong subsurface scattering, the warm glow of light travelling through the thin tissue of a child at the cheeks, the nostrils, the rims of the ears, the eyelids and the fingertips, so light diffuses into the flesh instead of stopping at the surface.`
+    : `SKIN AT THE MICRO SCALE: The skin reads as living human tissue at full resolution — visible pores across the cheeks, the nose and the forehead that tighten and shallow along the jaw, the temples and the hairline; the fine criss-cross dermal micro-relief of the epidermis, whose ridges and furrows catch the key light unevenly and break every highlight into a low granular sheen; faint vellus (peach-fuzz) hair standing along the jawline, the temples, the upper lip and the sides of the neck, lit from behind into a soft halo; and true subsurface scattering, the warm amber glow of light travelling through thin tissue at the nostrils, the rims of the ears, the eyelids, the knuckles and the fingertips. Specular return sits as a low broken sheen across the T-zone and the cheekbones, modulated by that micro-relief rather than reading as one clean gloss.`;
+
+  // ── SKIN CONTINUITY ─────────────────────────────────────────────────────
+  // The full-body inventory is the anti-"detailed face on a blank body" clause.
+  // Children drop knuckle creases and vein structure — both are adult signals
+  // explicitly banned by buildChildAnatomyDirective — and gain the soft crease
+  // rings that block already asks for.
+  const continuity =
+    scope === "portrait"
+      ? `CONTINUITY INTO THE NECK: The identical grain, vellus hair and subsurface warmth continue without interruption down the neck, the throat and the collarbones — the face is never finished to a higher level of detail than the skin around it.`
+      : isChild
+        ? `EVERY VISIBLE AREA OF SKIN: The identical fine grain, downy vellus hair and subsurface warmth continue without interruption onto the neck, the throat, the shoulders, the chest, the arms, the forearms, the wrists, the hands, the torso, the thighs, the knees, the shins, the ankles, the tops of the feet and the toes, and the soft crease rings at the wrists, the elbows, the knees and the knuckles read as real skin folding. No area of the body is finished to a lower level of detail than the face.`
+        : `EVERY VISIBLE AREA OF SKIN: The identical grain, vellus hair and subsurface warmth continue without interruption onto the neck, the throat, the collarbones, the shoulders, the chest, the upper arms, the forearms, the wrists, the backs of the hands with their knuckle creases and faint underlying vein structure, the individual nail plates under their soft natural sheen, and onward across the torso, the hips, the thighs, the knees, the shins, the ankles, the tops of the feet and the toes. No area of the body is finished to a lower level of detail than the face.`;
+
+  // ── HAIR ────────────────────────────────────────────────────────────────
+  // Gated on "wherever hair is present" so it never fights the baby/toddler
+  // rule that sparse or nearly absent hair is correct.
+  const hair = isInfant
+    ? `HAIR: Wherever hair is present it is fine, soft and wispy — individual downy strands separating and lifting at the crown, the hairline and the outer silhouette, with light passing straight through the thin covering. Sparse or nearly absent hair is entirely correct at this age. The hair is many separate fine fibres, never one moulded shape, and carries no styling and no salon finish.`
+    : isChild
+      ? `HAIR: Strands separate individually at the hairline, the temples, the part line and along the outer silhouette against the background, with a few natural micro-flyaways catching the light. Light travels along the length of the shafts as the broad anisotropic highlight band real hair produces, and the mass resolves into discrete locks and partings with the scalp faintly visible where the part opens — many separate fibres, never one moulded shape. The cut is simple and everyday, with no editorial styling and no salon finish.`
+      : `HAIR: Strands separate individually at the hairline, the temples, the part line and along the outer silhouette against the background, with a few natural micro-flyaways catching the rim light. Light travels along the length of the shafts as the broad anisotropic highlight band that real hair produces, and the mass resolves into discrete locks, shafts and partings, with the scalp faintly visible where the part opens — hair as many separate fibres, never one moulded shape.`;
+
+  const scalp = `SCALP AND NAPE: At the part and along the nape the scalp skin carries the same fine grain and subsurface warmth as the face, with the hairline breaking into individual strands rather than a hard painted edge, and fine downy hair at the nape catching the light.`;
+
+  // ── EYES ────────────────────────────────────────────────────────────────
+  // The child variant reinforces buildChildAnatomyDirective's anti-enlargement
+  // rule, since "more eye detail" is a classic route to doll-like oversized eyes.
+  const eyes = `EYES: The eyes show real ocular structure — iris fibres radiating from the pupil with subtle colour variation through the stroma, a visible collarette ring around the pupil and a slightly darker limbal ring at the outer edge; the cornea returns a single clean specular catchlight consistent with the key light; the lashes separate into individual hairs of varying length; and a thin tear-film meniscus sits along the lower lid where the eye meets the skin, with the faintest vascular tracery in the sclera, which is a soft off-white rather than a flat pure white.${
+    isChild
+      ? ` The eyes stay at their true proportion for a child of this age — this detail is added at the SURFACE of the eye, never by enlarging, widening or rounding it.`
+      : ""
+  }`;
+
+  // ── TEETH ───────────────────────────────────────────────────────────────
+  // Visibility-gated: the locked model directive specifies a closed-lip smile,
+  // so for full-body generations this usually no-ops. It earns its place on
+  // portrait (Refine close-up) and edit renders.
+  const teeth = isChild
+    ? `TEETH (whenever the lips are parted): Age-honest dentition — ${ageHonestDentition(ageGroup)} — in soft off-white enamel, warmer near the gum line and faintly translucent along the biting edges, with soft contact shading between adjacent teeth.${
+        ageGroup === "baby" ? " The gums show the soft wet sheen of healthy gum tissue." : ""
+      }`
+    : `TEETH (whenever the lips are parted): Enamel is a soft off-white, warmer near the gum line and visibly translucent along the incisal edges where it thins over the dentin, with soft contact shading in the gaps between teeth and slight natural variation in shape and alignment — never a uniform bright-white block.`;
+
+  // ── LIPS ────────────────────────────────────────────────────────────────
+  // The child variant honours CHILD_INTEGRITY_DIRECTIVE's no-makeup rule.
+  const lips = isChild
+    ? `LIPS: The lip surface carries the fine texture of real lip skin with soft vertical lines, a softly irregular vermilion border blending into the surrounding skin, and an even continuous natural colour under a low natural moisture — living skin, with no cosmetic product, no gloss and no adult lip finish.`
+    : `LIPS: The lip surface carries fine vertical lip lines and the soft cross-hatched texture of real lip skin, a defined but undrawn vermilion border blending into the surrounding skin, an even continuous natural colour, and a low satin moisture that breaks the highlight into several small facets rather than one continuous gleam.`;
+
+  // ── MICRO-SHADOW ────────────────────────────────────────────────────────
+  // Load-bearing. EVEN_HIGH_KEY_LIGHTING_DIRECTIVE reaches every model
+  // generation via buildLockedModelDirective, and shadowless light is precisely
+  // what flattens pore relief away. Without this reconciliation the lighting
+  // rule and the texture rule fight, and the lighting rule wins.
+  const microShadow = `MICRO-SHADOW SURVIVES THE FLAT LIGHTING: the even, shadowless high-key setup removes CAST shadows from the body and from the background. It does NOT remove the micro-shadow inside the skin's own relief, between the individual hair strands, in the gaps between the teeth, or along the lip lines. At the millimetre scale the surface still carries its own light and shade, and that self-shadowing is exactly what gives it structure.`;
+
+  const negation = isChild
+    ? `THE ONE PERMITTED NEGATION: this is photographed human surface — not airbrushed, not beauty-filter-smooth, not waxy and not plastic. A featureless shell paired with realistic eyes is the classic artificial-image tell.`
+    : `THE ONE PERMITTED NEGATION: this is photographed human surface — not airbrushed, not beauty-filter-smooth, not waxy and not plastic, and never a poreless, featureless shell.`;
+
+  const reconciliation = `TEXTURE AND CLEAR SKIN ARE NOT IN CONFLICT: evenness is a property of COLOUR; texture is a property of SURFACE. The complexion stays clear, even-toned and free of any marking exactly as specified elsewhere, and this block adds only the sub-millimetre structure sitting on top of that even tone. Take away the markings and the uneven colour — never the ${
+    isChild ? "fine grain" : "pores, the grain"
+  }, the vellus hair or the subsurface glow.`;
+
+  const override = `UNLESS INSTRUCTIONS SPECIFY OTHERWISE: where the brief, the additional visual guidelines, the brand creative direction or an explicitly requested change asks for a different treatment of any of these attributes — a named skin finish, a specific requested marking, makeup, or a deliberately stylised or non-photographic look — that explicit instruction governs the attribute it names, and this block continues to govern every attribute it does not name.`;
+
+  const blocks =
+    scope === "back-of-head"
+      ? [hair, scalp, microShadow, negation, override]
+      : scope === "portrait"
+        ? [skin, continuity, hair, eyes, teeth, lips, microShadow, negation, reconciliation, override]
+        : [skin, continuity, hair, eyes, teeth, lips, microShadow, negation, reconciliation, override];
+
+  return `═══ HUMAN SURFACE FIDELITY (MANDATORY — skin, hair, eyes, teeth, lips and every visible area of the body) ═══
+
+${blocks.join("\n\n")}`;
+}
+
+/**
+ * Meta-prompter contract wrapping {@link buildHumanTextureAnchor}, mirroring the
+ * two-layer structure of {@link CLEAR_SKIN_DIRECTIVE}: a verbatim-insertion
+ * contract at the TEXT layer plus the same anchor injected at the IMAGE layer,
+ * so the rule survives even if the meta-prompter paraphrases or drops it.
+ */
+function buildHumanTextureDirective(ageGroup: ModelAgeGroup): string {
+  const isChild = ageGroup !== "adult";
+
+  // The single most important age-safety valve. Without it the meta-prompter has
+  // to reconcile "always show pore structure" against the child anatomy block's
+  // "no visible pores" on its own, and may resolve it the wrong way.
+  const childPoreRule = isChild
+    ? `
+PORES, FOR THIS SUBJECT: this subject is a CHILD, so the complexion carries NO VISIBLE PORES — that is correct, and it is required by the CHILD ANATOMY & REALISM block. The micro-structure comes from the fine dermal relief, the downy vellus hair and the subsurface glow, never from pores. The anchor block above already states "no visible pores" and you MUST reproduce that phrase verbatim; apart from it, do NOT write the word "pores" anywhere in your output for this subject, and never describe pore structure as something the skin has.
+`
+    : "";
+
+  const preferred = isChild
+    ? "fine skin grain, dermal micro-relief, downy vellus hair, subsurface scattering, soft matte surface, strand separation, anisotropic highlight, iris stroma, catchlight, tear-film meniscus, milk-tooth enamel, age-honest dentition, soft crease, natural, photographic, real-skin."
+    : "pore structure, dermal micro-relief, skin grain, vellus hair, subsurface scattering, specular break-up, strand separation, anisotropic highlight, iris stroma, limbal ring, catchlight, tear-film meniscus, enamel translucence, incisal edge, vermilion border, lip lines, knuckle crease, nail plate, photographic, lived-in, real-skin.";
+
+  return `
+═══ HUMAN SURFACE FIDELITY DIRECTIVE (MANDATORY — applies to every generated subject, at every age) ═══
+
+WHY THIS EXISTS: the CLEAR & HEALTHY SKIN DIRECTIVE above governs the COLOUR of the complexion — even tone, no markings. It says nothing about SURFACE STRUCTURE, and an image model given only a colour instruction defaults to a featureless shell. That result passes as clear skin and fails as human skin. This directive supplies the missing half: the sub-millimetre structure of skin, hair, eyes, teeth and lips that makes the subject indistinguishable from a photographed human being. It applies whatever the brief says, whatever reference images are supplied, and whether or not the user mentions skin at all.
+
+VERBATIM-INSERTION CONTRACT — NON-NEGOTIABLE:
+The output prompt you generate MUST contain the following anchor block WORD-FOR-WORD, in full, including its headings. Copy it exactly as written — do NOT paraphrase, do NOT summarise, do NOT compress it into a sentence, do NOT drop any block. Paraphrasing it collapses the subject back to a featureless shell and fails QA.
+
+HUMAN-TEXTURE ANCHOR (always include verbatim):
+"${buildHumanTextureAnchor(ageGroup, "full-body")}"
+
+FORBIDDEN VOCABULARY — PLASTIC SURFACE (do NOT use any of these words anywhere in the output prompt):
+flawless, perfect, porcelain, doll-like, CGI, 3D render, render, plastic, waxy, smooth skin, poreless, featureless, beauty filter, airbrushed, retouched, filtered, glass skin, silky-smooth, satin-smooth, polished skin.
+EXCEPTION: the words "airbrushed", "beauty-filter-smooth", "waxy", "plastic", "poreless" and "featureless" appear once, deliberately, inside THE ONE PERMITTED NEGATION sentence baked into the anchor block above, and several also appear inside the anchored negation in the CLEAR & HEALTHY SKIN DIRECTIVE. Those anchored negations are high-leverage de-biasers and must NOT be removed or softened. Outside those sentences, none of these words may appear anywhere in your output.
+
+PREFERRED VOCABULARY (use these when describing the subject's surface in your own prose):
+${preferred}
+${childPoreRule}
+THE BALANCE TO STRIKE (read together with the CLEAR & HEALTHY SKIN DIRECTIVE above — the two are NOT in tension): evenness is a property of COLOUR, texture is a property of SURFACE. Write a complexion that is CLEAR, EVEN and free of markings AND that carries full photographic micro-structure. A prompt producing even tone with no structure fails. So does one producing structure by adding markings, uneven colour or unhealthy skin. Take away the markings, never the texture.
+
+OVERRIDE PRECEDENCE: if the MODEL BRIEF, the ADDITIONAL VISUAL GUIDELINES or the BRAND CREATIVE DIRECTION explicitly specifies a different treatment for skin, hair, eyes, teeth or lips — a named skin finish, an explicitly requested marking, makeup, or a deliberately stylised, non-photographic or non-human look — that instruction WINS FOR THE ATTRIBUTE IT NAMES. Follow it exactly, and keep this directive in force for every attribute it does not name. SILENCE IS NOT AN OVERRIDE: if those sections simply do not mention skin, hair, eyes, teeth or lips, this directive applies in full.
+`;
+}
+
+/**
+ * One always-on sentence for the model-EDIT paths. The dominant edit failure is
+ * texture wash-out: asked to change one attribute, the image model quietly
+ * re-finishes every other surface smoother than it found it. Cheap enough to
+ * apply on every edit branch, unlike the full anchor.
+ */
+export function buildModelEditSurfacePreservationClause(): string {
+  return `SURFACE PRESERVATION: the SOURCE image's existing skin, hair, eye, tooth and lip micro-texture is carried through at full fidelity — pore structure and skin grain, vellus hair, individual hair strands and their highlight, iris detail and catchlight, enamel translucence and lip lines all survive the edit unchanged. Do not soften, clean up or re-finish any surface the requested change does not explicitly touch.`;
+}
 
 /**
  * The fabric counterpart to {@link CLEAR_SKIN_ANCHOR}: one verbatim sentence forcing
@@ -8424,14 +8630,7 @@ function buildChildAnatomyDirective(group: ModelAgeGroup): string {
       ? `- SOFT INFANT/TODDLER BODY: Arms and legs carry soft rounded fat with visible dimpling at the knuckles, wrists, elbows and knees; wrists and ankles show the characteristic soft crease rings. The belly is round and full, the chest and shoulders narrow and unmuscled, the neck very short so the chin sits close to the chest. Hands and feet are small and plump with short stubby fingers and toes — exactly five fingers on each hand and five toes on each foot, correctly formed.\n`
       : `- BUILD: The body is slender and unformed — narrow shoulders and hips, a flat undeveloped chest, soft unmuscled limbs, and small hands and feet in correct proportion to the frame, with exactly five correctly formed fingers on each hand.\n`;
 
-  const dentition =
-    group === "baby"
-      ? "Mouth and teeth are age-honest: gums are bare or show at most a couple of small lower milk teeth."
-      : group === "toddler"
-        ? "Mouth and teeth are age-honest: a set of small, even, widely spaced milk teeth."
-        : group === "kid"
-          ? "Mouth and teeth are age-honest: mixed dentition — small milk teeth alongside newer, larger adult teeth, with natural gaps where teeth are still coming through."
-          : "Mouth and teeth are age-honest: a full set of natural, unwhitened adolescent teeth.";
+  const dentition = `Mouth and teeth are age-honest: ${ageHonestDentition(group)}.`;
 
   const hair =
     group === "baby"
@@ -8546,6 +8745,7 @@ This variant MUST be a genuinely DISTINCT individual — a different person with
 
 ${buildLockedModelDirective(gender, ageRange)}
 ${CLEAR_SKIN_DIRECTIVE}
+${buildHumanTextureDirective(ageGroup)}
 ${isChild ? `\n${buildChildAnatomyDirective(ageGroup)}\n\n${CHILD_INTEGRITY_DIRECTIVE}\n` : ""}
 ═══ CASTING ATTRIBUTES (apply to this ${subject}) ═══
 - Gender: ${isChild ? (gender === "male" ? "boy" : "girl") : gender}
@@ -8563,7 +8763,7 @@ ${referenceDirective}
 ${variantDirective ? `\n═══ VARIATION ═══\n${variantDirective}` : ""}
 
 ═══ OUTPUT FORMAT ═══
-Output ONLY the final image-generation prompt as flowing prose. It MUST restate, in positive photographic language: the full-body head-to-toe framing, the barefoot feet, the exact black wardrobe${isChild ? " (black sleeveless U-neck top + black shorts)" : " for this gender"}, the pure-white empty studio background, ${isChild ? `the ${ageGroup === "baby" ? "seated infant posture" : ageGroup === "toddler" ? "wide, softly bent-kneed toddler stance" : "natural upright stance"}, the natural age-appropriate expression, the explicit head-to-body ratio in head-heights, and the child-anatomy rules (large rounded cranium, low-set proportionate NON-enlarged eyes, short chin, full cheeks, soft unmuscled build, real skin texture)` : "the neutral comfortable closed-lip smile"}, and the flat, even, shadowless high-key lighting (include the verbatim lighting anchor sentence), and the clear, healthy complexion (include the verbatim CLEAR-SKIN ANCHOR sentence). Describe the ${subject}'s face, hair, complexion, build and styling in concrete, unambiguous detail — the complexion described as clear, even-toned and healthy, and never carrying any skin markings — the image model relies on this text to render the identity and does NOT see the reference image unless the face is locked.${isChild ? " State plainly that the subject is a real child of the stated age with true child proportions, never an adult scaled down." : ""} No preamble, no commentary.`;
+Output ONLY the final image-generation prompt as flowing prose. It MUST restate, in positive photographic language: the full-body head-to-toe framing, the barefoot feet, the exact black wardrobe${isChild ? " (black sleeveless U-neck top + black shorts)" : " for this gender"}, the pure-white empty studio background, ${isChild ? `the ${ageGroup === "baby" ? "seated infant posture" : ageGroup === "toddler" ? "wide, softly bent-kneed toddler stance" : "natural upright stance"}, the natural age-appropriate expression, the explicit head-to-body ratio in head-heights, and the child-anatomy rules (large rounded cranium, low-set proportionate NON-enlarged eyes, short chin, full cheeks, soft unmuscled build, real skin texture)` : "the neutral comfortable closed-lip smile"}, and the flat, even, shadowless high-key lighting (include the verbatim lighting anchor sentence), and the clear, healthy complexion (include the verbatim CLEAR-SKIN ANCHOR sentence), and the full photographic surface detail of skin, hair, eyes, teeth and lips (include the verbatim HUMAN-TEXTURE ANCHOR block, complete and unedited). Describe the ${subject}'s face, hair, complexion, build and styling in concrete, unambiguous detail — the complexion described as clear, even-toned and healthy, never carrying any skin markings, and always carrying real photographic surface structure — the image model relies on this text to render the identity and does NOT see the reference image unless the face is locked.${isChild ? " State plainly that the subject is a real child of the stated age with true child proportions, never an adult scaled down." : ""} No preamble, no commentary.`;
 
   const contents: ContentPart[] = [{ text: systemPrompt }];
   if (box.referenceImage) {
@@ -8640,9 +8840,12 @@ export async function generateModelImage({
     // Deliberately neutral heading — this path renders adult models and child
     // catalogue subjects alike, and the enriched prompt already carries the
     // age-specific wardrobe, posture and anatomy rules.
-    // The clear-skin anchor is repeated here verbatim as a second, un-paraphrasable
-    // line of defence: it holds even when the enrichment model drops or softens it.
-    text: `═══ SUBJECT TO RENDER ═══\n${prompt}\n\nRender a single photorealistic, full-body, head-to-toe studio photograph in a ${aspectRatio} canvas.\n\n${CLEAR_SKIN_ANCHOR}`,
+    // Both skin anchors are repeated here verbatim as a second, un-paraphrasable
+    // line of defence: they hold even when the enrichment model drops or softens
+    // them. They are grouped under one heading so the image model reads them as a
+    // single contract rather than two competing tails — CLEAR_SKIN_ANCHOR governs
+    // pigmentation, the texture anchor governs surface relief.
+    text: `═══ SUBJECT TO RENDER ═══\n${prompt}\n\nRender a single photorealistic, full-body, head-to-toe studio photograph in a ${aspectRatio} canvas.\n\n═══ HUMAN SURFACE — NON-NEGOTIABLE ═══\n${CLEAR_SKIN_ANCHOR}\n\n${buildHumanTextureAnchor(ageGroup, "full-body")}`,
   });
 
   let response;
@@ -8684,8 +8887,19 @@ export async function generateModelImage({
   throwImageGenFailure(response, "model image");
 }
 
-/** View-specific rendering blocks for {@link generateModelViewImage}. */
-export function buildModelViewPrompt(view: ModelViewKind): string {
+/**
+ * View-specific rendering blocks for {@link generateModelViewImage}.
+ *
+ * `ageGroup` selects the age-appropriate human-texture anchor and defaults to
+ * adult, so pre-existing library entries with no recorded age still work. The
+ * face close-up is the highest-value site for that anchor in the whole product:
+ * it is the identity source of truth for every downstream facial edit and
+ * full-body re-sync, and it is the most zoomed image the tool produces.
+ */
+export function buildModelViewPrompt(
+  view: ModelViewKind,
+  ageGroup: ModelAgeGroup = "adult",
+): string {
   if (view === "face-closeup") {
     // "beauty portrait" is deliberately avoided — this renders child subjects as
     // well as adults, and the source photograph is the identity source of truth
@@ -8696,13 +8910,17 @@ FRAMING: head-and-shoulders close-up — upper boundary just above the top of th
 
 SETTING: the identical neutral studio background, lighting direction and color temperature as the source photograph, so the two images read as frames from the same photoshoot.
 
-COMPLEXION: ${CLEAR_SKIN_ANCHOR} Do not introduce any skin marking that is not already present in the source photograph.`;
+COMPLEXION: ${CLEAR_SKIN_ANCHOR} Do not introduce any skin marking that is not already present in the source photograph.
+
+${buildHumanTextureAnchor(ageGroup, "portrait")}`;
   }
   return `Render the SAME person shown in the source photograph, photographed from DIRECTLY BEHIND — a back-of-the-head shot. Reproduce the person's hairstyle, hair color, hair texture, hair length, skin tone at the neck and ears, and overall head shape EXACTLY as they appear in the source — this is the same individual, viewed from behind.
 
 FRAMING: upper boundary slightly above the top of the head (including hair volume), lower boundary near the shoulders. The back of the head is centered and fills most of the frame. No part of the face is visible.
 
-SETTING: the identical neutral studio background, lighting direction and color temperature as the source photograph, so the two images read as frames from the same photoshoot.`;
+SETTING: the identical neutral studio background, lighting direction and color temperature as the source photograph, so the two images read as frames from the same photoshoot.
+
+${buildHumanTextureAnchor(ageGroup, "back-of-head")}`;
 }
 
 /**
@@ -8739,7 +8957,7 @@ export async function generateModelViewImage({
   contents.push({ inlineData: { mimeType: sourceImage.file.type, data: base64 } });
 
   contents.push({
-    text: `═══ SHOT TO RENDER ═══\n${buildModelViewPrompt(view)}\n\nOutput a single photorealistic photograph in a ${aspectRatio} canvas.`,
+    text: `═══ SHOT TO RENDER ═══\n${buildModelViewPrompt(view, ageGroup)}\n\nOutput a single photorealistic photograph in a ${aspectRatio} canvas.`,
   });
 
   let response;
@@ -8824,7 +9042,8 @@ HARD CONSTRAINTS:
 - Describe the change as the final result (e.g. "a slightly fuller, heavier build with a softer waist, fuller arms and a slightly rounder face"), NOT as an action ("don't"/"remove"/"make").
 - Do NOT restate preservation rules, do NOT mention "Image 1"/"Image 2" labels, do NOT add quotes, preamble or commentary — the wrapping template handles preservation and slot labeling.
 - Keep it tight: one to three sentences, focused solely on the one attribute the user named.
-- SKIN MARKINGS: never introduce freckles, moles, beauty marks, birthmarks, blemishes, spots, scars or any other skin marking into the snippet. Describe skin as clear, healthy and even-toned. The ONLY exception is when the requested change above explicitly names such a marking (e.g. asking for freckles) — then render exactly what was asked for and nothing more.${hasReference ? `\n- Fold in ONLY the specified detail to take from the reference; ignore everything else about the reference.` : ""}
+- SKIN MARKINGS: never introduce freckles, moles, beauty marks, birthmarks, blemishes, spots, scars or any other skin marking into the snippet. Describe skin as clear, healthy and even-toned. The ONLY exception is when the requested change above explicitly names such a marking (e.g. asking for freckles) — then render exactly what was asked for and nothing more.
+- SURFACE TEXTURE: never describe skin, hair, teeth, eyes or lips as poreless, glossy, retouched, airbrushed or filtered, and never ask for texture to be reduced, evened out, softened or cleaned up. If your snippet touches any of those surfaces, describe them as real photographed surface with their natural micro-structure intact. The ONLY exception is when the requested change above explicitly asks for such a finish (for example an explicitly requested matte or dewy skin finish) — then write exactly what was asked for and nothing more.${hasReference ? `\n- Fold in ONLY the specified detail to take from the reference; ignore everything else about the reference.` : ""}
 
 Output ONLY the snippet text.`;
 
@@ -8929,10 +9148,12 @@ export function buildModelEditPrompt({
   hasReference,
   identityFromReference = false,
   releaseSkinTone = false,
+  ageGroup = "adult",
 }: {
   editInstruction: string;
   referenceDirective?: string;
   hasReference: boolean;
+  ageGroup?: ModelAgeGroup;
 } & ModelEditPreservationOptions): string {
   const refClause = hasReference
     ? `\n\nTake ONLY ${referenceDirective?.trim() || "the guidance for the requested change"} from the REFERENCE image; ignore everything else about it — its identity, clothing, pose, background, lighting and framing are irrelevant.`
@@ -8948,11 +9169,13 @@ export function buildModelEditPrompt({
   // MODEL_EDIT_CATEGORIES in constants.ts) working — an explicit request wins.
   const clearSkinClause =
     identityFromReference || releaseSkinTone
-      ? `\n\nCLEAR SKIN: ${CLEAR_SKIN_ANCHOR} Do not introduce any skin marking that is not already present in the SOURCE image. The ONLY exception is when the requested change above explicitly asks for a specific marking — that request takes precedence over this clause.`
+      ? `\n\nCLEAR SKIN: ${CLEAR_SKIN_ANCHOR} Do not introduce any skin marking that is not already present in the SOURCE image. The ONLY exception is when the requested change above explicitly asks for a specific marking — that request takes precedence over this clause.\n\n${buildHumanTextureAnchor(ageGroup, identityFromReference ? "full-body" : "portrait")}`
       : "";
   return `Edit the SOURCE image. Change ONLY: ${editInstruction.trim()}.${refClause}${complexionClause}${clearSkinClause}
 
 ${buildModelEditPreservationClause({ identityFromReference, releaseSkinTone })}
+
+${buildModelEditSurfacePreservationClause()}
 
 Output a single photorealistic edited image at the SAME aspect ratio and framing as the SOURCE image.`;
 }
@@ -9006,7 +9229,7 @@ export async function generateModelEditImage({
   }
 
   contents.push({
-    text: `═══ THE EDIT TO PERFORM ═══\n${buildModelEditPrompt({ editInstruction, referenceDirective, hasReference, identityFromReference, releaseSkinTone })}`,
+    text: `═══ THE EDIT TO PERFORM ═══\n${buildModelEditPrompt({ editInstruction, referenceDirective, hasReference, identityFromReference, releaseSkinTone, ageGroup })}`,
   });
 
   let response;

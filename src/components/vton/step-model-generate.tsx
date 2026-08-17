@@ -9,12 +9,16 @@ import {
   Check,
   RefreshCw,
   Shirt,
+  Square,
   Trash2,
   AlertCircle,
   Library,
   Wand2,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { runPool } from "@/lib/two-lane-runner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ModelComboPicker } from "./model-combo-picker";
 import {
   generateModelPrompt,
@@ -102,6 +106,8 @@ function statusLabel(status: ModelCreationResult["status"]) {
       return "Retrying…";
     case "pending":
       return "Queued…";
+    case "cancelled":
+      return "Cancelled";
     default:
       return "";
   }
@@ -125,6 +131,8 @@ export function StepModelGenerate({ store }: Props) {
     updateModelCreationResult,
     isModelCreationGenerating,
     setIsModelCreationGenerating,
+    beginModelCreationGeneration,
+    cancelModelCreationGeneration,
     savedModels,
     setSavedModels,
     attachSavedModelToVTON,
@@ -175,15 +183,23 @@ export function StepModelGenerate({ store }: Props) {
   const canGenerate = plan.length > 0 && !isModelCreationGenerating;
 
   const runImage = useCallback(
-    async (prompt: string, box: ModelBox, lock: boolean): Promise<{ imageData: string; cost: StepCost }> => {
+    async (
+      prompt: string,
+      box: ModelBox,
+      lock: boolean,
+      signal: AbortSignal
+    ): Promise<{ imageData: string; cost: StepCost }> => {
       if (imageGenModel === "gpt-image-2") {
         return generateModelImageAzure({
           prompt,
           // Only attach the reference when locking the face; otherwise let the
           // model render a fresh distinct face from text.
           referenceImage: lock && box.referenceImage ? { file: box.referenceImage.file } : undefined,
+          // Selects the age-appropriate human-texture anchor at the image layer.
+          ageGroup: modelAgeGroup(modelAgeRange),
           aspectRatio,
           imageSize,
+          signal,
         });
       }
       return generateModelImage({
@@ -200,16 +216,39 @@ export function StepModelGenerate({ store }: Props) {
         lockToReferenceFace: lock,
         aspectRatio,
         imageSize,
+        abortSignal: signal,
       });
     },
     [apiKey, imageGenModel, aspectRatio, imageSize, modelAgeRange]
   );
 
   const runOne = useCallback(
-    async (result: ModelCreationResult, item: PlanItem) => {
+    async (result: ModelCreationResult, item: PlanItem, signal: AbortSignal) => {
       const collected: StepCost[] = [];
       let retrySteps: StepCost[] | undefined;
       const lock = !!item.box.referenceImage && item.box.lockToReferenceFace;
+
+      /** Mark this slot cancelled, keeping whatever cost was already incurred. */
+      const markCancelled = () => {
+        const spent = collected.reduce((s, c) => s + c.totalCost, 0);
+        const retrySpent = retrySteps ? retrySteps.reduce((s, c) => s + c.totalCost, 0) : 0;
+        updateModelCreationResult(result.id, {
+          status: "cancelled",
+          error: "Cancelled by user",
+          // A cancelled slot may already have paid for its prompt call. Recording
+          // it keeps the batch total honest instead of silently under-reporting.
+          costBreakdown:
+            spent + retrySpent > 0
+              ? { steps: [...collected], totalCost: spent + retrySpent, retrySteps }
+              : undefined,
+        });
+      };
+
+      // The user hit Stop before a worker reached this slot — burn no requests.
+      if (signal.aborted) {
+        markCancelled();
+        return;
+      }
 
       const generate = async () => {
         collected.length = 0;
@@ -225,6 +264,7 @@ export function StepModelGenerate({ store }: Props) {
           box: item.box,
           variantIndex: item.variantIndex,
           variantCount: item.variantCount,
+          abortSignal: signal,
         });
         collected.push(promptRes.cost);
 
@@ -233,7 +273,7 @@ export function StepModelGenerate({ store }: Props) {
           enrichedPrompt: promptRes.enrichedPrompt,
         });
 
-        const imgRes = await runImage(promptRes.enrichedPrompt, item.box, lock);
+        const imgRes = await runImage(promptRes.enrichedPrompt, item.box, lock, signal);
         collected.push(imgRes.cost);
 
         const mainCost = collected.reduce((s, c) => s + c.totalCost, 0);
@@ -249,6 +289,14 @@ export function StepModelGenerate({ store }: Props) {
       try {
         await generate();
       } catch (err) {
+        // Checked BEFORE isRetryable: an abort reads as a retryable transport
+        // error, so without this guard one Stop click would kick off a full
+        // retry for every in-flight slot — defeating the entire purpose of the
+        // button. Same reasoning as the VTON path in step-generate.tsx.
+        if (signal.aborted) {
+          markCancelled();
+          return;
+        }
         // A content refusal or a missing ALLOW_ALL entitlement is deterministic:
         // the identical request will be refused again, so surface it instead of
         // burning a second prompt + image cycle on it.
@@ -260,8 +308,17 @@ export function StepModelGenerate({ store }: Props) {
           retrySteps = [...collected];
           updateModelCreationResult(result.id, { status: "auto-retrying", error: undefined });
           await new Promise((r) => setTimeout(r, 1000));
+          // Stop may have landed during the backoff.
+          if (signal.aborted) {
+            markCancelled();
+            return;
+          }
           await generate();
         } catch (err2) {
+          if (signal.aborted) {
+            markCancelled();
+            return;
+          }
           updateModelCreationResult(result.id, {
             status: "error",
             error: friendlyError(err2),
@@ -284,7 +341,7 @@ export function StepModelGenerate({ store }: Props) {
 
   const handleGenerate = useCallback(async () => {
     if (!canGenerate) return;
-    setIsModelCreationGenerating(true);
+    const { signal } = beginModelCreationGeneration();
 
     const items = plan;
     planRef.current = new Map();
@@ -305,25 +362,46 @@ export function StepModelGenerate({ store }: Props) {
     });
     setModelCreationResults(initial);
 
+    // Zip up front so a worker never has to search for its plan item.
+    const tasks = initial.map((result, i) => ({ result, item: items[i] }));
     const concurrency = imageGenModel === "gpt-image-2" ? 10 : 4;
-    let idx = 0;
-    const next = async (): Promise<void> => {
-      while (idx < initial.length) {
-        const i = idx++;
-        await runOne(initial[i], items[i]);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, initial.length) }, () => next()));
-
-    setIsModelCreationGenerating(false);
-  }, [canGenerate, plan, imageGenModel, modelAgeRange, runOne, setModelCreationResults, setIsModelCreationGenerating]);
+    try {
+      await runPool(tasks, concurrency, (t) => runOne(t.result, t.item, signal), signal);
+    } finally {
+      // Sweep anything the workers never reached. A row still `pending` means no
+      // worker started it, and it would otherwise spin in the grid forever. Runs
+      // unconditionally — it is also the last-resort net for a task that threw
+      // outside its own handler.
+      setModelCreationResults((prev) =>
+        prev.map((r) =>
+          r.status === "pending"
+            ? { ...r, status: "cancelled" as const, error: "Cancelled by user" }
+            : r
+        )
+      );
+      // In a `finally` so an unexpected throw can never strand the flag `true`
+      // and leave wizard navigation permanently disabled.
+      setIsModelCreationGenerating(false);
+    }
+  }, [
+    canGenerate,
+    plan,
+    imageGenModel,
+    modelAgeRange,
+    runOne,
+    beginModelCreationGeneration,
+    setModelCreationResults,
+    setIsModelCreationGenerating,
+  ]);
 
   const handleRegenerate = useCallback(
     (result: ModelCreationResult) => {
       if (isBusy(result.status)) return;
       const item = planRef.current.get(result.id);
       if (!item) return;
-      void runOne(result, item);
+      // A single regenerate runs outside any batch and has no Stop button on
+      // screen, so it gets a controller that is never aborted.
+      void runOne(result, item, new AbortController().signal);
     },
     [runOne]
   );
@@ -451,18 +529,38 @@ export function StepModelGenerate({ store }: Props) {
             "Add at least one model on the previous step."
           )}
         </p>
-        <button
-          onClick={handleGenerate}
-          disabled={!canGenerate}
-          className="btn-gradient inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50 disabled:pointer-events-none"
-        >
-          {isModelCreationGenerating ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Sparkles className="h-4 w-4" />
+        <div className="flex items-center gap-2">
+          {isModelCreationGenerating && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={cancelModelCreationGeneration}
+                  className="inline-flex items-center gap-2 rounded-xl bg-red-600/90 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-600"
+                >
+                  <Square className="h-3.5 w-3.5 fill-current" />
+                  Stop
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                Cancels queued and in-flight generations so you can go back and edit the
+                configuration. Images that already finished are kept. Requests already in flight may
+                still incur a charge on the provider&apos;s side.
+              </TooltipContent>
+            </Tooltip>
           )}
-          {isModelCreationGenerating ? "Generating…" : "Generate models"}
-        </button>
+          <button
+            onClick={handleGenerate}
+            disabled={!canGenerate}
+            className="btn-gradient inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50 disabled:pointer-events-none"
+          >
+            {isModelCreationGenerating ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Sparkles className="h-4 w-4" />
+            )}
+            {isModelCreationGenerating ? "Generating…" : "Generate models"}
+          </button>
+        </div>
       </div>
 
       {/* Results */}
@@ -495,6 +593,15 @@ export function StepModelGenerate({ store }: Props) {
                       <>
                         <AlertCircle className="h-6 w-6 text-red-500" />
                         <span className="px-3 text-center text-[11px] text-red-500">{r.error}</span>
+                      </>
+                    ) : r.status === "cancelled" ? (
+                      // Without this branch a cancelled card falls through to the
+                      // spinner and spins forever under a blank label.
+                      <>
+                        <X className="h-6 w-6" />
+                        <span className="px-3 text-center text-[11px]">
+                          Cancelled — regenerate to retry
+                        </span>
                       </>
                     ) : (
                       <>
@@ -556,7 +663,7 @@ export function StepModelGenerate({ store }: Props) {
                   </div>
                 )}
 
-                {r.status === "error" && (
+                {(r.status === "error" || r.status === "cancelled") && (
                   <button
                     onClick={() => handleRegenerate(r)}
                     className="absolute inset-x-0 bottom-0 bg-black/60 py-1.5 text-[11px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100"
