@@ -1,4 +1,4 @@
-import type { PdpShotOption } from "./types";
+import type { FootwearSide, OverlayPosition, PdpLogos, PdpShotOption } from "./types";
 
 /**
  * Shared prompt directives for the PDP Set mode.
@@ -99,33 +99,61 @@ export const PDP_TEXT_RULES = `═══ ON IMAGE TEXT ═══
 - Keep all text fully inside the frame with generous margin. NEVER let a glyph touch or cross the frame edge.`;
 
 /**
- * Page level mark suppression.
+ * Page level marks, rendered INTO the image as design components.
  *
- * The brand wordmark and the optional secondary mark are composited from file after
- * generation, so the model must leave room rather than attempt them. This is the single
- * most reliable way to get an exact mark, and it matches the style brief's own rule that
- * marks are reproduced from file and never redrawn or typeset.
+ * Both marks are drawn by the generator from their attached reference files rather than
+ * pasted over the finished render, so they sit in the composition's own light, surface
+ * and perspective instead of looking stuck on. The safeguard against the model
+ * substituting a canonical version of a known mark, or inventing lettering around it, is
+ * the shape lock below plus the reference image itself.
  *
- * The distinction against {@link PDP_PRODUCT_IDENTITY_LOCK} is critical and is restated
- * here: branding physically ON the shoe is part of the product and must be replicated;
- * branding ON THE PAGE is composited later and must not be drawn.
+ * The two marks get different amounts of freedom:
+ * - The BRAND mark has a fixed corner chosen by the operator, and sits directly on the
+ *   background with nothing behind it. No white plate, no card, no panel.
+ * - The OPTIONAL mark has no fixed position or size. It is composed into the image as a
+ *   designed element that carries its meaning, for example a circular seal with its claim
+ *   set around the rim, placed wherever the layout wants it.
+ *
+ * The distinction against {@link PDP_PRODUCT_IDENTITY_LOCK} still holds: branding
+ * physically ON the shoe is part of the product and is replicated from the product
+ * photographs, not from these files.
  */
-export function buildPdpMarkReservation(opts: {
+export function buildPdpMarkDirective(opts: {
   brandPlacementLabel?: string;
-  optionalPlacementLabel?: string;
+  /** Roughly how much of the canvas width the brand mark spans, 0 to 1. */
+  brandScale?: number;
+  optionalMarkPurpose?: string;
 }): string {
-  const zones = [opts.brandPlacementLabel, opts.optionalPlacementLabel].filter(Boolean) as string[];
-  if (zones.length === 0) {
+  const parts: string[] = [];
+
+  if (opts.brandPlacementLabel) {
+    const pct = Math.round((opts.brandScale ?? 0.18) * 100);
+    parts.push(`BRAND MARK:
+Render the brand mark shown in the attached brand logo reference at ${opts.brandPlacementLabel} of the frame, spanning roughly ${pct} percent of the canvas width.
+It MUST sit DIRECTLY on the background surface itself, as though printed, screened or laid onto that surface. NEVER place it on a white box, a coloured plate, a rounded card, a panel, a sticker or any container. NEVER add a drop shadow, glow, outline or border around it.
+Give it a clean, uncluttered patch of background to sit on so it stays legible, and let it pick up the scene's own lighting so it belongs to the image.`);
+  }
+
+  if (opts.optionalMarkPurpose) {
+    parts.push(`SECONDARY MARK:
+Compose the mark shown in the attached secondary logo reference INTO this image as a designed component. ${opts.optionalMarkPurpose}
+Decide its position, size and treatment yourself, choosing whatever serves the composition best. Do NOT default to a corner. It may become a circular seal or stamp with its claim set in a ring around the mark, a badge worked into the layout, or an element that sits naturally within the scene.
+It MUST read as a deliberate part of the design rather than something laid over the top.`);
+  }
+
+  if (parts.length === 0) {
     return `═══ PAGE LEVEL BRANDING ═══
-NEVER draw a brand wordmark, a logo lockup, a company name, a corner seal or any page level graphic identity anywhere in this image.
+Render NO brand wordmark, logo lockup, company name or corner seal anywhere in this image.
 Branding that is physically part of the footwear itself, printed, embossed or moulded into the product, is NOT page level branding and MUST still be replicated exactly as described in the product identity lock.`;
   }
 
-  return `═══ PAGE LEVEL BRANDING ═══
-Brand marks are added to this image AFTER generation by compositing the real logo files. Your job is to leave room for them, not to draw them.
-Keep ${zones.join(" and ")} as a CLEAN, FLAT, UNCLUTTERED area: even in tone, free of product, text, callouts, texture detail and busy gradient, so a mark composited there will sit legibly.
-NEVER draw a brand wordmark, a logo lockup, a company name, a corner seal or any page level graphic identity anywhere in this image.
-Branding that is physically part of the footwear itself, printed, embossed or moulded into the product, is NOT page level branding and MUST still be replicated exactly as described in the product identity lock.`;
+  return `═══ PAGE LEVEL BRANDING (render these into the image) ═══
+${parts.join("\n\n")}
+
+SHAPE LOCK, applies to every mark above:
+Reproduce each mark's geometry EXACTLY as it appears in its reference image: the same shapes, the same proportions, the same counts of every element, the same spacing, the same negative space inside it. Copy the reference pixels rather than drawing from memory.
+NEVER substitute a different or better known version of a mark. NEVER redraw, restyle, simplify, embellish, rotate or mirror it. NEVER add letters, words or symbols to a mark that does not have them, and NEVER drop any it does have.
+Reproduce it flat and solid in its own colour unless the instruction above explicitly asks for a treatment.`;
 }
 
 /**
@@ -144,6 +172,40 @@ ${lines}
 Use each image ONLY for the role named above.`;
 }
 
+/** Human readable role for one tagged product photograph. */
+export function footwearSideLabel(side: FootwearSide | undefined, sku: string): string {
+  switch (side) {
+    case "sole":
+      return `the SOLE of style ${sku}, its bottom and outsole tread`;
+    case "medial":
+      return `the MEDIAL SIDE of style ${sku}, the inner side that faces the opposite foot`;
+    case "lateral":
+      return `the LATERAL SIDE of style ${sku}, the outer side that faces away from the opposite foot`;
+    default:
+      return `an additional angle of style ${sku}`;
+  }
+}
+
+/**
+ * Authoritative positional-label clause, emitted only when at least one image is tagged.
+ *
+ * Mirrors the clause `buildVTONImageContentParts` already uses for footwear. Without it
+ * the model happily mirrors a logo from the lateral photograph onto the medial side of
+ * the rendered shoe, which is the single most common footwear fidelity failure.
+ */
+export function buildPdpSideLabelClause(sides: (FootwearSide | undefined)[]): string {
+  if (!sides.some(Boolean)) return "";
+  const hasSole = sides.includes("sole");
+  return `═══ POSITIONAL SIDE LABELS: AUTHORITATIVE ═══
+Some reference images above are named as a specific physical side of the footwear. Those names are the source of truth for where things sit on the product.
+- MEDIAL SIDE is the inner side, the one facing the opposite foot.
+- LATERAL SIDE is the outer side, the one facing away from the opposite foot.
+Any branding, stripe, logo, panel or marking visible on a LATERAL SIDE image MUST appear on the OUTER side of the rendered shoe, and anything on a MEDIAL SIDE image MUST appear on the INNER side.
+NEVER mirror, swap or move a side specific detail from one side to the other. NEVER claim a detail exists on a side that no reference shows.${hasSole
+    ? `\nThe SOLE image defines the bottom and outsole ONLY: its tread pattern, its geometry and any markings moulded into it. Use it wherever the composition shows the underside of the shoe.`
+    : ""}`;
+}
+
 /**
  * Cap on product reference images forwarded per generation.
  *
@@ -151,6 +213,32 @@ Use each image ONLY for the role named above.`;
  * Product folders routinely hold more than this, so the generation path trims.
  */
 export const PDP_MAX_PRODUCT_REFERENCES = 6;
+
+/**
+ * Choose which product photographs to forward, newest-first within priority tiers.
+ *
+ * A plain `slice(0, max)` silently discards tagged images when a folder holds more than
+ * the cap, which in the worst case throws away the only photograph of the sole and leaves
+ * the sole-construction infographic inventing an outsole. Tagged images therefore come
+ * first, in the order sole, medial, lateral, and untagged ones fill whatever remains.
+ * Original relative order is preserved inside each tier.
+ */
+export function selectPdpReferences<T extends { footwearSide?: FootwearSide }>(
+  images: T[],
+  max: number = PDP_MAX_PRODUCT_REFERENCES
+): T[] {
+  if (images.length <= max) return images;
+  const rank = (side: FootwearSide | undefined): number =>
+    side === "sole" ? 0 : side === "medial" ? 1 : side === "lateral" ? 2 : 3;
+
+  return images
+    .map((img, i) => ({ img, i }))
+    .sort((a, b) => rank(a.img.footwearSide) - rank(b.img.footwearSide) || a.i - b.i)
+    .slice(0, max)
+    // Restore upload order so the manifest reads naturally.
+    .sort((a, b) => a.i - b.i)
+    .map((e) => e.img);
+}
 
 /**
  * Minimum render size for an option that bears text. Small type degrades before anything
@@ -164,23 +252,45 @@ export function resolvePdpImageSize(
   return requested;
 }
 
+/**
+ * Whether this option should carry the optional secondary mark.
+ *
+ * True Zero declares the mark mandatory, so it is always drawn there when one exists,
+ * regardless of the per option toggles.
+ */
+export function shouldDrawOptionalLogo(option: PdpShotOption, logos: PdpLogos): boolean {
+  if (!logos.optionalLogo) return false;
+  if (option.requiresOptionalLogo) return true;
+  return logos.optionalEnabledFor.includes(option.id);
+}
+
+/** Human readable placement, used in the brand mark clause. */
+export function placementLabel(position: OverlayPosition): string {
+  return position.replace(/-/g, " ").replace("center", "centre");
+}
+
 /** Assembled once per generation and appended after the shot's composition brief. */
 export function buildPdpGlobalDirectives(opts: {
   includeHuman: boolean;
   includeText: boolean;
   referenceLabels: string[];
+  /** Side tags of the forwarded product photographs, in the same order. */
+  referenceSides?: (FootwearSide | undefined)[];
   brandPlacementLabel?: string;
-  optionalPlacementLabel?: string;
+  brandScale?: number;
+  optionalMarkPurpose?: string;
 }): string {
   const blocks = [
     buildPdpReferenceManifest(opts.referenceLabels),
+    buildPdpSideLabelClause(opts.referenceSides ?? []),
     PDP_PRODUCT_IDENTITY_LOCK,
     opts.includeHuman ? PDP_CAST_IDENTITY_LOCK : "",
     opts.includeHuman ? PDP_HUMAN_REALISM : "",
     opts.includeText ? PDP_TEXT_RULES : "",
-    buildPdpMarkReservation({
+    buildPdpMarkDirective({
       brandPlacementLabel: opts.brandPlacementLabel,
-      optionalPlacementLabel: opts.optionalPlacementLabel,
+      brandScale: opts.brandScale,
+      optionalMarkPurpose: opts.optionalMarkPurpose,
     }),
   ];
   return blocks.filter(Boolean).join("\n\n");

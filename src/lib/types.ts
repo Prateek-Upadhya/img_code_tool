@@ -1860,11 +1860,21 @@ export interface PdpSheetSession {
  */
 export type PdpOptionColumns = Record<string, string[]>;
 
+/**
+ * One uploaded product photograph, optionally tagged with which side of the shoe it
+ * shows. The tag is forwarded to the image model as an authoritative positional label,
+ * which stops branding being mirrored onto the wrong side and gives the sole-construction
+ * infographic a real outsole to work from.
+ */
+export interface PdpProductImage extends ReferenceImageItem {
+  footwearSide?: FootwearSide;
+}
+
 /** One product in the queue. The subfolder name IS the SKU. */
 export interface PdpProduct {
   id: string;
   sku: string;
-  images: ReferenceImageItem[];
+  images: PdpProductImage[];
   /**
    * The matched sheet row, keyed by original header. Absent when no row's SKU
    * matched this subfolder — the product still generates, using image analysis
@@ -1889,22 +1899,27 @@ export interface PdpProduct {
 }
 
 /**
- * Brand and optional marks. Both are composited from file AFTER generation
- * rather than drawn by the image model: the documented failure modes here are
- * canonical-form substitution (the model swapping in the well-known "correct"
- * version of a mark) and sharp-but-wrong hallucinated lettering. Compositing
- * also satisfies the style brief's own rule that marks are reproduced from
- * file, never redrawn or typeset.
+ * Brand and optional marks.
+ *
+ * Both are RENDERED INTO the image by the generator from the attached logo files,
+ * never pasted over the finished render. Each is treated as a design COMPONENT
+ * belonging to the composition: the brand wordmark sits directly on the background
+ * at the requested corner with no plate, card or panel behind it, and the optional
+ * mark is worked into a designed element that suits the image, such as a seal or
+ * badge carrying its claim.
+ *
+ * The two differ in how much freedom the generator gets. The brand mark's corner is
+ * chosen by the operator and is fixed. The optional mark has no fixed corner and no
+ * fixed size; it goes wherever the composition wants it.
  */
 export interface PdpLogos {
   brandLogo?: ReferenceImageItem;
-  /** Global — applied to every image in the run. */
+  /** Corner the brand mark occupies. Applied to every image in the run. */
   brandPlacement: OverlayPosition;
-  /** Fraction of the canvas width the mark spans, 0–1. */
+  /** Roughly how much of the canvas width the brand mark spans, 0–1. A size hint. */
   brandScale: number;
+  /** Optional secondary mark, e.g. a sustainability mark. Contextually placed. */
   optionalLogo?: ReferenceImageItem;
-  optionalPlacement: OverlayPosition;
-  optionalScale: number;
   /** Option ids the optional mark is enabled for. */
   optionalEnabledFor: string[];
 }
@@ -1915,7 +1930,6 @@ export type PdpResultStatus =
   | "generating-image"
   | "validating"
   | "retrying"
-  | "compositing"
   | "completed"
   | "cancelled"
   | "error";
@@ -1937,7 +1951,8 @@ export type PdpScoreAxis =
   | "humanRealism"        // skin, hair, eyes, hands. N/A without a person
   | "textAccuracy"        // spelling, no em dashes, no duplication, inside the frame
   | "textCount"           // at most five distinct elements. N/A without text
-  | "calloutCorrectness"; // does each callout point at the part it names
+  | "calloutCorrectness"  // does each callout point at the part it names
+  | "markFidelity";       // brand and secondary marks match their reference files
 
 export const PDP_SCORE_AXES: PdpScoreAxis[] = [
   "productFidelity",
@@ -1949,6 +1964,7 @@ export const PDP_SCORE_AXES: PdpScoreAxis[] = [
   "textAccuracy",
   "textCount",
   "calloutCorrectness",
+  "markFidelity",
 ];
 
 export interface PdpScoreDefect {

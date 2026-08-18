@@ -3410,7 +3410,7 @@ const SOLE_CONSTRUCTION_LAYERS: Record<
       n: 2,
       title: "Footbed",
       pixelPerfect: true,
-      body: "the footbed / insole, shaped with subtle indented slots where the strap attaches (no upward-projecting flaps).",
+      body: "the footbed / insole as a SMOOTH, CONTINUOUS, UNBROKEN surface. It MUST have NO slots, NO grooves, NO cutouts, NO channels, NO perforations and NO recesses of any kind anywhere on it, including where the strap meets it. Render it smooth and gently contoured, with no upward-projecting flaps.",
     },
     {
       n: 3,
@@ -3436,7 +3436,7 @@ const SOLE_CONSTRUCTION_LAYERS: Record<
       n: 3,
       title: "Footbed",
       pixelPerfect: true,
-      body: "the footbed / insole, shaped with subtle indented slots where the strap attaches (no upward-projecting flaps).",
+      body: "the footbed / insole as a SMOOTH, CONTINUOUS, UNBROKEN surface. It MUST have NO slots, NO grooves, NO cutouts, NO channels, NO perforations and NO recesses of any kind anywhere on it, including where the strap meets it. Render it smooth and gently contoured, with no upward-projecting flaps.",
     },
     {
       n: 4,

@@ -29,9 +29,11 @@ import { buildPdpStyleBlock, describePdpStyle } from "@/lib/pdp-style";
 import {
   buildPdpGlobalDirectives,
   resolvePdpImageSize,
-  PDP_MAX_PRODUCT_REFERENCES,
+  selectPdpReferences,
+  footwearSideLabel,
+  placementLabel,
+  shouldDrawOptionalLogo,
 } from "@/lib/pdp-directives";
-import { compositePdpLogos, placementLabel, shouldDrawOptionalLogo } from "@/lib/pdp-logo-composite";
 import { resolvePdpCopy } from "@/lib/pdp-sheet";
 import { savePdpImage, readPdpImage, clearPdpRun } from "@/lib/pdp-result-store";
 import { downloadGroupedZip, downloadImage } from "@/lib/result-zip";
@@ -59,7 +61,6 @@ const BUSY: PdpResult["status"][] = [
   "generating-image",
   "validating",
   "retrying",
-  "compositing",
 ];
 
 function StatusBadge({ status }: { status: PdpResult["status"] }) {
@@ -69,7 +70,6 @@ function StatusBadge({ status }: { status: PdpResult["status"] }) {
     "generating-image": { label: "Rendering", spin: true, cls: "text-primary" },
     validating: { label: "Checking", spin: true, cls: "text-primary" },
     retrying: { label: "Retrying", spin: true, cls: "text-amber-500" },
-    compositing: { label: "Adding marks", spin: true, cls: "text-primary" },
     completed: { label: "Done", cls: "text-emerald-500" },
     cancelled: { label: "Stopped", cls: "text-muted-foreground" },
     error: { label: "Failed", cls: "text-destructive" },
@@ -145,8 +145,19 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
   const needsCast = selected.some((o) => o.requiresModel);
   const canGenerate = apiKey.length > 0 && plan.length > 0 && !isPdpGenerating;
 
-  const styleBlock = useMemo(
-    () => buildPdpStyleBlock(pdpStyle, pdpBackground),
+  /**
+   * Two frozen variants of the art direction, not one.
+   *
+   * Each style's grammar describes how callouts behave, so injecting it unconditionally
+   * pushed callouts onto shots whose own brief excluded them. The text-free variant drops
+   * that axis and forbids information graphics outright, which is what keeps the on-model
+   * photography clean.
+   */
+  const styleBlocks = useMemo(
+    () => ({
+      withText: buildPdpStyleBlock(pdpStyle, pdpBackground, true),
+      textFree: buildPdpStyleBlock(pdpStyle, pdpBackground, false),
+    }),
     [pdpStyle, pdpBackground]
   );
 
@@ -247,16 +258,15 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
 
       const finish = async (inconclusive: boolean) => {
         if (!best) return;
-        updateResult(result.id, { status: "compositing" });
-        const composited = await compositePdpLogos(best.imageData, option, pdpLogos);
-
+        // Marks are already rendered into the image by the generator, so there is no
+        // post-processing pass here; the render is the deliverable.
         await savePdpImage({
           id: result.id,
           runId,
           sku: product.sku,
           optionId: option.id,
           optionLabel: option.label,
-          imageData: composited,
+          imageData: best.imageData,
           createdAt: Date.now(),
         });
 
@@ -264,7 +274,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
           status: "completed",
           // Only a thumbnail is kept in React state. A full run is hundreds of images and
           // holding them all as data URLs would exhaust the tab.
-          thumbnail: composited,
+          thumbnail: best.imageData,
           storageKey: result.id,
           prompt: best.prompt,
           score: best.score,
@@ -280,24 +290,29 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
       try {
         const copy = resolvePdpCopy(product, option, pdpSheetSession, pdpOptionColumns);
         // Structural accuracy degrades past roughly six references, and product folders
-        // routinely hold more, so the set is trimmed rather than sent whole.
-        const productImages = product.images.slice(0, PDP_MAX_PRODUCT_REFERENCES);
+        // routinely hold more. Trimming is tag-aware so a tagged sole is never the image
+        // that gets dropped.
+        const productImages = selectPdpReferences(product.images);
+        const wantsOptionalMark = shouldDrawOptionalLogo(option, pdpLogos);
 
-        const referenceLabels = productImages.map(
-          (_img, i) =>
-            `footwear product reference ${i + 1} of ${productImages.length}, style ${product.sku}`
+        const referenceLabels = productImages.map((img) =>
+          footwearSideLabel(img.footwearSide, product.sku)
         );
         if (option.requiresModel && castFile) referenceLabels.push("the human model to cast");
+        if (pdpLogos.brandLogo) referenceLabels.push("the brand mark to render into the image");
+        if (wantsOptionalMark) referenceLabels.push("the secondary mark to compose into the image");
 
         const globalDirectives = buildPdpGlobalDirectives({
           includeHuman: option.requiresModel,
           includeText: option.bearsText,
           referenceLabels,
+          referenceSides: productImages.map((img) => img.footwearSide),
           brandPlacementLabel: pdpLogos.brandLogo
-            ? `the ${placementLabel(pdpLogos.brandPlacement)} corner area`
+            ? `the ${placementLabel(pdpLogos.brandPlacement)} area`
             : undefined,
-          optionalPlacementLabel: shouldDrawOptionalLogo(option, pdpLogos)
-            ? `the ${placementLabel(pdpLogos.optionalPlacement)} corner area`
+          brandScale: pdpLogos.brandScale,
+          optionalMarkPurpose: wantsOptionalMark
+            ? "It carries the product's sustainability story, so give it the weight of a seal of approval."
             : undefined,
         });
 
@@ -319,7 +334,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
             sku: product.sku,
             overallContext: copy.overallContext,
             optionCopy: copy.optionCopy,
-            styleBlock,
+            styleBlock: option.bearsText ? styleBlocks.withText : styleBlocks.textFree,
             globalDirectives,
             soleConstructionLayers: product.soleConstructionLayers ?? 3,
             aspectRatio: pdpAspectRatio,
@@ -338,6 +353,11 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
             option,
             productImages,
             castImage: option.requiresModel ? castFile : undefined,
+            brandLogo: pdpLogos.brandLogo?.file,
+            brandPlacementLabel: pdpLogos.brandLogo
+              ? `the ${placementLabel(pdpLogos.brandPlacement)} area`
+              : undefined,
+            optionalLogo: wantsOptionalMark ? pdpLogos.optionalLogo?.file : undefined,
             aspectRatio: pdpAspectRatio,
             imageSize: resolvePdpImageSize(option, pdpImageSize),
             abortSignal: signal,
@@ -352,6 +372,8 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
             productImages,
             option,
             composition: enrichedPrompt,
+            brandLogo: pdpLogos.brandLogo?.file,
+            optionalLogo: wantsOptionalMark ? pdpLogos.optionalLogo?.file : undefined,
             attemptNumber: attempt,
             abortSignal: signal,
           });
@@ -415,7 +437,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
       pdpSheetSession,
       pdpOptionColumns,
       pdpLogos,
-      styleBlock,
+      styleBlocks,
       pdpAspectRatio,
       pdpImageSize,
       pdpCastDescription,

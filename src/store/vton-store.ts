@@ -522,8 +522,6 @@ export function useVTONStore() {
   const [pdpLogos, setPdpLogos] = useState<PdpLogos>({
     brandPlacement: "top-left",
     brandScale: 0.18,
-    optionalPlacement: "bottom-right",
-    optionalScale: 0.1,
     optionalEnabledFor: [],
   });
   const [pdpCastSource, setPdpCastSource] = useState<PdpCastSource>("described");

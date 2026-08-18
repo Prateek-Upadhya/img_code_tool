@@ -19,6 +19,7 @@ import {
 import { PdpSheetPanel } from "./pdp-sheet-panel";
 import type { VTONStore } from "@/store/vton-store";
 import type {
+  FootwearSide,
   OverlayPosition,
   PdpProduct,
   ReferenceImageItem,
@@ -28,6 +29,19 @@ import type {
 function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
+
+/**
+ * Side tag cycle, mirroring the control VTON already ships in `image-upload-zone.tsx`.
+ * Sole leads because it is the tag that unlocks the sole construction diagram, and it is
+ * the one operators reach for most.
+ */
+const PDP_SIDE_CYCLE: (FootwearSide | null)[] = ["sole", "medial", "lateral", null];
+
+const PDP_SIDE_LABEL: Record<FootwearSide, string> = {
+  sole: "SOLE",
+  medial: "MEDIAL",
+  lateral: "LATERAL",
+};
 
 /**
  * Parent-folder upload. Each immediate subfolder becomes one product and its name is the
@@ -97,11 +111,13 @@ function ProductCard({
   product,
   onRemove,
   onLayers,
+  onCycleSide,
   contextColumns,
 }: {
   product: PdpProduct;
   onRemove: (id: string) => void;
   onLayers: (id: string, layers: SoleConstructionLayerCount) => void;
+  onCycleSide: (productId: string, imageId: string) => void;
   contextColumns: string[];
 }) {
   const matched = Boolean(product.sheetRow);
@@ -140,21 +156,35 @@ function ProductCard({
         </button>
       </div>
 
-      {/* Every image in the subfolder is previewed, not just the first. */}
+      {/* Every image in the subfolder is previewed, not just the first. Tapping the badge
+          cycles the side tag, which the generator treats as authoritative: it stops
+          branding being mirrored onto the wrong side, and gives the sole construction
+          diagram a real outsole to copy. */}
       <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
         {product.images.map((img) => (
-          <div
-            key={img.id}
-            className="relative aspect-square overflow-hidden rounded-lg border border-border bg-muted/40"
-          >
-            <Image
-              src={img.preview}
-              alt={img.file.name}
-              fill
-              sizes="80px"
-              className="object-cover"
-              unoptimized
-            />
+          <div key={img.id} className="space-y-1">
+            <div className="relative aspect-square overflow-hidden rounded-lg border border-border bg-muted/40">
+              <Image
+                src={img.preview}
+                alt={img.file.name}
+                fill
+                sizes="80px"
+                className="object-cover"
+                unoptimized
+              />
+            </div>
+            <button
+              onClick={() => onCycleSide(product.id, img.id)}
+              title="Tag which side of the shoe this image shows"
+              className={cn(
+                "w-full rounded-md border px-1 py-0.5 text-[10px] font-medium transition-colors",
+                img.footwearSide
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border text-muted-foreground/70 hover:bg-muted/60"
+              )}
+            >
+              {img.footwearSide ? PDP_SIDE_LABEL[img.footwearSide] : "tag"}
+            </button>
           </div>
         ))}
       </div>
@@ -195,7 +225,13 @@ function ProductCard({
   );
 }
 
-/** Single-image upload used for the two logo slots. */
+/**
+ * Single-image upload for a logo slot.
+ *
+ * Placement and size controls appear only for the brand mark. The secondary mark is
+ * composed into the image contextually by the generator, so fixing a corner or a size for
+ * it would fight the composition rather than help it.
+ */
 function LogoSlot({
   label,
   hint,
@@ -210,12 +246,13 @@ function LogoSlot({
   label: string;
   hint: string;
   image?: ReferenceImageItem;
-  placement: OverlayPosition;
-  scale: number;
+  /** Omit to hide the placement and size controls entirely. */
+  placement?: OverlayPosition;
+  scale?: number;
   onPick: (file: File) => void;
   onClear: () => void;
-  onPlacement: (p: OverlayPosition) => void;
-  onScale: (s: number) => void;
+  onPlacement?: (p: OverlayPosition) => void;
+  onScale?: (s: number) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -256,33 +293,39 @@ function LogoSlot({
         </button>
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-muted-foreground">Placement</span>
-        <Select value={placement} onValueChange={(v) => onPlacement(v as OverlayPosition)}>
-          <SelectTrigger className="h-8 w-36 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {PDP_LOGO_PLACEMENT_OPTIONS.map((p) => (
-              <SelectItem key={p.value} value={p.value} className="text-xs">
-                {p.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <span className="text-xs text-muted-foreground">Size</span>
-        <input
-          type="range"
-          min={4}
-          max={40}
-          value={Math.round(scale * 100)}
-          onChange={(e) => onScale(Number(e.target.value) / 100)}
-          className="h-1 w-24 cursor-pointer accent-primary"
-        />
-        <span className="w-8 text-xs tabular-nums text-muted-foreground">
-          {Math.round(scale * 100)}%
-        </span>
-      </div>
+      {placement && onPlacement && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground">Placement</span>
+          <Select value={placement} onValueChange={(v) => onPlacement(v as OverlayPosition)}>
+            <SelectTrigger className="h-8 w-36 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PDP_LOGO_PLACEMENT_OPTIONS.map((p) => (
+                <SelectItem key={p.value} value={p.value} className="text-xs">
+                  {p.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {typeof scale === "number" && onScale && (
+            <>
+              <span className="text-xs text-muted-foreground">Size</span>
+              <input
+                type="range"
+                min={4}
+                max={40}
+                value={Math.round(scale * 100)}
+                onChange={(e) => onScale(Number(e.target.value) / 100)}
+                className="h-1 w-24 cursor-pointer accent-primary"
+              />
+              <span className="w-8 text-xs tabular-nums text-muted-foreground">
+                {Math.round(scale * 100)}%
+              </span>
+            </>
+          )}
+        </div>
+      )}
 
       <input
         ref={inputRef}
@@ -355,6 +398,27 @@ export function StepPdpProducts({ store }: { store: VTONStore }) {
     [setPdpProducts]
   );
 
+  const cycleSide = useCallback(
+    (productId: string, imageId: string) => {
+      setPdpProducts((prev) =>
+        prev.map((p) =>
+          p.id !== productId
+            ? p
+            : {
+                ...p,
+                images: p.images.map((img) => {
+                  if (img.id !== imageId) return img;
+                  const idx = PDP_SIDE_CYCLE.indexOf(img.footwearSide ?? null);
+                  const next = PDP_SIDE_CYCLE[(idx + 1) % PDP_SIDE_CYCLE.length];
+                  return { ...img, footwearSide: next ?? undefined };
+                }),
+              }
+        )
+      );
+    },
+    [setPdpProducts]
+  );
+
   const setLogo = useCallback(
     (key: "brandLogo" | "optionalLogo", file: File | null) => {
       setPdpLogos((prev) => {
@@ -400,6 +464,7 @@ export function StepPdpProducts({ store }: { store: VTONStore }) {
                 product={p}
                 onRemove={removeProduct}
                 onLayers={setLayers}
+                onCycleSide={cycleSide}
                 contextColumns={contextColumns}
               />
             ))}
@@ -473,14 +538,10 @@ export function StepPdpProducts({ store }: { store: VTONStore }) {
           />
           <LogoSlot
             label="Optional logo"
-            hint="Applied only to the shot types you enable it for, on the Shots step."
+            hint="Placed contextually by the generator, worked into the design as a seal or badge. Enabled per shot type on the Shots step."
             image={pdpLogos.optionalLogo}
-            placement={pdpLogos.optionalPlacement}
-            scale={pdpLogos.optionalScale}
             onPick={(f) => setLogo("optionalLogo", f)}
             onClear={() => setLogo("optionalLogo", null)}
-            onPlacement={(p) => setPdpLogos((prev) => ({ ...prev, optionalPlacement: p }))}
-            onScale={(s) => setPdpLogos((prev) => ({ ...prev, optionalScale: s }))}
           />
         </div>
       </section>

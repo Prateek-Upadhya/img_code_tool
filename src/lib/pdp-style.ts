@@ -93,10 +93,9 @@ export const PDP_STYLE_GRAMMARS: Record<PdpStyle, PdpStyleGrammar> = {
 /**
  * Rules that hold in all three styles. These are constants, not knobs.
  *
- * The two brand mark rules from the style brief are deliberately absent here: marks are
- * composited from file after generation (see `pdp-logo-composite.ts`), so instead of
- * asking the model to reproduce them faithfully, the prompt asks it not to draw them at
- * all and to reserve clean space instead. That is enforced in `pdp-directives.ts`.
+ * The brief's two mark rules, composited from file and reproduced never typeset, are
+ * enforced in `pdp-directives.ts` as a shape lock on marks the generator renders from
+ * their reference files, rather than being restated here.
  */
 export const PDP_STYLE_CONSTANTS = `SHARED RULES (these hold in every style):
 - Tune the background against the product. If the footwear is pale, separate it from the ground by VALUE. If it is saturated, separate it by HUE. Identify every major colour region of the footwear first, the upper, the sole, the straps, the trims, and choose a ground that separates all of them at once.
@@ -138,28 +137,48 @@ export function resolveBackgroundClause(style: PdpStyle, background: PdpBackgrou
 }
 
 /**
+ * Prohibition emitted in place of the INFORMATION axis for a text-free image.
+ *
+ * Each style's grammar describes how callouts behave, because most images in a PDP set
+ * carry them. Injecting that grammar unconditionally meant the style layer reintroduced
+ * callouts onto shots whose own brief had excluded them, which is exactly what went wrong
+ * with the on-model photography: the brief said "no text of any kind" and the style
+ * quietly overruled it. So for a text-free image the axis is not merely omitted, it is
+ * inverted.
+ */
+const PDP_NO_INFORMATION_CLAUSE = `INFORMATION: none. This image is pure photography and carries NO information graphics whatsoever.
+Render NO callouts, NO badges, NO chips, NO pills, NO connectors, NO leader lines, NO pointers, NO arrows, NO icons, NO numbered markers, NO magnified inset circles, NO labels, NO captions and NO text of any kind anywhere in the frame.
+The signature elements of this style that exist to carry information are SUSPENDED for this image. Express the style through space, light, subject treatment, palette and mood alone.`;
+
+/**
  * Build the frozen art direction block.
  *
  * Resolved ONCE per batch and quoted verbatim into every generation, so the whole set
  * shares one direction. These models expose no seed, so a single reused block is the
  * only mechanism that keeps a set coherent across many independent calls.
+ *
+ * `bearsText` decides whether the style's information grammar applies at all. See
+ * {@link PDP_NO_INFORMATION_CLAUSE}.
  */
-export function buildPdpStyleBlock(style: PdpStyle, background: PdpBackground): string {
+export function buildPdpStyleBlock(
+  style: PdpStyle,
+  background: PdpBackground,
+  bearsText: boolean = true
+): string {
   const g = PDP_STYLE_GRAMMARS[style];
   const bg = resolveBackgroundClause(style, background);
 
   return `═══ ARTISTIC STYLE: ${g.name} ═══
-This is a MODIFIER LAYER applied ON TOP of the composition brief above. It does not replace that brief and it does not change what the image contains. It decides HOW everything above is rendered: the quality of the space, the behaviour of light, the way information attaches, the palette and the typographic feel. Where the brief and this layer both speak to something, the brief decides WHAT and this layer decides HOW.
+This is a MODIFIER LAYER applied ON TOP of the composition brief above. It does not replace that brief and it does not change what the image contains. It decides HOW everything above is rendered: the quality of the space, the behaviour of light, ${bearsText ? "the way information attaches, " : ""}the palette and the typographic feel. Where the brief and this layer both speak to something, the brief decides WHAT and this layer decides HOW.
 
 PREMISE: ${g.premise}
 WORLD: ${g.world}
 LIGHT: ${g.light}
 SUBJECT TREATMENT: ${g.subject}
-INFORMATION: ${g.information}
+${bearsText ? `INFORMATION: ${g.information}` : PDP_NO_INFORMATION_CLAUSE}
 HIERARCHY: ${g.hierarchy}
-SECONDARY MARK TREATMENT: ${g.secondaryMark}
-REGISTER: ${g.register}
-SIGNATURE ELEMENTS: ${g.signature}
+${bearsText ? `SECONDARY MARK TREATMENT: ${g.secondaryMark}\n` : ""}REGISTER: ${g.register}
+SIGNATURE ELEMENTS: ${bearsText ? g.signature : "expressed only through space, light and subject treatment, since this image carries no information graphics."}
 ${bg ? `\n${bg}` : `\nSETTING: none. This style is placeless by definition. Render no location, no horizon, no environment and no props. Any background preference stated elsewhere MUST be ignored in favour of the single tint field described above.`}
 
 ${PDP_STYLE_CONSTANTS}`;

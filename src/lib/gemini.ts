@@ -55,6 +55,7 @@ import {
   InfographicFidelity,
   InfographicPlan,
   InfographicTextMode,
+  FootwearSide,
   InfographicTextPoint,
   PdpScoreAxis,
   PdpScoreDefect,
@@ -9415,10 +9416,12 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
 // modifier layer: the brief decides what the image contains, the style decides how it is
 // rendered. Ordering encodes that precedence for the model.
 //
-// Page-level brand marks are never rendered here. They are composited from the operator's
-// own files after generation (see pdp-logo-composite.ts), because this model substitutes
-// canonical versions of known marks and hallucinates sharp but semantically wrong
-// lettering. The prompt instead reserves clean space via the mark-reservation directive.
+// Page-level marks ARE rendered here, from their own logo reference files, so they sit in
+// the composition's light and surface rather than looking pasted on. The brand mark takes
+// a fixed corner and sits directly on the background; the secondary mark is placed
+// contextually as a designed component. Both are held to the shape lock in
+// pdp-directives.ts, which is what guards against this model substituting a canonical
+// version of a known mark or inventing lettering around it.
 
 /** Step 1 — compose the art-direction brief for one product and one shot option. */
 export async function generatePdpPrompt({
@@ -9539,6 +9542,9 @@ export async function generatePdpImage({
   option,
   productImages,
   castImage,
+  brandLogo,
+  brandPlacementLabel,
+  optionalLogo,
   aspectRatio,
   imageSize = "2K",
   abortSignal,
@@ -9546,21 +9552,41 @@ export async function generatePdpImage({
   apiKey: string;
   prompt: string;
   option: PdpShotOption;
-  productImages: { file: File }[];
+  /** Product photographs, optionally tagged with which side of the shoe they show. */
+  productImages: { file: File; footwearSide?: FootwearSide }[];
   castImage?: File;
+  /** Brand mark, rendered into the image at a fixed corner. */
+  brandLogo?: File;
+  brandPlacementLabel?: string;
+  /** Secondary mark, rendered contextually as a designed component. */
+  optionalLogo?: File;
   aspectRatio: AspectRatio;
   imageSize?: "1K" | "2K" | "4K";
   abortSignal?: AbortSignal;
 }): Promise<{ imageData: string; cost: StepCost }> {
   const ai = getGeminiClient(apiKey);
   const contents: ContentPart[] = [];
+  const hasSideTags = productImages.some((p) => p.footwearSide);
 
   contents.push({
     text: `═══ PRODUCT REFERENCE IMAGES: ABSOLUTE SOURCE OF TRUTH ═══
-The next ${productImages.length} image${productImages.length === 1 ? "" : "s"} show the EXACT footwear to render. INSTRUCTION: PIXEL PRIORITY MODE. IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge about this product. Use ONLY these pixels to construct its texture, colour shades, design, proportions, on-product lettering and that lettering's orientation, logos and patterns. Ignore the reference backgrounds; only the product matters. NEVER redesign, recolour or rebrand it, and NEVER add lettering or a mark that is not visibly present here.`,
+The next ${productImages.length} image${productImages.length === 1 ? "" : "s"} show the EXACT footwear to render. INSTRUCTION: PIXEL PRIORITY MODE. IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge about this product. Use ONLY these pixels to construct its texture, colour shades, design, proportions, on-product lettering and that lettering's orientation, logos and patterns. Ignore the reference backgrounds; only the product matters. NEVER redesign, recolour or rebrand it, and NEVER add lettering or a mark that is not visibly present here.${hasSideTags
+      ? `\n\nPOSITIONAL SIDE LABELS ARE AUTHORITATIVE. Each image below is preceded by a label naming which physical side of the footwear it shows. Anything visible on a [LATERAL SIDE] image MUST appear on the OUTER side of the rendered shoe, and anything on a [MEDIAL SIDE] image on the INNER side. NEVER mirror or swap a side specific detail. A [SOLE] image defines the bottom and outsole only.`
+      : ""}`,
   });
 
   for (const img of productImages) {
+    if (hasSideTags) {
+      const label =
+        img.footwearSide === "sole"
+          ? "\n[SOLE — the bottom and outsole tread]:"
+          : img.footwearSide === "medial"
+          ? "\n[MEDIAL SIDE — inner side, faces the opposite foot]:"
+          : img.footwearSide === "lateral"
+          ? "\n[LATERAL SIDE — outer side, faces away from the opposite foot]:"
+          : "\n[ADDITIONAL ANGLE]:";
+      contents.push({ text: label });
+    }
     const base64 = await fileToBase64HiRes(img.file);
     contents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
   }
@@ -9572,6 +9598,28 @@ The next image is the human model for this product. INSTRUCTION: PIXEL PRIORITY 
     });
     const base64 = await fileToBase64HiRes(castImage);
     contents.push({ inlineData: { mimeType: castImage.type, data: base64 } });
+  }
+
+  if (brandLogo) {
+    contents.push({
+      text: `═══ BRAND LOGO REFERENCE ═══
+The next image is the brand mark. RENDER IT INTO the image you produce, at ${brandPlacementLabel ?? "the top left"} of the frame, sitting DIRECTLY on the background surface itself.
+Reproduce its geometry EXACTLY as shown here: the same shapes, the same proportions, the same number of every element, the same internal negative space. Copy these pixels rather than drawing from memory.
+NEVER place it on a white box, a coloured plate, a rounded card, a panel or a sticker. NEVER add a shadow, glow, outline or border around it. NEVER substitute a different or better known version of this mark, and NEVER add or remove lettering.`,
+    });
+    const base64 = await fileToBase64HiRes(brandLogo);
+    contents.push({ inlineData: { mimeType: brandLogo.type, data: base64 } });
+  }
+
+  if (optionalLogo) {
+    contents.push({
+      text: `═══ SECONDARY MARK REFERENCE ═══
+The next image is a secondary mark. COMPOSE IT INTO the image you produce as a designed component, for example as the centre of a circular seal or stamp with its claim set in a ring around it, or as a badge worked into the layout.
+Choose its position, size and treatment yourself, whatever best serves the composition. Do NOT default to a corner and do NOT simply lay it flat over the top.
+Reproduce the mark's own geometry EXACTLY as shown here, the same shapes, proportions and element counts, copying these pixels rather than drawing from memory. NEVER substitute a different version of it, and NEVER add or remove parts of the mark itself.`,
+    });
+    const base64 = await fileToBase64HiRes(optionalLogo);
+    contents.push({ inlineData: { mimeType: optionalLogo.type, data: base64 } });
   }
 
   contents.push({
@@ -9689,15 +9737,16 @@ export const PDP_MAX_ATTEMPTS = 3;
  * visible defect a customer can spot.
  */
 const PDP_SCORE_WEIGHTS: Record<PdpScoreAxis, number> = {
-  productFidelity: 0.26,
-  productCount: 0.1,
-  composition: 0.1,
-  styleAdherence: 0.08,
-  lightingCoherence: 0.06,
-  humanRealism: 0.12,
-  textAccuracy: 0.16,
-  textCount: 0.06,
-  calloutCorrectness: 0.06,
+  productFidelity: 0.24,
+  productCount: 0.09,
+  composition: 0.09,
+  styleAdherence: 0.07,
+  lightingCoherence: 0.05,
+  humanRealism: 0.11,
+  textAccuracy: 0.15,
+  textCount: 0.05,
+  calloutCorrectness: 0.05,
+  markFidelity: 0.1,
 };
 
 const PDP_AXIS_BRIEF: Record<PdpScoreAxis, string> = {
@@ -9719,6 +9768,8 @@ const PDP_AXIS_BRIEF: Record<PdpScoreAxis, string> = {
     "If text is present: are there at most five distinct text elements? More than five is a MAJOR defect because this model duplicates and clips beyond that. Mark NOT APPLICABLE when the image contains no text.",
   calloutCorrectness:
     "If callouts are present: does each one point at, or sit on, the part of the product it actually names? A callout pointing at the wrong part is CRITICAL. Mark NOT APPLICABLE when there are no callouts.",
+  markFidelity:
+    "If a brand or secondary mark reference was supplied: does the rendered mark match that reference EXACTLY in shape, proportion, element count and internal negative space? A substituted, redrawn, simplified, rotated or mirrored mark is CRITICAL, as is any lettering added to or missing from it. Also check the brand mark sits directly on the background with no white box, plate, card, panel, shadow or outline behind it. Mark NOT APPLICABLE when no logo reference was supplied.",
 };
 
 const PDP_SCORE_SCHEMA = {
@@ -9770,6 +9821,8 @@ export async function scorePdpImage({
   productImages,
   option,
   composition,
+  brandLogo,
+  optionalLogo,
   attemptNumber = 1,
   abortSignal,
 }: {
@@ -9778,6 +9831,9 @@ export async function scorePdpImage({
   productImages: { file: File }[];
   option: PdpShotOption;
   composition: string;
+  /** Forwarded so the judge can grade markFidelity against the real files. */
+  brandLogo?: File;
+  optionalLogo?: File;
   attemptNumber?: number;
   abortSignal?: AbortSignal;
 }): Promise<PdpScoreOutcome> {
@@ -9808,6 +9864,17 @@ ${rubric}
   for (const img of productImages) {
     const base64 = await fileToBase64(img.file);
     contents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+  }
+
+  if (brandLogo) {
+    contents.push({ text: "═══ BRAND MARK REFERENCE (the truth about this mark) ═══" });
+    const base64 = await fileToBase64(brandLogo);
+    contents.push({ inlineData: { mimeType: brandLogo.type, data: base64 } });
+  }
+  if (optionalLogo) {
+    contents.push({ text: "═══ SECONDARY MARK REFERENCE (the truth about this mark) ═══" });
+    const base64 = await fileToBase64(optionalLogo);
+    contents.push({ inlineData: { mimeType: optionalLogo.type, data: base64 } });
   }
 
   contents.push({ text: "═══ THE GENERATED IMAGE TO GRADE ═══" });

@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { PDP_CATALOG_BY_HEADING, PDP_HEADINGS, buildCustomPdpOption } from "@/lib/pdp-catalog";
-import { shouldDrawOptionalLogo } from "@/lib/pdp-logo-composite";
+import { shouldDrawOptionalLogo } from "@/lib/pdp-directives";
 import type { VTONStore } from "@/store/vton-store";
 import type { PdpHeading, PdpShotOption } from "@/lib/types";
 

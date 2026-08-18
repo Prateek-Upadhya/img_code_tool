@@ -89,12 +89,15 @@ const MODEL_SINGLE: PdpShotOption = {
   requiresModel: true,
   consumesCopy: false,
   bearsText: false,
-  promptSnippet: `COMPOSITION: a full body photograph of EXACTLY ONE human model wearing this footwear, placed contextually within the setting rather than posed against a blank wall.
-- FRAMING: the frame shows the model head to feet, complete and uncropped. Despite the full body crop, the FOOTWEAR is the subject of the photograph. Achieve this through camera position and composition rather than by cropping: place the camera lower than eye level so the feet sit closer to the lens and read larger, angle the body so the shoes present their most flattering aspect to the camera, and let focus fall off gently behind the feet.
-- POSE: a natural, candid, unforced stance or stride that suits the footwear's character and its setting. The feet must be clearly separated and fully visible, never overlapping each other, never cut off, never obscured by clothing or props.
-- WARDROBE: simple, quiet clothing in muted tones that complements the footwear and never competes with it. The lower leg must be visible so the shoe's fit on the foot reads clearly.
-- FIT: the footwear MUST sit on the feet at correct true scale and proportion, wrapping the foot the way real footwear does. Incorrect shoe scale is the single most common failure in this kind of image, so verify the shoe reads neither oversized nor doll sized against the model's body.
-- There is NO text of any kind in this image.`,
+  promptSnippet: `COMPOSITION: a plain lifestyle photograph of EXACTLY ONE human model wearing this footwear, placed contextually within the setting rather than posed against a blank wall. This is a straight PDP photograph, not an information graphic.
+- FRAMING: the frame shows the model head to feet, complete and uncropped.
+- THE FOOTWEAR IS THE SUBJECT. Despite the full body crop, the shoes must read as what this photograph is about. Achieve that with the CAMERA, not by cropping the model.
+- DYNAMIC CAMERA ANGLE, commit to one and make it deliberate: drop the camera low, near ground level, looking slightly up along the body so the feet sit nearest the lens and read largest in frame; or shoot from a steep high angle looking down the length of the body onto the shoes; or take a raking low diagonal from the front quarter. Avoid a flat, straight on, eye level snapshot.
+- LENS AND DEPTH: use a wider focal length close to the feet so perspective naturally enlarges them, and set focus ON THE FOOTWEAR with the plane of sharpness at the shoes. Let the torso and head fall gently softer with distance, so the eye lands on the shoes first.
+- POSE: a natural, candid, unforced stance or stride suiting the footwear's character and the setting. Both feet clearly separated and fully visible, never overlapping, never cut off, never obscured by clothing or props.
+- WARDROBE: simple, quiet clothing in muted tones that complements the footwear and never competes with it. The lower leg must be visible so the fit on the foot reads clearly. Trousers must not break over and hide the shoe.
+- FIT: the footwear MUST sit on the feet at correct true scale and proportion, wrapping the foot the way real footwear does. Incorrect shoe scale is the most common failure in this kind of image, so verify the shoe reads neither oversized nor doll sized against the model's body.
+- NO text, NO callouts, NO labels, NO badges, NO icons and NO graphic overlays of any kind. This is photography only.`,
 };
 
 const MODEL_COLLAGE: PdpShotOption = {
@@ -106,13 +109,15 @@ const MODEL_COLLAGE: PdpShotOption = {
   requiresModel: true,
   consumesCopy: false,
   bearsText: false,
-  promptSnippet: `COMPOSITION: a single image frame containing a COLLAGE of between three and four separate photographs of the SAME human model wearing this footwear.
+  promptSnippet: `COMPOSITION: a single image frame containing a COLLAGE of between three and four separate photographs of the SAME human model wearing this footwear. This is pure photography, not an information graphic.
 - CONTENT MIX: exactly one of the panels is a full body or seated three quarter photograph of the model. The remaining panels are tight cropped photographs, of the feet in the footwear, of the shoe against the ground mid stride, or of the lower leg and shoe together. The mix of one wide shot against several crops is the point of the layout.
-- LAYOUT: arrange the panels however the artistic style directs. The style layer decides panel geometry, spacing, edge treatment and how the panels relate to one another. Favour an asymmetric arrangement with one dominant panel over an even grid.
+- DYNAMIC ANGLES: every panel uses a deliberate, distinct camera angle that favours the footwear. Vary them across the collage: a low near ground view, a steep top down onto the shoes, a raking diagonal, a tight profile at shoe height. NEVER repeat the same angle twice, and NEVER let a panel settle into a flat eye level snapshot.
+- FOCUS: in every panel the plane of sharpness sits ON the footwear, with everything else falling softer, so the shoes carry the eye through the whole collage.
+- LAYOUT: arrange the panels however the artistic style directs. The style layer decides panel geometry, spacing, edge treatment and how panels relate. Favour an asymmetric arrangement with one dominant panel over an even grid.
 - IDENTITY: the SAME person appears in every panel, with the same face, the same hair and the same clothing throughout. The same footwear in the same colourway appears in every panel.
 - COHERENCE: all panels share one colour grade and one lighting logic so the collage reads as a single shoot rather than as assembled stock.
 - COUNT: between three and four panels total. Never more than four, because panel count above four degrades the rendering of each.
-- There is NO text of any kind in this image. No headline, no labels, no captions, no numbers.`,
+- NO text, NO headline, NO labels, NO captions, NO numbers, NO callouts, NO badges, NO connectors and NO icons anywhere in this image.`,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -205,7 +210,7 @@ const SOLE_CONSTRUCTION: PdpShotOption = {
   // The real brief is layer count specific and is produced by buildSoleConstructionSnippet()
   // at assembly time, keyed on this option's id. This value is the fallback used only if
   // that lookup is ever bypassed.
-  promptSnippet: `COMPOSITION: a technical exploded diagram of EXACTLY ONE shoe, separated into distinct horizontal layers hovering in vertical alignment over the midfoot centre, with exactly one short callout pinned to each layer.`,
+  promptSnippet: `COMPOSITION: a technical exploded diagram of EXACTLY ONE shoe, separated into distinct horizontal layers hovering in vertical alignment over the midfoot centre, with exactly one short callout pinned to each layer. The footbed layer is a SMOOTH, CONTINUOUS surface with NO slots, grooves, cutouts or recesses of any kind.`,
 };
 
 const SIZE_CHART: PdpShotOption = {
