@@ -4,7 +4,11 @@ import { useCallback, useRef } from "react";
 import Image from "next/image";
 import { FolderOpen, Trash2, ImageIcon, Upload, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { PDP_STYLE_OPTIONS, PDP_LOGO_PLACEMENT_OPTIONS } from "@/lib/constants";
+import {
+  PDP_STYLE_OPTIONS,
+  PDP_LOGO_PLACEMENT_OPTIONS,
+  SOLE_CONSTRUCTION_LAYER_OPTIONS,
+} from "@/lib/constants";
 import {
   Select,
   SelectContent,
@@ -14,7 +18,12 @@ import {
 } from "@/components/ui/select";
 import { PdpSheetPanel } from "./pdp-sheet-panel";
 import type { VTONStore } from "@/store/vton-store";
-import type { OverlayPosition, PdpProduct, ReferenceImageItem } from "@/lib/types";
+import type {
+  OverlayPosition,
+  PdpProduct,
+  ReferenceImageItem,
+  SoleConstructionLayerCount,
+} from "@/lib/types";
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -87,10 +96,12 @@ function FolderUploadButton({
 function ProductCard({
   product,
   onRemove,
+  onLayers,
   contextColumns,
 }: {
   product: PdpProduct;
   onRemove: (id: string) => void;
+  onLayers: (id: string, layers: SoleConstructionLayerCount) => void;
   contextColumns: string[];
 }) {
   const matched = Boolean(product.sheetRow);
@@ -153,6 +164,33 @@ function ProductCard({
           {contextPreview}
         </p>
       )}
+
+      {/* Fixed per product, because the right number of layers depends on how this
+          particular shoe is actually built. Only consumed by the sole construction
+          infographic; harmless when that option is not ticked. */}
+      <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
+        <span className="text-[11px] text-muted-foreground">Sole construction layers</span>
+        <Select
+          value={String(product.soleConstructionLayers ?? 3)}
+          onValueChange={(v) => onLayers(product.id, Number(v) as SoleConstructionLayerCount)}
+        >
+          <SelectTrigger className="h-7 w-40 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {SOLE_CONSTRUCTION_LAYER_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={String(opt.value)} className="text-xs">
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <span className="text-[11px] text-muted-foreground/70">
+          {SOLE_CONSTRUCTION_LAYER_OPTIONS.find(
+            (o) => o.value === (product.soleConstructionLayers ?? 3)
+          )?.description}
+        </span>
+      </div>
     </div>
   );
 }
@@ -308,6 +346,15 @@ export function StepPdpProducts({ store }: { store: VTONStore }) {
     [setPdpProducts]
   );
 
+  const setLayers = useCallback(
+    (id: string, layers: SoleConstructionLayerCount) => {
+      setPdpProducts((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, soleConstructionLayers: layers } : p))
+      );
+    },
+    [setPdpProducts]
+  );
+
   const setLogo = useCallback(
     (key: "brandLogo" | "optionalLogo", file: File | null) => {
       setPdpLogos((prev) => {
@@ -352,6 +399,7 @@ export function StepPdpProducts({ store }: { store: VTONStore }) {
                 key={p.id}
                 product={p}
                 onRemove={removeProduct}
+                onLayers={setLayers}
                 contextColumns={contextColumns}
               />
             ))}
