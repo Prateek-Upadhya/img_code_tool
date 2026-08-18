@@ -24,6 +24,7 @@ import {
   Sofa,
   LayoutTemplate,
   UsersRound,
+  LayoutGrid,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { FeatureMode } from "@/lib/types";
@@ -80,6 +81,12 @@ const NAV_ITEMS: {
     label: "Infographics",
     icon: LayoutTemplate,
     description: "Bulk product infographics",
+  },
+  {
+    id: "pdp-set",
+    label: "PDP Set",
+    icon: LayoutGrid,
+    description: "Full footwear PDP image sets",
   },
   {
     id: "model-creation",

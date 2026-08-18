@@ -56,12 +56,18 @@ import {
   InfographicPlan,
   InfographicTextMode,
   InfographicTextPoint,
+  PdpScoreAxis,
+  PdpScoreDefect,
+  PdpScoreOutcome,
+  PdpShotOption,
+  PDP_SCORE_AXES,
   VtonDefect,
   VtonScoreDimension,
   VtonScoreOutcome,
   VtonScoreResult,
   VTON_SCORE_DIMENSION_KEYS,
 } from "./types";
+import { PDP_HUMAN_REALISM } from "./pdp-directives";
 import {
   ACCESSORY_CATEGORIES,
   BOTTOMWEAR_LENGTH_OPTIONS,
@@ -9393,4 +9399,495 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
   }
 
   throw new Error("No image generated from contextual retry");
+}
+
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║                     PDP SET PIPELINE (FOOTWEAR)                    ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+//
+// Two steps, matching the shape used everywhere else in this file:
+//   Step 1  generatePdpPrompt — Gemini 3.1 Pro composes a deterministic art-direction
+//           brief from the catalog snippet, the artistic style block, the sheet copy and
+//           the global directives.
+//   Step 2  generatePdpImage  — gemini-3.1-flash-image renders it.
+//
+// The style block is appended AFTER the shot's composition brief on purpose. It is a
+// modifier layer: the brief decides what the image contains, the style decides how it is
+// rendered. Ordering encodes that precedence for the model.
+//
+// Page-level brand marks are never rendered here. They are composited from the operator's
+// own files after generation (see pdp-logo-composite.ts), because this model substitutes
+// canonical versions of known marks and hallucinates sharp but semantically wrong
+// lettering. The prompt instead reserves clean space via the mark-reservation directive.
+
+/** Step 1 — compose the art-direction brief for one product and one shot option. */
+export async function generatePdpPrompt({
+  apiKey,
+  textGenModel = "gemini",
+  option,
+  productImages,
+  sku,
+  overallContext,
+  optionCopy,
+  styleBlock,
+  globalDirectives,
+  soleConstructionLayers = 3,
+  aspectRatio,
+  castDescription,
+  correctionFeedback,
+  abortSignal,
+}: {
+  apiKey: string;
+  textGenModel?: TextGenModel;
+  option: PdpShotOption;
+  productImages: { file: File }[];
+  sku: string;
+  overallContext: string;
+  optionCopy: string;
+  styleBlock: string;
+  globalDirectives: string;
+  soleConstructionLayers?: SoleConstructionLayerCount;
+  aspectRatio: AspectRatio;
+  castDescription?: string;
+  /** Judge report from a rejected attempt. Present only on a re-roll. */
+  correctionFeedback?: string;
+  abortSignal?: AbortSignal;
+}): Promise<{ enrichedPrompt: string; cost: StepCost }> {
+  const ai = getTextClient(textGenModel);
+
+  // Sole construction is the one option whose brief depends on a per-product value, so it
+  // is built here rather than being a fixed string on the catalog entry.
+  const compositionBrief =
+    option.id === "pdp-sole-construction"
+      ? buildSoleConstructionSnippet(soleConstructionLayers)
+      : option.promptSnippet;
+
+  const systemPrompt = `You are an expert footwear e-commerce art director. You are given reference photographs of ONE footwear product, style ${sku}, plus information about it. Author ONE precise, deterministic, self-contained IMAGE COMPOSITION DESCRIPTION that an image generation model will follow to produce a finished asset.
+
+Study the attached photographs closely: silhouette, proportion, materials, colourway, sole pattern, every distinctive detail, and every piece of lettering physically on the product. Write the composition so the downstream model reproduces THIS exact product.
+
+This is a FOOTWEAR product. Every instruction you write assumes footwear.
+
+═══ COMPOSITION BRIEF (what this image must contain) ═══
+${compositionBrief}
+
+${styleBlock}
+
+${globalDirectives}
+${castDescription?.trim()
+    ? `
+═══ CAST ═══
+A human model reference image is attached to the render request and is the cast member for this product. General casting direction for the batch: ${castDescription.trim()}.
+`
+    : ""}
+═══ PRODUCT INFORMATION ═══
+${overallContext.trim()
+    ? overallContext.trim()
+    : "No written product information was supplied. Infer what is visibly true from the photographs alone, and NEVER state a claim you cannot see."}
+${optionCopy.trim() && optionCopy.trim() !== overallContext.trim()
+    ? `
+═══ COPY FOR THIS IMAGE'S CALLOUTS ═══
+Derive this image's on-image wording from the following, and from nothing else. If it is already short points, use them close to verbatim. If it is a long paragraph, first reduce it to short factual points and then use only those.
+${optionCopy.trim()}`
+    : ""}
+
+═══ OUTPUT FORMAT ═══
+Output ONLY the composition description, as flowing well-structured prose. You may use short labelled lines. It MUST specify, so the result is reproducible:
+1. The exact placement, orientation, angle and count of the footwear in frame.
+2. The camera position, the lens, and the depth of field.
+3. The single light source, its direction, and the resulting shadow direction and softness.
+4. The background or stage exactly per the style direction, with concrete hex values.
+${option.bearsText
+    ? `5. Every piece of on-image text, with its EXACT wording in double quotes, its typographic treatment, and its position in the frame. Count them, and confirm there are no more than five.
+6. Which clean flat areas are reserved and left empty for marks to be composited afterwards.
+7. The target aspect ratio: ${aspectRatio}.`
+    : `5. Which clean flat areas are reserved and left empty for marks to be composited afterwards.
+6. The target aspect ratio: ${aspectRatio}.
+7. Confirm explicitly that this image contains NO text of any kind.`}
+
+${correctionFeedback?.trim() ? `\n${correctionFeedback.trim()}\n\nThese corrections take precedence over everything above. Address every one of them explicitly in the composition you write.\n` : ""}
+Write no preamble, no commentary and no closing remarks. Output the composition description only. NEVER use an em dash or an en dash anywhere in your output.`;
+
+  const contents: ContentPart[] = [{ text: systemPrompt }];
+  for (const img of productImages) {
+    const base64 = await fileToBase64(img.file);
+    contents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+  }
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+      abortSignal,
+    },
+  });
+
+  const text = response.text;
+  if (!text) throw new Error("No PDP composition prompt returned from Gemini 3.1 Pro");
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeStepCost(textCostModel(textGenModel), "PDP Prompt (Gemini 3.1 Pro)", tokens);
+
+  return { enrichedPrompt: text.trim(), cost };
+}
+
+/** Step 2 — render one PDP image. */
+export async function generatePdpImage({
+  apiKey,
+  prompt,
+  option,
+  productImages,
+  castImage,
+  aspectRatio,
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  prompt: string;
+  option: PdpShotOption;
+  productImages: { file: File }[];
+  castImage?: File;
+  aspectRatio: AspectRatio;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; cost: StepCost }> {
+  const ai = getGeminiClient(apiKey);
+  const contents: ContentPart[] = [];
+
+  contents.push({
+    text: `═══ PRODUCT REFERENCE IMAGES: ABSOLUTE SOURCE OF TRUTH ═══
+The next ${productImages.length} image${productImages.length === 1 ? "" : "s"} show the EXACT footwear to render. INSTRUCTION: PIXEL PRIORITY MODE. IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge about this product. Use ONLY these pixels to construct its texture, colour shades, design, proportions, on-product lettering and that lettering's orientation, logos and patterns. Ignore the reference backgrounds; only the product matters. NEVER redesign, recolour or rebrand it, and NEVER add lettering or a mark that is not visibly present here.`,
+  });
+
+  for (const img of productImages) {
+    const base64 = await fileToBase64HiRes(img.file);
+    contents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+  }
+
+  if (castImage) {
+    contents.push({
+      text: `═══ MODEL REFERENCE ═══
+The next image is the human model for this product. INSTRUCTION: PIXEL PRIORITY MODE. IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge regarding the subject's identity. Use ONLY the visual data from this image for facial feature construction. NEVER beautify, slim or smooth the face away from this reference.`,
+    });
+    const base64 = await fileToBase64HiRes(castImage);
+    contents.push({ inlineData: { mimeType: castImage.type, data: base64 } });
+  }
+
+  contents.push({
+    text: `═══ COMPOSITION TO RENDER ═══
+${prompt}
+
+Render a single finished, professional footwear image on a ${aspectRatio} canvas.${option.bearsText
+      ? " Every piece of on-image text MUST be spelled correctly, rendered verbatim as quoted, sized to stay legible, and kept fully inside the frame with margin. NEVER use an em dash or an en dash in any on-image text."
+      : " This image contains NO text, NO labels, NO captions and NO watermarks of any kind."}`,
+  });
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image",
+    contents,
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio, imageSize },
+      abortSignal,
+    },
+  });
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeImageGenCost("PDP Image (Nano Banana 2)", tokens, imageSize);
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return { imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`, cost };
+      }
+    }
+  }
+
+  throw new Error("No PDP image generated from Nano Banana 2");
+}
+
+/**
+ * Generate one cast member for a product from the batch's general description.
+ *
+ * The operator supplies something broad such as "fair skinned, Caucasian". Facial
+ * features and hairstyle are deliberately varied per product so a catalogue does not show
+ * the same face throughout, while the returned image then pins identity for every shot of
+ * that product. These models expose no seed, so a generated reference is the only
+ * mechanism that holds a face steady across independent calls.
+ */
+export async function generatePdpCastMember({
+  apiKey,
+  description,
+  variationIndex,
+  abortSignal,
+}: {
+  apiKey: string;
+  description: string;
+  variationIndex: number;
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; cost: StepCost }> {
+  const ai = getGeminiClient(apiKey);
+
+  const prompt = `Create a photorealistic full body casting photograph of ONE adult fashion model, standing relaxed and facing the camera against a plain, evenly lit, light neutral grey studio backdrop.
+
+CASTING DIRECTION: ${description.trim()}
+
+INDIVIDUALITY: this is casting candidate number ${variationIndex}. Within the casting direction above, give this person their own distinct face and hair: their own bone structure, nose, jawline, eye shape and hairstyle, clearly a different individual from any other candidate matching the same brief. Do not drift outside the casting direction while doing so.
+
+${PDP_HUMAN_REALISM}
+
+FRAMING: full body, head to feet, complete and uncropped, centred, with the whole face clearly visible and unobstructed.
+WARDROBE: plain, simple, neutral clothing that does not distract. Bare feet or plain socks, because footwear is added later.
+NEVER render any text, logo, watermark or graphic anywhere in this image.`;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-flash-image",
+    contents: [{ text: prompt }],
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio: "3:4", imageSize: "1K" },
+      abortSignal,
+    },
+  });
+
+  const tokens = extractTokenUsage(response);
+  const cost = computeImageGenCost("PDP Cast (Nano Banana 2)", tokens, "1K");
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return { imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`, cost };
+      }
+    }
+  }
+
+  throw new Error("No cast member image generated from Nano Banana 2");
+}
+
+/**
+ * PDP judge — grades one generated image and, when it falls short, says what to fix.
+ *
+ * Deliberately NOT reusing `runVerifyAndRepair` / `scoreVTONImage`. Those grade nine
+ * garment-and-skin axes (garment fidelity, garment length, character consistency, skin
+ * realism) which simply do not describe a size chart or an exploded sole diagram, and
+ * their `update` contract writes VTON-specific fields onto the result record. The loop
+ * SHAPE is worth copying, so the thresholds and the keep-the-best-attempt behaviour below
+ * mirror it exactly; the rubric is not.
+ *
+ * Two rubrics share one axis list. Axes that cannot apply to a given image are marked not
+ * applicable by the judge rather than scored, so a text-free product still life is never
+ * penalised for having no callouts.
+ */
+
+export const PDP_SCORE_PASS_THRESHOLD = 80;
+export const PDP_MAX_ATTEMPTS = 3;
+
+/**
+ * Axis weights. Product fidelity dominates because a beautiful image of the wrong shoe is
+ * worthless on a PDP, and text accuracy is second because a misspelt callout is the most
+ * visible defect a customer can spot.
+ */
+const PDP_SCORE_WEIGHTS: Record<PdpScoreAxis, number> = {
+  productFidelity: 0.26,
+  productCount: 0.1,
+  composition: 0.1,
+  styleAdherence: 0.08,
+  lightingCoherence: 0.06,
+  humanRealism: 0.12,
+  textAccuracy: 0.16,
+  textCount: 0.06,
+  calloutCorrectness: 0.06,
+};
+
+const PDP_AXIS_BRIEF: Record<PdpScoreAxis, string> = {
+  productFidelity:
+    "Does the footwear match the reference photographs exactly? Silhouette, proportions, materials, colour shades of every region, sole pattern, stitching, and every piece of lettering physically on the product, with the same wording and orientation. Any invented, altered or substituted branding is CRITICAL.",
+  productCount:
+    "Does the frame contain exactly the number of shoes the composition asked for? A duplicated, extra or partially visible additional shoe is CRITICAL.",
+  composition:
+    "Is the framing and crop as briefed, with the product clearly the subject? Are the areas reserved for brand marks genuinely clean, flat and empty? Is anything important cut off by the frame edge?",
+  styleAdherence:
+    "Does the image read as the artistic style the brief described, in its treatment of space, light, how information attaches, and palette?",
+  lightingCoherence:
+    "Is there one consistent light source? Do every shadow, gradient and highlight agree with it? Does the product sit believably rather than floating without cause?",
+  humanRealism:
+    "If a person is present: is skin real, with pores and natural variation rather than airbrushed or waxy? Are hands anatomically correct with exactly five fingers? Are eyes, hair and proportion plausible? Mark NOT APPLICABLE when no person is in frame.",
+  textAccuracy:
+    "If text is present: is every word spelled correctly? Is any text duplicated, clipped by the frame edge, overlapping, or illegible? Does any text contain an em dash or en dash, which is forbidden? Mark NOT APPLICABLE when the image contains no text.",
+  textCount:
+    "If text is present: are there at most five distinct text elements? More than five is a MAJOR defect because this model duplicates and clips beyond that. Mark NOT APPLICABLE when the image contains no text.",
+  calloutCorrectness:
+    "If callouts are present: does each one point at, or sit on, the part of the product it actually names? A callout pointing at the wrong part is CRITICAL. Mark NOT APPLICABLE when there are no callouts.",
+};
+
+const PDP_SCORE_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    axes: {
+      type: Type.ARRAY,
+      minItems: String(PDP_SCORE_AXES.length),
+      maxItems: String(PDP_SCORE_AXES.length),
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          axis: { type: Type.STRING, enum: [...PDP_SCORE_AXES] },
+          applicable: { type: Type.BOOLEAN },
+          score: { type: Type.INTEGER },
+          severity: { type: Type.STRING, enum: ["critical", "major", "minor", "none"] },
+          observed: { type: Type.STRING },
+          fix: { type: Type.STRING },
+        },
+        required: ["axis", "applicable", "score", "severity", "observed", "fix"],
+        propertyOrdering: ["axis", "applicable", "score", "severity", "observed", "fix"],
+      },
+    },
+    summary: { type: Type.STRING },
+  },
+  required: ["axes", "summary"],
+  propertyOrdering: ["axes", "summary"],
+};
+
+interface RawPdpAxis {
+  axis: PdpScoreAxis;
+  applicable: boolean;
+  score: number;
+  severity: "critical" | "major" | "minor" | "none";
+  observed: string;
+  fix: string;
+}
+
+/**
+ * Grade one PDP image against its own brief and the product references.
+ *
+ * Never throws: a judge failure returns `ok: false` so the caller keeps the image and
+ * marks verification inconclusive, rather than discarding work that has already been paid
+ * for.
+ */
+export async function scorePdpImage({
+  textGenModel = "gemini",
+  generatedImageData,
+  productImages,
+  option,
+  composition,
+  attemptNumber = 1,
+  abortSignal,
+}: {
+  textGenModel?: TextGenModel;
+  generatedImageData: string;
+  productImages: { file: File }[];
+  option: PdpShotOption;
+  composition: string;
+  attemptNumber?: number;
+  abortSignal?: AbortSignal;
+}): Promise<PdpScoreOutcome> {
+  const ai = getTextClient(textGenModel);
+
+  const rubric = PDP_SCORE_AXES.map((axis) => `- ${axis}: ${PDP_AXIS_BRIEF[axis]}`).join("\n");
+
+  const systemPrompt = `You are a ruthless quality inspector for footwear e-commerce imagery. You are shown the product reference photographs first, then ONE generated image that was produced from the composition brief below. Grade the generated image only.
+
+This is inspection attempt ${attemptNumber}. Be specific and literal. Judge what is actually in the pixels, not what the brief intended.
+
+═══ THE COMPOSITION THAT WAS REQUESTED ═══
+${composition}
+
+═══ AXES ═══
+${rubric}
+
+═══ HOW TO SCORE ═══
+- Score each axis 0 to 100. 100 means flawless, 80 means acceptable for publication, below 60 means the image should be regenerated.
+- Set applicable to false for any axis that cannot apply to this image, and set its score to 0. ${option.bearsText ? "This image IS expected to contain text." : "This image is expected to contain NO text at all, so if you see any text, that is a defect on textAccuracy rather than a not-applicable axis."}
+- In observed, state exactly what you see that is wrong, or "correct" when the axis passes.
+- In fix, give one concrete, actionable instruction that would correct it. Keep it short and imperative.
+- Never use an em dash or an en dash in your output.`;
+
+  const contents: ContentPart[] = [{ text: systemPrompt }];
+
+  contents.push({ text: "═══ PRODUCT REFERENCE PHOTOGRAPHS (the truth about this product) ═══" });
+  for (const img of productImages) {
+    const base64 = await fileToBase64(img.file);
+    contents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+  }
+
+  contents.push({ text: "═══ THE GENERATED IMAGE TO GRADE ═══" });
+  const match = /^data:([^;]+);base64,(.*)$/.exec(generatedImageData);
+  if (!match) return { ok: false, error: "Generated image was not a data URL" };
+  contents.push({ inlineData: { mimeType: match[1], data: match[2] } });
+
+  let cost: StepCost | undefined;
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3.1-pro-preview",
+      contents,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: PDP_SCORE_SCHEMA,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+        abortSignal,
+      },
+    });
+
+    const tokens = extractTokenUsage(response);
+    cost = computeStepCost(textCostModel(textGenModel), "PDP Judge (Gemini 3.1 Pro)", tokens);
+
+    const text = response.text;
+    if (!text) return { ok: false, error: "Judge returned no verdict", cost };
+
+    const parsed = JSON.parse(text) as { axes: RawPdpAxis[]; summary: string };
+    const axes = Array.isArray(parsed.axes) ? parsed.axes : [];
+    if (axes.length === 0) return { ok: false, error: "Judge returned no axes", cost };
+
+    // Weighted mean over the applicable axes only, so a text-free shot is not dragged
+    // down by axes that never applied to it.
+    let weighted = 0;
+    let weightSum = 0;
+    const defects: PdpScoreDefect[] = [];
+
+    for (const raw of axes) {
+      if (!raw.applicable) continue;
+      const weight = PDP_SCORE_WEIGHTS[raw.axis] ?? 0;
+      const score = Math.max(0, Math.min(100, Math.round(raw.score)));
+      weighted += score * weight;
+      weightSum += weight;
+      if (raw.severity !== "none" && score < PDP_SCORE_PASS_THRESHOLD) {
+        defects.push({
+          axis: raw.axis,
+          severity: raw.severity,
+          observed: raw.observed,
+          fix: raw.fix,
+        });
+      }
+    }
+
+    const score = weightSum > 0 ? Math.round(weighted / weightSum) : 0;
+
+    // A critical defect vetoes a pass regardless of the weighted mean. A wrong product or
+    // a callout pointing at the wrong part cannot be averaged away.
+    const hasCritical = defects.some((d) => d.severity === "critical");
+    const passed = score >= PDP_SCORE_PASS_THRESHOLD && !hasCritical;
+
+    const correction =
+      defects.length === 0
+        ? ""
+        : `═══ CORRECTIONS REQUIRED (a previous attempt failed inspection) ═══
+The previous render of this exact image was rejected. Fix every point below while keeping everything else about the composition identical.
+${defects
+  .sort((a, b) => severityRank(b.severity) - severityRank(a.severity))
+  .map((d) => `- [${d.severity.toUpperCase()}] ${d.axis}: ${d.observed} FIX: ${d.fix}`)
+  .join("\n")}`;
+
+    return {
+      ok: true,
+      cost,
+      result: { score, passed, defects, correction, summary: parsed.summary ?? "" },
+    };
+  } catch (err) {
+    if (abortSignal?.aborted) return { ok: false, error: "Cancelled", cost };
+    return { ok: false, error: err instanceof Error ? err.message : "Judge failed", cost };
+  }
+}
+
+function severityRank(s: PdpScoreDefect["severity"]): number {
+  return s === "critical" ? 3 : s === "major" ? 2 : s === "minor" ? 1 : 0;
 }

@@ -703,7 +703,7 @@ export type WizardStep = 1 | 2 | 3 | 4 | 5;
 
 export type AppMode = "single" | "bulk";
 
-export type FeatureMode = "vton" | "model-swap" | "swatch" | "replicate" | "product-video" | "room-staging" | "infographic" | "model-creation";
+export type FeatureMode = "vton" | "model-swap" | "swatch" | "replicate" | "product-video" | "room-staging" | "infographic" | "model-creation" | "pdp-set";
 
 export type NamingLogic = "folder-name-sequential" | "folder-name-sequential-1";
 
@@ -1773,4 +1773,225 @@ export interface InfographicResult {
   editHistory?: EditHistoryEntry[];
   costBreakdown?: GenerationCostBreakdown;
   error?: string;
+}
+
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║                     PDP SET FEATURE (FOOTWEAR)                     ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+//
+// A whole product-detail-page image set generated per product in one run:
+// creative product shots, on-model shots and infographics, all sharing one
+// artistic style. Footwear only — no clothing branch exists in this mode.
+
+/** The three catalog groupings surfaced in the shot picker. */
+export type PdpHeading = "product-shot" | "on-model" | "infographic";
+
+/**
+ * Artistic style — a complete design grammar, product and background agnostic.
+ * Sourced from the CHUPPS artistic-styles brief. Each differs along four axes:
+ * the kind of space the subject occupies, the job light is doing, how
+ * information attaches to the subject, and what carries the secondary mark.
+ */
+export type PdpStyle = "orbit" | "scene" | "atelier";
+
+/**
+ * Background treatment. Composed UNDER the style, never over it — see
+ * `resolvePdpArtDirection`. ORBIT is placeless by definition and ignores this
+ * entirely; SCENE reads it as a literal location; ATELIER reads it as a
+ * material/surface cue.
+ */
+export type PdpBackground = "default" | "outdoor" | "indoor-funky";
+
+/** Where the human models for the on-model heading come from. */
+export type PdpCastSource = "described" | "uploaded";
+
+/**
+ * One selectable entry in a heading's catalog. Presets and user-authored custom
+ * options share this shape, so the picker, the work-list builder and the prompt
+ * assembler never branch on provenance.
+ */
+export interface PdpShotOption {
+  id: string;
+  heading: PdpHeading;
+  label: string;
+  icon: string;
+  /** Operator-facing card copy. */
+  description: string;
+  /** Authored art direction stitched into the enrichment prompt. */
+  promptSnippet: string;
+  /** True when a human model must be cast and forwarded to the image model. */
+  requiresModel: boolean;
+  /** True when the option consumes sheet copy — drives the column picker. */
+  consumesCopy: boolean;
+  /**
+   * True when the output carries baked-in text. Forces a 2K floor (small type
+   * degrades first) and selects the text-aware judge rubric.
+   */
+  bearsText: boolean;
+  /** True when the option is meaningless without the optional logo (True Zero). */
+  requiresOptionalLogo?: boolean;
+  /** Set on user-authored library entries. */
+  isCustom?: boolean;
+}
+
+/**
+ * A parsed callout spreadsheet held for the session. `headers` preserves the
+ * ORIGINAL column names verbatim so the operator always recognises their own
+ * sheet; nothing is renamed or normalised for display.
+ */
+export interface PdpSheetSession {
+  fileName: string;
+  headers: string[];
+  records: Record<string, string>[];
+  /** Header whose cells hold the SKU. Matched to subfolder names. */
+  skuColumn: string;
+  /**
+   * Headers feeding general product understanding. Their content informs the
+   * scene, prop choice and product fidelity on EVERY option, and is the
+   * fallback when an option has no column of its own.
+   */
+  overallContextColumns: string[];
+}
+
+/**
+ * Option id → the sheet headers feeding that option's on-image copy.
+ * Authored from the option's side in the shot picker; the sheet panel renders
+ * the inverse view so coverage can be checked at a glance.
+ */
+export type PdpOptionColumns = Record<string, string[]>;
+
+/** One product in the queue. The subfolder name IS the SKU. */
+export interface PdpProduct {
+  id: string;
+  sku: string;
+  images: ReferenceImageItem[];
+  /**
+   * The matched sheet row, keyed by original header. Absent when no row's SKU
+   * matched this subfolder — the product still generates, using image analysis
+   * alone, rather than being blocked.
+   */
+  sheetRow?: Record<string, string>;
+  /**
+   * Per-product footwear type. VTON keeps this global, which prevents a single
+   * run from giving sneakers and boots different prompt emphasis; here it rides
+   * on the product so one batch can mix categories.
+   */
+  footwearType?: FootwearType;
+  /** Exploded-layer count for this product's sole-construction infographic. */
+  soleConstructionLayers?: SoleConstructionLayerCount;
+  /**
+   * Cast member generated for this product from the batch description. Held as
+   * an image rather than text so every on-model shot of this product shows the
+   * same face — these models expose no seed, so a pinned reference is the only
+   * mechanism that keeps identity stable across a set.
+   */
+  castModel?: { file: File; preview: string };
+}
+
+/**
+ * Brand and optional marks. Both are composited from file AFTER generation
+ * rather than drawn by the image model: the documented failure modes here are
+ * canonical-form substitution (the model swapping in the well-known "correct"
+ * version of a mark) and sharp-but-wrong hallucinated lettering. Compositing
+ * also satisfies the style brief's own rule that marks are reproduced from
+ * file, never redrawn or typeset.
+ */
+export interface PdpLogos {
+  brandLogo?: ReferenceImageItem;
+  /** Global — applied to every image in the run. */
+  brandPlacement: OverlayPosition;
+  /** Fraction of the canvas width the mark spans, 0–1. */
+  brandScale: number;
+  optionalLogo?: ReferenceImageItem;
+  optionalPlacement: OverlayPosition;
+  optionalScale: number;
+  /** Option ids the optional mark is enabled for. */
+  optionalEnabledFor: string[];
+}
+
+export type PdpResultStatus =
+  | "pending"
+  | "generating-prompt"
+  | "generating-image"
+  | "validating"
+  | "retrying"
+  | "compositing"
+  | "completed"
+  | "cancelled"
+  | "error";
+
+/**
+ * Judge axes for a PDP image.
+ *
+ * Two rubrics share one axis list, and the judge marks the irrelevant ones not
+ * applicable rather than scoring them. A product still life has no human to grade and no
+ * text to spell; an infographic has both. Keeping one enum avoids a second parallel
+ * schema and lets a single scoring function serve all three headings.
+ */
+export type PdpScoreAxis =
+  | "productFidelity"     // silhouette, materials, colourway, on-product lettering
+  | "productCount"        // exactly the number of shoes the brief asked for
+  | "composition"         // framing, crop, negative space, the reserved mark areas
+  | "styleAdherence"      // does it read as the chosen artistic style
+  | "lightingCoherence"   // one light source, shadows and gradients in sync
+  | "humanRealism"        // skin, hair, eyes, hands. N/A without a person
+  | "textAccuracy"        // spelling, no em dashes, no duplication, inside the frame
+  | "textCount"           // at most five distinct elements. N/A without text
+  | "calloutCorrectness"; // does each callout point at the part it names
+
+export const PDP_SCORE_AXES: PdpScoreAxis[] = [
+  "productFidelity",
+  "productCount",
+  "composition",
+  "styleAdherence",
+  "lightingCoherence",
+  "humanRealism",
+  "textAccuracy",
+  "textCount",
+  "calloutCorrectness",
+];
+
+export interface PdpScoreDefect {
+  axis: PdpScoreAxis;
+  severity: "critical" | "major" | "minor" | "none";
+  observed: string;
+  fix: string;
+}
+
+export interface PdpScoreResult {
+  /** Weighted 0 to 100 across the applicable axes. */
+  score: number;
+  passed: boolean;
+  defects: PdpScoreDefect[];
+  /** Correction directive assembled from the failing axes, fed to the re-roll. */
+  correction: string;
+  summary: string;
+}
+
+export type PdpScoreOutcome =
+  | { ok: true; result: PdpScoreResult; cost?: StepCost }
+  | { ok: false; error: string; cost?: StepCost };
+
+/** One generated image: one product × one shot option. */
+export interface PdpResult {
+  id: string;
+  productId: string;
+  sku: string;
+  optionId: string;
+  optionLabel: string;
+  heading: PdpHeading;
+  status: PdpResultStatus;
+  /** Key into the IndexedDB result store holding the full composited image. */
+  storageKey?: string;
+  /** Small data URL retained in React state so a batch does not pin ~200 full images in memory. */
+  thumbnail?: string;
+  prompt?: string;
+  /** Best score achieved across attempts. */
+  score?: number;
+  /** 1-based attempt the kept image came from. */
+  attempt?: number;
+  /** Judge summary for the kept image, surfaced on the card. */
+  scoreSummary?: string;
+  error?: string;
+  costBreakdown?: GenerationCostBreakdown;
 }

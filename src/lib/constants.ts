@@ -1,4 +1,4 @@
-import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, InnerwearSubtype, ModelAgeGroup, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SoleConstructionLayerCount, SwatchShape, TextGenModel, TopwearLength } from "./types";
+import { AccessoryCategory, AIInfographicStyle, AIModel, AspectRatio, BottomwearLength, FeatureMode, FitType, FootwearType, GarmentType, Gender, ImageGenModel, InfographicBackgroundStyle, InfographicTemplate, InnerwearSubtype, ModelAgeGroup, ModelAgeRange, ModelBodyType, ModelCreationGender, ModelSwapBackgroundMode, OverlayPosition, PdpBackground, PdpCastSource, PdpStyle, Pose, PoseFraming, PoseViewAngle, ProductCategory, SetLayoutStyle, SleeveLength, SoleConstructionLayerCount, SwatchShape, TextGenModel, TopwearLength } from "./types";
 
 export const PRODUCT_CATEGORY_OPTIONS: { value: ProductCategory; label: string; description: string }[] = [
   { value: "clothing", label: "Clothing", description: "Apparel, garments, and fashion items" },
@@ -3486,3 +3486,108 @@ export const INFOGRAPHIC_PROMPTING_PRINCIPLES = `IMAGE-MODEL PROMPTING PRINCIPLE
 - State exact object counts ("exactly one pair / exactly one shoe") to avoid duplicated or extra objects.
 - Define ONE light source and reuse its direction for the product lighting, the contact shadow, and any background gradient so they all stay in sync.
 - Reserve clean negative space for callouts; no background rings, frames, watermarks, busy patterns, or decorative artifacts.`;
+
+// ╔═══════════════════════════════════════════════════════════════════╗
+// ║                     PDP SET FEATURE (FOOTWEAR)                     ║
+// ╚═══════════════════════════════════════════════════════════════════╝
+
+export const PDP_SET_WIZARD_STEPS = [
+  { step: 1, title: "Products", description: "Products, sheet, style & logos" },
+  { step: 2, title: "Cast", description: "Models, background & aspect ratio" },
+  { step: 3, title: "Shots", description: "Pick the images to generate" },
+  { step: 4, title: "Generate", description: "Generate & download the set" },
+] as const;
+
+export const PDP_STYLE_OPTIONS: {
+  value: PdpStyle;
+  label: string;
+  icon: string;
+  tagline: string;
+  description: string;
+  strongFor: string;
+}[] = [
+  {
+    value: "orbit",
+    label: "Orbit",
+    icon: "🛰️",
+    tagline: "Information orbits a floating subject in a placeless field.",
+    description:
+      "Abstract single-tint field with no location. Even ambient light with a soft radial lift. The product floats free with no ground contact on a single diagonal. Callouts sit detached at the frame edges in uniform badges and reach back by connectors.",
+    strongFor: "Explaining a thing — construction, materials, sizing, comparison.",
+  },
+  {
+    value: "scene",
+    label: "Scene",
+    icon: "🌅",
+    tagline: "A real place sets the mood; evidence replaces illustration.",
+    description:
+      "A literal photographic location with a protected clean zone at its centre. Environmental directional light carrying time of day. Callouts deliberately alternate register: some SHOW using real magnified crops, others TELL using icons.",
+    strongFor: "Selling a feeling alongside a fact — hero shots, lifestyle, use cases.",
+  },
+  {
+    value: "atelier",
+    label: "Atelier",
+    icon: "🪵",
+    tagline: "Light stages the subject; information attaches to it.",
+    description:
+      "A plain crafted surface used as a stage, valued for material rather than place. Hard-edged shaped light does the hierarchy work. Labels clip physically onto what they name and sit in its plane, with no connectors anywhere.",
+    strongFor: "Craft, materials, provenance, process — anything sequential.",
+  },
+];
+
+export const PDP_BACKGROUND_OPTIONS: { value: PdpBackground; label: string; icon: string; description: string }[] = [
+  {
+    value: "default",
+    label: "Default",
+    icon: "✨",
+    description: "Derived from the product itself — its design, materials and the sheet information decide the setting.",
+  },
+  {
+    value: "outdoor",
+    label: "Outdoor",
+    icon: "🌤️",
+    description: "An outdoor setting suited to the footwear's use case and character.",
+  },
+  {
+    value: "indoor-funky",
+    label: "Indoor Funky",
+    icon: "🎈",
+    description:
+      "An indoor space with floating elements and props around the footwear — visually calm and attractive, never cluttered.",
+  },
+];
+
+export const PDP_CAST_SOURCE_OPTIONS: { value: PdpCastSource; label: string; icon: string; description: string }[] = [
+  {
+    value: "described",
+    label: "Describe the cast",
+    icon: "✍️",
+    description:
+      "Give a general description and a model is generated per product — features and hair vary between products, pinned within one.",
+  },
+  {
+    value: "uploaded",
+    label: "Upload model photos",
+    icon: "🖼️",
+    description: "Upload reference photos and they cycle across products in order.",
+  },
+];
+
+export const PDP_IMAGE_SIZE_OPTIONS: { value: "1K" | "2K" | "4K"; label: string; description: string }[] = [
+  { value: "1K", label: "1K", description: "Fast drafts" },
+  { value: "2K", label: "2K", description: "Recommended — and the floor for any image bearing text" },
+  { value: "4K", label: "4K", description: "Highest detail" },
+];
+
+/** 9-way placement used by the post-generation logo compositor. */
+export const PDP_LOGO_PLACEMENT_OPTIONS: { value: OverlayPosition; label: string }[] = [
+  { value: "top-left", label: "Top left" },
+  { value: "top-center", label: "Top centre" },
+  { value: "top-right", label: "Top right" },
+  { value: "middle-left", label: "Middle left" },
+  { value: "middle-center", label: "Middle centre" },
+  { value: "middle-right", label: "Middle right" },
+  { value: "bottom-left", label: "Bottom left" },
+  { value: "bottom-center", label: "Bottom centre" },
+  { value: "bottom-right", label: "Bottom right" },
+];

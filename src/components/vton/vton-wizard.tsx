@@ -13,6 +13,7 @@ import {
   INFOGRAPHIC_WIZARD_STEPS,
   MODEL_CREATION_WIZARD_STEPS,
   MODEL_EDIT_WIZARD_STEPS,
+  PDP_SET_WIZARD_STEPS,
 } from "@/lib/constants";
 import { StepGarments } from "./step-garments";
 import { StepStyling } from "./step-styling";
@@ -38,6 +39,10 @@ import { StepInfographicProducts } from "./step-infographic-products";
 import { StepInfographicBackground } from "./step-infographic-background";
 import { StepInfographicTemplate } from "./step-infographic-template";
 import { StepInfographicGenerate } from "./step-infographic-generate";
+import { StepPdpProducts } from "./step-pdp-products";
+import { StepPdpCast } from "./step-pdp-cast";
+import { StepPdpShots } from "./step-pdp-shots";
+import { StepPdpGenerate } from "./step-pdp-generate";
 import { StepModelCasting } from "./step-model-casting";
 import { StepModelBoxes } from "./step-model-boxes";
 import { StepModelGenerate } from "./step-model-generate";
@@ -140,6 +145,13 @@ const MODEL_EDIT_STEP_ICONS: Record<number, React.ReactNode> = {
   3: <Sparkles className="w-4 h-4" />,
 };
 
+const PDP_SET_STEP_ICONS: Record<number, React.ReactNode> = {
+  1: <ImageIcon className="w-4 h-4" />,
+  2: <UsersRound className="w-4 h-4" />,
+  3: <LayoutTemplate className="w-4 h-4" />,
+  4: <Sparkles className="w-4 h-4" />,
+};
+
 function getFeatureLabel(featureMode: FeatureMode) {
   switch (featureMode) {
     case "vton":
@@ -156,6 +168,8 @@ function getFeatureLabel(featureMode: FeatureMode) {
       return "Room Staging";
     case "infographic":
       return "Infographics";
+    case "pdp-set":
+      return "PDP Set";
     case "model-creation":
       return "AI Models";
   }
@@ -179,6 +193,7 @@ export function VTONWizard() {
     isVideoGenerating,
     isRoomStagingGenerating,
     isInfographicGenerating,
+    isPdpGenerating,
     isModelCreationGenerating,
     modelCreationMode,
     setModelCreationMode,
@@ -199,12 +214,15 @@ export function VTONWizard() {
   const isProductVideo = featureMode === "product-video";
   const isRoomStaging = featureMode === "room-staging";
   const isInfographic = featureMode === "infographic";
+  const isPdpSet = featureMode === "pdp-set";
   const isModelCreation = featureMode === "model-creation";
   const isModelEdit = isModelCreation && modelCreationMode === "edit";
   const activeWizardSteps = isModelCreation
     ? isModelEdit
       ? MODEL_EDIT_WIZARD_STEPS
       : MODEL_CREATION_WIZARD_STEPS
+    : isPdpSet
+    ? PDP_SET_WIZARD_STEPS
     : isInfographic
     ? INFOGRAPHIC_WIZARD_STEPS
     : isRoomStaging
@@ -219,7 +237,7 @@ export function VTONWizard() {
     ? MODEL_SWAP_WIZARD_STEPS
     : WIZARD_STEPS;
   const maxStep = activeWizardSteps.length;
-  const anyGenerating = isGenerating || isSwatchGenerating || isReplicateGenerating || isVideoGenerating || isRoomStagingGenerating || isInfographicGenerating || isModelCreationGenerating || isModelEditGenerating || isModelRefineGenerating;
+  const anyGenerating = isGenerating || isSwatchGenerating || isReplicateGenerating || isVideoGenerating || isRoomStagingGenerating || isInfographicGenerating || isPdpGenerating || isModelCreationGenerating || isModelEditGenerating || isModelRefineGenerating;
 
   const goNext = () => {
     const nextStep = (currentStep + 1) as WizardStep;
@@ -266,6 +284,8 @@ export function VTONWizard() {
     ? isModelEdit
       ? MODEL_EDIT_STEP_ICONS
       : MODEL_CREATION_STEP_ICONS
+    : isPdpSet
+    ? PDP_SET_STEP_ICONS
     : isInfographic
     ? INFOGRAPHIC_STEP_ICONS
     : isRoomStaging
@@ -439,7 +459,8 @@ export function VTONWizard() {
               )}
 
               {/* Single/Bulk toggle */}
-              {!isSwatch && !isInfographic && !isModelCreation && (
+              {/* PDP Set is inherently a bulk flow, so the single/bulk toggle is hidden. */}
+              {!isSwatch && !isInfographic && !isPdpSet && !isModelCreation && (
                 <div className="flex items-center rounded-xl border border-border/50 bg-muted/50 p-1 self-start sm:self-end backdrop-blur-sm">
                   <button
                     onClick={() => handleModeSwitch("single")}
@@ -528,6 +549,13 @@ export function VTONWizard() {
                     {currentStep === 4 && <StepModelRefine store={store} />}
                   </>
                 )
+              ) : isPdpSet ? (
+                <>
+                  {currentStep === 1 && <StepPdpProducts store={store} />}
+                  {currentStep === 2 && <StepPdpCast store={store} />}
+                  {currentStep === 3 && <StepPdpShots store={store} />}
+                  {currentStep === 4 && <StepPdpGenerate store={store} />}
+                </>
               ) : isInfographic ? (
                 <>
                   {currentStep === 1 && <StepInfographicProducts store={store} />}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useMemo, useRef } from "react";
+import { useCallback, useEffect, useState, useMemo, useRef } from "react";
 import {
   AccessoryCategory,
   AccessoryItem,
@@ -109,6 +109,15 @@ import {
   ProductReferenceFolder,
   LabeledModelView,
   ModelReferenceViewKind,
+  PdpBackground,
+  PdpCastSource,
+  PdpLogos,
+  PdpOptionColumns,
+  PdpProduct,
+  PdpResult,
+  PdpSheetSession,
+  PdpShotOption,
+  PdpStyle,
 } from "@/lib/types";
 import {
   DEFAULT_PRODUCT_FILL_PERCENT,
@@ -118,6 +127,16 @@ import {
 import { customPoseNeedsModel } from "@/lib/custom-pose";
 import { saveModel } from "@/lib/model-library";
 import { dataUrlToFile } from "@/lib/model-creation-client";
+import {
+  applyPdpSheet as applyPdpSheetToProducts,
+  type PdpSheetMatchSummary,
+} from "@/lib/pdp-sheet";
+import {
+  deleteCustomPdpOption,
+  loadCustomPdpOptions,
+  saveCustomPdpOption,
+} from "@/lib/pdp-option-library";
+import { PDP_CATALOG } from "@/lib/pdp-catalog";
 
 const defaultBackground: BackgroundConfig = {
   mode: "text",
@@ -494,6 +513,88 @@ export function useVTONStore() {
    */
   const [infographicSheetSession, setInfographicSheetSession] = useState<InfographicSheetSession | null>(null);
   const [infographicSheetImport, setInfographicSheetImport] = useState<InfographicSheetImportSummary | null>(null);
+
+  // --- PDP Set State (footwear only) ---
+  const [pdpProducts, setPdpProducts] = useState<PdpProduct[]>([]);
+  const [pdpSheetSession, setPdpSheetSession] = useState<PdpSheetSession | null>(null);
+  const [pdpStyle, setPdpStyle] = useState<PdpStyle>("scene");
+  const [pdpBackground, setPdpBackground] = useState<PdpBackground>("default");
+  const [pdpLogos, setPdpLogos] = useState<PdpLogos>({
+    brandPlacement: "top-left",
+    brandScale: 0.18,
+    optionalPlacement: "bottom-right",
+    optionalScale: 0.1,
+    optionalEnabledFor: [],
+  });
+  const [pdpCastSource, setPdpCastSource] = useState<PdpCastSource>("described");
+  const [pdpCastDescription, setPdpCastDescription] = useState("");
+  const [pdpCastImages, setPdpCastImages] = useState<ReferenceImageItem[]>([]);
+  const [pdpAspectRatio, setPdpAspectRatio] = useState<AspectRatio>("1:1");
+  const [pdpImageSize, setPdpImageSize] = useState<"1K" | "2K" | "4K">("2K");
+  /** Ticked option ids across all three headings. One image per ticked option. */
+  const [pdpSelectedOptions, setPdpSelectedOptions] = useState<string[]>([]);
+  /** Option id to the sheet headers feeding its on-image copy. */
+  const [pdpOptionColumns, setPdpOptionColumns] = useState<PdpOptionColumns>({});
+  const [pdpCustomOptions, setPdpCustomOptions] = useState<PdpShotOption[]>([]);
+  const [pdpResults, setPdpResults] = useState<PdpResult[]>([]);
+  const [isPdpGenerating, setIsPdpGenerating] = useState(false);
+  /** Groups this batch's rows in IndexedDB so a new run can clear the previous one. */
+  const [pdpRunId, setPdpRunId] = useState<string>("");
+
+  /** Load the saved custom-option library once, so it appears beside the presets. */
+  useEffect(() => {
+    let cancelled = false;
+    loadCustomPdpOptions()
+      .then((saved) => {
+        if (!cancelled && saved.length > 0) setPdpCustomOptions(saved);
+      })
+      .catch(() => {
+        /* the library is an enhancement; presets work without it */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * SKU matching is DERIVED, not applied.
+   *
+   * An earlier imperative version wrote `sheetRow` back onto every product whenever the
+   * mapping changed. That had two defects: the summary was computed inside a state
+   * updater, which React may invoke twice, and callers had to remember to re-apply after
+   * every mapping edit, closing over a stale session when they did. Deriving removes both
+   * and guarantees the previews always agree with the current mapping.
+   */
+  const pdpSheetMatch = useMemo(
+    () => applyPdpSheetToProducts(pdpProducts, pdpSheetSession),
+    [pdpProducts, pdpSheetSession]
+  );
+  /** Products with their matched sheet row attached. Everything downstream reads this. */
+  const pdpResolvedProducts = pdpSheetMatch.products;
+  const pdpSheetSummary: PdpSheetMatchSummary | null = pdpSheetSession
+    ? pdpSheetMatch.summary
+    : null;
+
+  const togglePdpOption = useCallback((optionId: string) => {
+    setPdpSelectedOptions((prev) =>
+      prev.includes(optionId) ? prev.filter((id) => id !== optionId) : [...prev, optionId]
+    );
+  }, []);
+
+  const setPdpOptionColumnsFor = useCallback((optionId: string, columns: string[]) => {
+    setPdpOptionColumns((prev) => ({ ...prev, [optionId]: columns }));
+  }, []);
+
+  const addPdpCustomOption = useCallback((option: PdpShotOption) => {
+    setPdpCustomOptions((prev) => [...prev, option]);
+    void saveCustomPdpOption(option);
+  }, []);
+
+  const removePdpCustomOption = useCallback((optionId: string) => {
+    setPdpCustomOptions((prev) => prev.filter((o) => o.id !== optionId));
+    setPdpSelectedOptions((prev) => prev.filter((id) => id !== optionId));
+    void deleteCustomPdpOption(optionId);
+  }, []);
 
   // --- AI Model Creation State ---
   // Global "casting" attributes — apply to every model box in the batch.
@@ -2421,6 +2522,30 @@ export function useVTONStore() {
 
   const canProceedToStep = useCallback(
     (step: WizardStep): boolean => {
+      // --- PDP SET MODE ---
+      if (featureMode === "pdp-set") {
+        const hasProducts = pdpProducts.some((p) => p.images.length > 0);
+        const hasShots = pdpSelectedOptions.length > 0;
+        // The cast is only required when a ticked option actually needs a human. A run of
+        // pure product shots and infographics should not be blocked on casting.
+        const allOptions = [...PDP_CATALOG, ...pdpCustomOptions];
+        const needsCast = pdpSelectedOptions.some(
+          (id) => allOptions.find((o) => o.id === id)?.requiresModel
+        );
+        const hasCast =
+          !needsCast ||
+          (pdpCastSource === "described"
+            ? pdpCastDescription.trim() !== ""
+            : pdpCastImages.length > 0);
+        switch (step) {
+          case 1: return true;                                  // Products, sheet, style, logos
+          case 2: return hasProducts;                           // Cast
+          case 3: return hasProducts;                           // Shots
+          case 4: return hasProducts && hasShots && hasCast;    // Generate
+          default: return false;
+        }
+      }
+
       // --- BULK INFOGRAPHIC MODE ---
       if (featureMode === "infographic") {
         const hasProducts = infographicFolders.some((f) => f.images.length > 0);
@@ -2669,7 +2794,7 @@ export function useVTONStore() {
           return false;
       }
     },
-    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts, modelBoxes, modelCreationMode, modelEditSources, modelEditDirective, referencePhotoshootMode, singleReferenceImages, referenceFolders, background, modelCreationResults, savedModels]
+    [featureMode, mode, productCategory, garmentImages, selectedModel, modelImage, selectedPoses, customPoses, ugcScenes, primaryFolders, bulkModelImages, swatchImages, setProductEnabled, setProductVariants, setProductFolders, replicateAssets, replicateReference, replicateVariableGroups, videoProductImages, videoPrimaryFolders, roomProductImages, roomPrimaryFolders, roomSelectedShots, roomSelectedRoomStyle, roomInspirationImage, roomBulkRoomSettings, infographicFolders, infographicTemplateCounts, modelBoxes, modelCreationMode, modelEditSources, modelEditDirective, referencePhotoshootMode, singleReferenceImages, referenceFolders, background, modelCreationResults, savedModels, pdpProducts, pdpSelectedOptions, pdpCustomOptions, pdpCastSource, pdpCastDescription, pdpCastImages]
   );
 
   return {
@@ -3081,6 +3206,25 @@ export function useVTONStore() {
     infographicResults, setInfographicResults,
     updateInfographicResult, resetInfographicResults,
     isInfographicGenerating, setIsInfographicGenerating,
+    // PDP Set
+    pdpProducts, setPdpProducts,
+    pdpResolvedProducts,
+    pdpSheetSession, setPdpSheetSession,
+    pdpSheetSummary,
+    pdpStyle, setPdpStyle,
+    pdpBackground, setPdpBackground,
+    pdpLogos, setPdpLogos,
+    pdpCastSource, setPdpCastSource,
+    pdpCastDescription, setPdpCastDescription,
+    pdpCastImages, setPdpCastImages,
+    pdpAspectRatio, setPdpAspectRatio,
+    pdpImageSize, setPdpImageSize,
+    pdpSelectedOptions, setPdpSelectedOptions, togglePdpOption,
+    pdpOptionColumns, setPdpOptionColumns, setPdpOptionColumnsFor,
+    pdpCustomOptions, addPdpCustomOption, removePdpCustomOption,
+    pdpResults, setPdpResults,
+    isPdpGenerating, setIsPdpGenerating,
+    pdpRunId, setPdpRunId,
     // AI Model Creation
     modelGender, setModelGender,
     modelAgeRange, setModelAgeRange,
