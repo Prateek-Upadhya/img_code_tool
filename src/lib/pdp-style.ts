@@ -30,6 +30,21 @@ export interface PdpStyleGrammar {
   secondaryMark: string;
   register: string;
   signature: string;
+  /**
+   * Typographic personality for this style, plus a pool of concrete pairings.
+   *
+   * Typography is one of the four axes that make these styles genuinely distinct, so it
+   * belongs to the style rather than to a global rule. `voice` describes the intent;
+   * `pairings` gives real named faces so the model has something specific to render
+   * instead of inventing a generic sans.
+   *
+   * One pairing is chosen per BATCH, not per image, so a set shares one typographic
+   * identity while different runs look different. See `buildPdpStyleBlock`.
+   */
+  typography: {
+    voice: string;
+    pairings: string[];
+  };
 }
 
 export const PDP_STYLE_GRAMMARS: Record<PdpStyle, PdpStyleGrammar> = {
@@ -51,12 +66,21 @@ export const PDP_STYLE_GRAMMARS: Record<PdpStyle, PdpStyleGrammar> = {
     register: "Calm, premium, catalogue. Timeless rather than current. The image reads as a specification.",
     signature:
       "Uniform badges at the corners, thin connectors returning to the centre, a flat architectural device anchoring the base edge.",
+    typography: {
+      voice:
+        "Precise and specification like. Type behaves as instrumentation: even, disciplined, engineered. Labels sit in small caps with open letter spacing; figures and measurements are set in a face with tabular, evenly spaced numerals so columns align optically. Nothing is decorative, everything is exact.",
+      pairings: [
+        "a wide geometric grotesque for the display level, paired with a neutral neo grotesque for labels, and a technical monospaced face reserved for any figures or measurements",
+        "an extended engineered sans for the display level, paired with a compact humanist sans for labels, with numerals set in a tabular monospaced face",
+        "a precise Swiss neo grotesque used across display and labels at clearly separated weights, with a squared technical mono for figures",
+      ],
+    },
   },
   scene: {
     name: "SCENE",
     premise: "A real place sets the mood, and evidence replaces illustration.",
     world:
-      "Literal and photographic. A specific real place that implies a specific use, carrying a deliberately protected clean zone at its centre where nothing competes with the product.",
+      "Literal and photographic, and genuinely furnished. A specific real place that implies a specific use, built up with real depth: a foreground element the camera looks past, a considered middle ground where the product sits, and a periphery with texture, props and life belonging to that place. Aim for the richness of a styled editorial set rather than an empty backdrop. The one rule that holds against all of it is a protected clean zone around the product itself, where nothing competes. Rich and layered, never cluttered: every element must be there for a reason, and elegance comes from what is arranged rather than from what is absent.",
     light:
       "Environmental and directional, belonging to the location itself. The light carries a time of day and a weather condition, so it carries the mood. Name the light direction and reuse it for every shadow in frame.",
     subject:
@@ -64,11 +88,21 @@ export const PDP_STYLE_GRAMMARS: Record<PdpStyle, PdpStyleGrammar> = {
     information:
       "Mixed register, deliberately alternating. Some callouts SHOW, using a real magnified photographic crop of the product itself. Others TELL, using a small icon. Adjacent callouts never share the same form.",
     hierarchy:
-      "Contrast between a busy periphery and a clean centre. The environment surrounds and frames rather than competing.",
+      "Contrast between a richly furnished periphery and a clean centre. The environment is allowed to be full and detailed precisely because the centre stays protected; that tension is the style. The product remains the brightest and sharpest thing in frame, and depth of field separates it from everything around it.",
     secondaryMark: "Small and incidental, like a stamp pressed onto the page. Present but never announced.",
     register: "Editorial lifestyle. Aspirational, warm and current. The image reads as a magazine feature.",
     signature:
       "Photographic macro previews used as callouts, a clean centre inside a textured world, a small corner seal.",
+    typography: {
+      voice:
+        "Editorial and magazine led. This is the style where type carries the most personality. A high contrast display face sets the headline at genuine masthead scale, often mixing two weights or two colours across its lines, and a quieter text face carries everything else. Labels may take small caps with generous tracking. The pairing should feel art directed, like a printed feature spread.",
+      pairings: [
+        "a high contrast fashion serif for the headline set large, paired with a clean humanist sans for supporting copy and labels",
+        "a condensed editorial grotesque for the headline in heavy weight, paired with an old style serif for supporting copy, giving the spread a magazine feel",
+        "an elegant transitional serif with pronounced thick and thin strokes for the headline, paired with a geometric sans in light weight for labels",
+        "a bold contemporary display sans for the headline, paired with a warm humanist serif for supporting copy so the two genuinely contrast",
+      ],
+    },
   },
   atelier: {
     name: "ATELIER",
@@ -87,6 +121,15 @@ export const PDP_STYLE_GRAMMARS: Record<PdpStyle, PdpStyleGrammar> = {
     register: "Crafted, tactile, boutique. The image reads as a maker's presentation.",
     signature:
       "A shaped light zone, a progressive sequence, tabs clipped to edges, a connecting spine ending in a hanging tag.",
+    typography: {
+      voice:
+        "Crafted and tactile, as though letterpressed onto the surface it sits on. Type has visible character and a maker's hand: real serifs, generous small caps, unhurried spacing. Labels on the clipped tabs read like stamped or embossed marks rather than printed captions.",
+      pairings: [
+        "an old style humanist serif for the display level, paired with a small caps grotesque for the clipped tab labels",
+        "a characterful slab serif for the display level, paired with a quiet humanist sans for supporting copy, with tab labels in spaced small caps",
+        "a letterpress inspired transitional serif across display and copy at clearly separated weights, with tab labels in an engraved style small caps",
+      ],
+    },
   },
 };
 
@@ -101,7 +144,7 @@ export const PDP_STYLE_CONSTANTS = `SHARED RULES (these hold in every style):
 - Tune the background against the product. If the footwear is pale, separate it from the ground by VALUE. If it is saturated, separate it by HUE. Identify every major colour region of the footwear first, the upper, the sole, the straps, the trims, and choose a ground that separates all of them at once.
 - The footwear MUST be the brightest and sharpest thing in frame.
 - Do not invent a headline unless the composition brief above explicitly asks for one.
-- Every label must remain legible at one hundred percent zoom. Prefer fewer, larger labels over many small ones.
+- Every label must remain legible at one hundred percent zoom. Where a layout carries several labels, hold that legibility by spacing them further apart and giving the frame more margin, not by shrinking the type.
 - Define ONE light source and reuse its direction for the product lighting, every contact shadow, and any gradient in the background, so the whole frame stays physically consistent.`;
 
 /**
@@ -163,10 +206,17 @@ The signature elements of this style that exist to carry information are SUSPEND
 export function buildPdpStyleBlock(
   style: PdpStyle,
   background: PdpBackground,
-  bearsText: boolean = true
+  bearsText: boolean = true,
+  /**
+   * Selects the typographic pairing from the style's pool. Chosen ONCE per batch and
+   * reused for every image in it, so a delivered set shares one typographic identity
+   * while a later run of the same style looks different. Wraps, so any integer is valid.
+   */
+  typographyIndex: number = 0
 ): string {
   const g = PDP_STYLE_GRAMMARS[style];
   const bg = resolveBackgroundClause(style, background);
+  const pairing = g.typography.pairings[Math.abs(typographyIndex) % g.typography.pairings.length];
 
   return `═══ ARTISTIC STYLE: ${g.name} ═══
 This is a MODIFIER LAYER applied ON TOP of the composition brief above. It does not replace that brief and it does not change what the image contains. It decides HOW everything above is rendered: the quality of the space, the behaviour of light, ${bearsText ? "the way information attaches, " : ""}the palette and the typographic feel. Where the brief and this layer both speak to something, the brief decides WHAT and this layer decides HOW.
@@ -177,7 +227,7 @@ LIGHT: ${g.light}
 SUBJECT TREATMENT: ${g.subject}
 ${bearsText ? `INFORMATION: ${g.information}` : PDP_NO_INFORMATION_CLAUSE}
 HIERARCHY: ${g.hierarchy}
-${bearsText ? `SECONDARY MARK TREATMENT: ${g.secondaryMark}\n` : ""}REGISTER: ${g.register}
+${bearsText ? `SECONDARY MARK TREATMENT: ${g.secondaryMark}\n` : ""}${bearsText ? `TYPOGRAPHIC VOICE: ${g.typography.voice}\nTYPEFACES FOR THIS SET: ${pairing}. Use this same pairing consistently across the whole image.\n` : ""}REGISTER: ${g.register}
 SIGNATURE ELEMENTS: ${bearsText ? g.signature : "expressed only through space, light and subject treatment, since this image carries no information graphics."}
 ${bg ? `\n${bg}` : `\nSETTING: none. This style is placeless by definition. Render no location, no horizon, no environment and no props. Any background preference stated elsewhere MUST be ignored in favour of the single tint field described above.`}
 

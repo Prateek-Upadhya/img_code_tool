@@ -179,18 +179,26 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
   const canGenerate = apiKey.length > 0 && plan.length > 0 && !isPdpGenerating;
 
   /**
-   * Two frozen variants of the art direction, not one.
+   * The art direction is built per option, in two variants.
    *
    * Each style's grammar describes how callouts behave, so injecting it unconditionally
    * pushed callouts onto shots whose own brief excluded them. The text-free variant drops
    * that axis and forbids information graphics outright, which is what keeps the on-model
    * photography clean.
+   *
+   * Typographic pairing for this batch.
+   *
+   * A ref rather than state, and read at call time rather than captured in a memo. The
+   * style block is consumed inside `runOne`, whose closure would otherwise still hold the
+   * previous run's pairing when a second Generate re-rolled it, leaving the type one run
+   * behind. Re-rolled on each Generate, fixed for the duration of that run, so a delivered
+   * set shares one typographic identity while a later run looks different.
    */
-  const styleBlocks = useMemo(
-    () => ({
-      withText: buildPdpStyleBlock(pdpStyle, pdpBackground, true),
-      textFree: buildPdpStyleBlock(pdpStyle, pdpBackground, false),
-    }),
+  const typographyIndexRef = useRef<number>(Math.floor(Math.random() * 997));
+
+  const buildStyleBlockFor = useCallback(
+    (bearsText: boolean) =>
+      buildPdpStyleBlock(pdpStyle, pdpBackground, bearsText, typographyIndexRef.current),
     [pdpStyle, pdpBackground]
   );
 
@@ -377,7 +385,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
             sku: product.sku,
             overallContext: copy.overallContext,
             optionCopy: copy.optionCopy,
-            styleBlock: option.bearsText ? styleBlocks.withText : styleBlocks.textFree,
+            styleBlock: buildStyleBlockFor(option.bearsText),
             globalDirectives,
             markAwareness,
             soleConstructionLayers: product.soleConstructionLayers ?? 3,
@@ -490,7 +498,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
       pdpOptionColumns,
       pdpOptionMarkCaptions,
       pdpLogos,
-      styleBlocks,
+      buildStyleBlockFor,
       pdpAspectRatio,
       pdpImageSize,
       pdpCastDescription,
@@ -506,6 +514,8 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
     setIsPdpGenerating(true);
 
     setBackedOffTo(null);
+    // New batch, new typographic pairing. Within the run it stays fixed.
+    typographyIndexRef.current = Math.floor(Math.random() * 997);
     const governor = new PdpConcurrencyGovernor(PDP_CONCURRENCY, (next) => setBackedOffTo(next));
     governorRef.current = governor;
 

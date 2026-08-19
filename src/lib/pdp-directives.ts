@@ -90,13 +90,34 @@ NEVER produce extra or missing fingers, fused digits or malformed hands.`;
  */
 export const PDP_TEXT_RULES = `═══ ON IMAGE TEXT ═══
 - Every piece of on-image copy MUST be wrapped in double quotes in the composition you author, so it renders verbatim. Spell every word correctly.
-- Use AT MOST five distinct text elements in the whole image, and prefer three or four. Fewer, larger, well spaced elements render reliably. Many small elements produce duplicated and clipped text.
-- Give each text element its own explicit typographic specification: weight, case, relative size and colour. Use one modern sans serif family across the whole image, in at most two weights.
-- Keep each label short, ideally one to four words. Let the imagery carry the story and use text only to name what the image is already showing.
+- COUNT: use as many text elements as the content genuinely earns, up to a ceiling of SEVEN. Each one must carry information a viewer needs; an element that only decorates should be cut. Four to six is the usual range for a rich board, two or three for an image whose story is carried by the photography.
+- THE COST OF MORE: every additional element raises the risk of duplicated or edge clipped text, so as the count rises the rules below matter MORE, not less. Set type larger, space it further apart, and give the frame more margin. If a layout cannot hold seven elements at a comfortable size, it has too many; drop one rather than shrinking them all.
+- Keep each label short, ideally one to four words. A supporting line may run to about twelve. Let the imagery carry the story and use text to name what the image is already showing.
 - NEVER use an em dash or an en dash in any on-image text. Use a comma, a colon or a full stop instead. This is absolute.
-- NEVER render lorem ipsum, placeholder text, watermarks, captions, credits or a signature.
+- NEVER render lorem ipsum, placeholder text, watermarks, credits or a signature.
 - NEVER repeat the same text element twice anywhere in the frame.
 - Keep all text fully inside the frame with generous margin. NEVER let a glyph touch or cross the frame edge.`;
+
+/**
+ * Typographic direction, emitted alongside the text rules.
+ *
+ * This replaces a blanket "one modern sans serif family, at most two weights", which was a
+ * defensive choice made before the model's type handling was understood. It renders named
+ * typefaces well and distinguishes them reliably, and that single-family rule was the main
+ * reason every image came out looking the same and reading as minimal.
+ *
+ * The concrete pairing comes from the style, since typography is one of the axes that
+ * makes ORBIT, SCENE and ATELIER feel genuinely different rather than recoloured. What is
+ * shared is the craft: a real hierarchy, deliberate pairing, and the discipline that keeps
+ * variety from becoming noise.
+ */
+export const PDP_TYPOGRAPHY_RULES = `═══ TYPOGRAPHY ═══
+- Build a real typographic HIERARCHY. A display level for the headline, a text level for supporting copy, and a small level for labels and captions. The steps between them should be obvious at a glance, not timid.
+- PAIRING: use TWO type families, one for display and one for text, chosen so they contrast in character rather than compete. A third family is allowed only for a genuinely different job, such as figures in a table or a technical spec.
+- Vary weight, case, tracking and size deliberately within each family. A headline may mix two weights or two colours across its lines where that creates the hierarchy.
+- Name the actual typefaces you intend in the composition, and use faces with real character rather than defaulting to a generic neutral sans for everything.
+- DISCIPLINE, so variety stays elegant rather than cluttered: no more than two families for copy, one consistent alignment logic, consistent optical spacing, and every size step deliberate. Elegant means considered, never busy.
+- Legibility outranks personality. If a display face would not survive at the size it is set, choose a sturdier one.`;
 
 /**
  * Page level marks, rendered INTO the image as design components.
@@ -335,6 +356,7 @@ export function buildPdpGlobalDirectives(opts: {
     opts.includeHuman ? PDP_CAST_IDENTITY_LOCK : "",
     opts.includeHuman ? PDP_HUMAN_REALISM : "",
     opts.includeText ? PDP_TEXT_RULES : "",
+    opts.includeText ? PDP_TYPOGRAPHY_RULES : "",
     buildPdpMarkDirective({
       brandPlacementLabel: opts.brandPlacementLabel,
       brandScale: opts.brandScale,

@@ -215,8 +215,8 @@ const FEATURE_CALLOUTS: PdpShotOption = {
   promptSnippet: `COMPOSITION: a feature board showing EXACTLY TWO shoes, the left and the right of this one identical pair, surrounded by callouts that explain what makes the footwear good.
 - ARRANGEMENT: pose the pair so that between them they reveal the features being called out. One shoe shows its upper and profile, the other reveals its sole tread or inner construction.
 - IMAGE LED STORYTELLING: this is the defining rule for this layout. At least half the callouts must SHOW rather than TELL, using a real magnified photographic crop of the exact area being described, presented as a shaped inset. Only the remainder use an icon and a label. A viewer should understand most of the value of this footwear with the text removed entirely.
-- CALLOUTS: exactly three or four callouts total. Each attaches to the correct region of the correct shoe, unambiguously. Distribute them across BOTH shoes rather than clustering them on one.
-- TEXT: each callout carries one short bold label of one to four words, and at most two of them additionally carry a supporting line of at most eight words. Keep the total on-image text low.
+- CALLOUTS: between three and six callouts, however many the supplied product information genuinely supports. Use more only when there are that many features worth naming; do not pad to fill the frame. Each attaches to the correct region of the correct shoe, unambiguously, and they are distributed across BOTH shoes rather than clustered on one.
+- TEXT: each callout carries one short bold label of one to four words, and some additionally carry a supporting line of at most eight words. As the callout count rises, space them further apart and set them larger rather than smaller, so a fuller board still reads cleanly.
 - CRAFT: the magnified crops must be genuine photographic magnifications of this exact product at true texture scale, never illustrations and never invented detail.
 - Derive all copy from the supplied product information, reducing long prose to short points first.`,
 };
