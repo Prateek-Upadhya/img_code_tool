@@ -602,24 +602,39 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
   }, [setPdpResults]);
 
   /** Full images are read back from IndexedDB at download time, not held in state. */
-  const handleDownloadAll = useCallback(async () => {
-    const completed = pdpResults.filter((r) => r.status === "completed");
-    if (completed.length === 0) return;
-
+  /**
+   * Collect completed results into folder-per-SKU groups, reading the full images back
+   * from the store. Shared by the whole-run download and the per-product one, which are
+   * the same operation over a different slice.
+   */
+  const collectGroups = useCallback(async (results: PdpResult[]) => {
     const bySku = new Map<string, { name: string; dataUrl: string }[]>();
-    for (const result of completed) {
+    for (const result of results) {
+      if (result.status !== "completed") continue;
       const dataUrl = (await readPdpImage(result.id)) ?? result.thumbnail;
       if (!dataUrl) continue;
       const list = bySku.get(result.sku) ?? [];
       list.push({ name: `${result.sku}_${list.length + 1}`, dataUrl });
       bySku.set(result.sku, list);
     }
+    return [...bySku.entries()].map(([folder, entries]) => ({ folder, entries }));
+  }, []);
 
-    await downloadGroupedZip(
-      [...bySku.entries()].map(([folder, entries]) => ({ folder, entries })),
-      "pdp-set.zip"
-    );
-  }, [pdpResults]);
+  const handleDownloadAll = useCallback(async () => {
+    const groups = await collectGroups(pdpResults);
+    if (groups.length === 0) return;
+    await downloadGroupedZip(groups, "pdp-set.zip");
+  }, [pdpResults, collectGroups]);
+
+  /** One product's images as their own archive, still foldered by SKU inside. */
+  const handleDownloadProduct = useCallback(
+    async (sku: string, results: PdpResult[]) => {
+      const groups = await collectGroups(results);
+      if (groups.length === 0) return;
+      await downloadGroupedZip(groups, `${sku}.zip`);
+    },
+    [collectGroups]
+  );
 
   // ── Viewer and contextual retry ───────────────────────────────────────────
   const viewerResult = useMemo(
@@ -890,7 +905,19 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
       {/* Results, grouped by SKU, which is also how they are delivered */}
       {grouped.map(([sku, results]) => (
         <section key={sku} className="space-y-2">
-          <h4 className="text-sm font-medium text-foreground">{sku}</h4>
+          <div className="flex items-center justify-between gap-3">
+            <h4 className="text-sm font-medium text-foreground">{sku}</h4>
+            {results.some((r) => r.status === "completed") && (
+              <button
+                onClick={() => void handleDownloadProduct(sku, results)}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                title={`Download every image for ${sku} as a zip`}
+              >
+                <Package className="h-3 w-3" />
+                Download {sku}
+              </button>
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
             {results.map((result) => (
               <div

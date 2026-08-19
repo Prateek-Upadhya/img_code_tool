@@ -198,9 +198,52 @@ const TRUE_ZERO: PdpShotOption = {
   promptSnippet: `COMPOSITION: a bold, striking sustainability statement image built around this footwear's biodegradable construction.
 - SUBJECT: EXACTLY ONE shoe, or EXACTLY ONE pair, shot from a dramatic and unexpected angle. Favour a steep low angle looking up, a near vertical top down, or a strongly tilted diagonal. This image should feel deliberately more graphic and more confident than a standard product shot.
 - STORY: the composition must communicate returning to the earth. Suggest it through material, tone and staging rather than through explanation, for example an organic ground surface, soil or stone or raw fibre, a natural palette shifted toward earth greens and browns, or growth forms entering the frame. Keep it premium and restrained. NEVER render literal decay, damage, dirt on the product, rubbish, or a soiled shoe. The product itself stays pristine.
-- RESERVED ZONE: leave one deliberately clean, flat, generous area of uniform tone in the composition where a secondary brand mark will be composited afterwards. Position this area as a strong compositional element in its own right, not as an afterthought in a corner. Do not draw any mark, logo or lettering inside it.
+- PLACEMENT FOR THE SEAL: give the secondary mark a deliberately clean, flat, generous area of uniform tone to sit in, positioned as a strong compositional element in its own right rather than tucked into a corner as an afterthought. The mark itself is rendered there per the page level branding instruction below.
 - TEXT: at most two text elements. One short bold statement about the biodegradable construction, and optionally one supporting line of at most ten words. Let the image carry the rest.
 - Derive the claim wording from the supplied product information. NEVER invent an environmental claim, a certification, a percentage or a standard that the supplied information does not state.`,
+};
+
+/**
+ * Compositional approaches for the waterproof and biodegradable image.
+ *
+ * A pool rather than one fixed construction because a catalogue of waterproof styles
+ * should not be six versions of the same split frame. One is selected per PRODUCT, so it
+ * is stable for that product and differs across the batch. See {@link pdpConstructionFor}.
+ *
+ * Every entry has to hold BOTH ideas in one frame. That is the whole problem the image
+ * exists to solve: water and compostability read as contradictory, so showing water alone
+ * and hoping is not enough.
+ */
+export const PDP_WATERPROOF_CONSTRUCTIONS: string[] = [
+  "A SPLIT FRAME divided by one clean vertical seam. On one side, water: spray, droplets in flight, a wet dark surface with light catching the ripples. On the other, earth: dry soil, moss, stone, root and leaf. The footwear sits ACROSS the seam so a single shoe belongs to both worlds at once, lit by one light source that carries across the division.",
+  "A TOP TO BOTTOM READ. In the upper half water beads and rolls off the upper in tight spherical droplets, caught mid roll, the surface visibly shedding rather than soaking. In the lower half the ground beneath is living soil with moss and fine growth. The eye travels down from repelled water to receptive earth, and the two halves meet without a hard edge.",
+  "HALF SUBMERGED. The footwear stands in a shallow pool of clear still water, the waterline cutting cleanly across it, the submerged part sharply visible through the water and completely unaffected. Behind and around, a bank of wet stone, dark loam and low growth rises out of the pool.",
+  "A SUSPENDED MOMENT. One large droplet hangs in the air a fraction above the upper, about to land, rendered with real refraction. The footwear rests on an organic surface that is unmistakably alive, soil with fine roots or moss. Everything is still. The image is about the instant before contact rather than the splash.",
+  "SHEETING WATER. Water pours across the upper in a continuous sheet and runs off the edge in a clean curtain, mid motion, frozen sharp. Below and behind, the ground is raw earth and stone that the water is running into. Motion above, permanence below.",
+  "TWO GROUNDS, ONE PRODUCT. The surface under the footwear transitions across the frame, from wet polished stone with standing water at one end to dry crumbling earth and moss at the other. The product bridges the transition. The change in ground is gradual and physical rather than a graphic device.",
+];
+
+const TRUE_ZERO_WATERPROOF: PdpShotOption = {
+  id: "pdp-true-zero-waterproof",
+  heading: "infographic",
+  label: "True Zero + Waterproof",
+  icon: "💧",
+  description:
+    "For footwear that is both waterproof and biodegradable. Holds the two ideas in one frame, with the TruZero seal present.",
+  requiresModel: false,
+  consumesCopy: true,
+  bearsText: true,
+  requiresOptionalLogo: true,
+  // The construction line is appended per product at assembly time from
+  // PDP_WATERPROOF_CONSTRUCTIONS. This snippet carries everything shared.
+  promptSnippet: `COMPOSITION: a striking image for footwear that is BOTH waterproof AND biodegradable, holding both ideas in a single frame.
+- THE TENSION IS THE POINT. A viewer reasonably wonders how something that repels water can also return to the earth, so the image must show BOTH truths together and let them sit side by side without apology. Showing water alone, or earth alone, fails this brief.
+- SUBJECT: EXACTLY ONE shoe, or EXACTLY ONE pair. The product stays pristine throughout: water beads, sheets and runs off it, and it is NEVER waterlogged, stained, soggy, muddied, damaged or decaying. Biodegradable describes what it can become at the end of its life, never its current condition.
+- WATER: render water as real physics. Droplets hold spherical form under surface tension, refract what is behind them, and cast small caustic highlights. Sheeting water follows the product's contours. Water in flight is motion frozen sharply, not a smear.
+- EARTH: the organic side reads as living and clean. Damp soil, moss, stone, root, leaf. Rich and healthy, NEVER rubbish, rot, decay or filth.
+- PLACEMENT FOR THE SEAL: give the secondary mark a deliberately clean, flat, generous area of uniform tone to sit in, positioned as a strong compositional element rather than tucked into a corner. The mark itself is rendered there per the page level branding instruction below.
+- LIGHT: ONE light source across the whole frame. Both halves of the idea share it, which is what stops the image reading as two photographs stuck together.
+- TEXT: at most two text elements. Use the supplied copy for this option to state, in a short line, HOW the two properties coexist. If no such copy was supplied, render NO explanatory line at all and let the imagery carry the idea alone. NEVER invent a mechanism, a material, a treatment, a certification or a percentage that the supplied information does not state. An unexplained image is acceptable; an invented environmental claim is not.`,
 };
 
 const FEATURE_CALLOUTS: PdpShotOption = {
@@ -282,6 +325,25 @@ const COMPARISON: PdpShotOption = {
 - TEXT BUDGET: the row grid is one structured block. Beyond it, use at most one short headline and nothing else.`,
 };
 
+/** Option ids whose brief is completed per product from a construction pool. */
+export const PDP_WATERPROOF_ID = TRUE_ZERO_WATERPROOF.id;
+
+/**
+ * Pick a construction for one product, stably.
+ *
+ * Hashed from the SKU rather than randomised, so the same product keeps the same
+ * construction across a re-run or a retry while different products in one batch get
+ * different ones. A retry that silently changed the whole composition would make the
+ * operator's approve-or-discard decision meaningless.
+ */
+export function pdpConstructionFor(pool: string[], sku: string): string {
+  let hash = 0;
+  for (let i = 0; i < sku.length; i++) {
+    hash = (hash * 31 + sku.charCodeAt(i)) | 0;
+  }
+  return pool[Math.abs(hash) % pool.length];
+}
+
 export const PDP_CATALOG: PdpShotOption[] = [
   SINGLE,
   PAIR,
@@ -291,6 +353,7 @@ export const PDP_CATALOG: PdpShotOption[] = [
   INTERIOR_ANGLE,
   MODEL_INFOGRAPHIC,
   TRUE_ZERO,
+  TRUE_ZERO_WATERPROOF,
   FEATURE_CALLOUTS,
   SOLE_CONSTRUCTION,
   SIZE_CHART,

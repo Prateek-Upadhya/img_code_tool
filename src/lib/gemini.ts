@@ -75,6 +75,12 @@ import {
 } from "./types";
 import { PDP_HUMAN_REALISM } from "./pdp-directives";
 import {
+  PDP_SOLE_CONSTRUCTION_ID,
+  PDP_WATERPROOF_ID,
+  PDP_WATERPROOF_CONSTRUCTIONS,
+  pdpConstructionFor,
+} from "./pdp-catalog";
+import {
   ACCESSORY_CATEGORIES,
   BOTTOMWEAR_LENGTH_OPTIONS,
   FIT_OPTIONS,
@@ -9476,11 +9482,16 @@ export async function generatePdpPrompt({
 }): Promise<{ enrichedPrompt: string; cost: StepCost }> {
   const ai = getTextClient(textGenModel);
 
-  // Sole construction is the one option whose brief depends on a per-product value, so it
-  // is built here rather than being a fixed string on the catalog entry.
+  // Two options have briefs that depend on the product rather than being a fixed string on
+  // the catalog entry: sole construction varies by layer count, and the waterproof image
+  // draws a construction from a pool keyed on the SKU so a catalogue does not repeat one
+  // composition across every waterproof style.
   const compositionBrief =
-    option.id === "pdp-sole-construction"
+    option.id === PDP_SOLE_CONSTRUCTION_ID
       ? buildSoleConstructionSnippet(soleConstructionLayers)
+      : option.id === PDP_WATERPROOF_ID
+      ? `${option.promptSnippet}
+- CONSTRUCTION FOR THIS PRODUCT: ${pdpConstructionFor(PDP_WATERPROOF_CONSTRUCTIONS, sku)}`
       : option.promptSnippet;
 
   const systemPrompt = `You are an expert footwear e-commerce art director. You are given reference photographs of ONE footwear product, style ${sku}, plus information about it. Author ONE precise, deterministic, self-contained IMAGE COMPOSITION DESCRIPTION that an image generation model will follow to produce a finished asset.

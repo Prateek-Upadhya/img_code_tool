@@ -2,7 +2,7 @@
 
 import { useCallback, useRef } from "react";
 import Image from "next/image";
-import { FolderOpen, Trash2, ImageIcon, Upload, X } from "lucide-react";
+import { FolderOpen, Trash2, ImageIcon, Upload, X, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   PDP_STYLE_OPTIONS,
@@ -112,14 +112,19 @@ function ProductCard({
   onRemove,
   onLayers,
   onCycleSide,
+  onRemoveImage,
+  onAddImages,
   contextColumns,
 }: {
   product: PdpProduct;
   onRemove: (id: string) => void;
   onLayers: (id: string, layers: SoleConstructionLayerCount) => void;
   onCycleSide: (productId: string, imageId: string) => void;
+  onRemoveImage: (productId: string, imageId: string) => void;
+  onAddImages: (productId: string, files: File[]) => void;
   contextColumns: string[];
 }) {
+  const addInputRef = useRef<HTMLInputElement>(null);
   const matched = Boolean(product.sheetRow);
   const contextPreview = matched
     ? contextColumns
@@ -163,7 +168,7 @@ function ProductCard({
       <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
         {product.images.map((img) => (
           <div key={img.id} className="space-y-1">
-            <div className="relative aspect-square overflow-hidden rounded-lg border border-border bg-muted/40">
+            <div className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-muted/40">
               <Image
                 src={img.preview}
                 alt={img.file.name}
@@ -172,6 +177,14 @@ function ProductCard({
                 className="object-cover"
                 unoptimized
               />
+              <button
+                onClick={() => onRemoveImage(product.id, img.id)}
+                title={`Remove ${img.file.name}`}
+                aria-label={`Remove ${img.file.name}`}
+                className="absolute right-0.5 top-0.5 rounded bg-background/80 p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
             </div>
             <button
               onClick={() => onCycleSide(product.id, img.id)}
@@ -187,7 +200,36 @@ function ProductCard({
             </button>
           </div>
         ))}
+
+        {/* Add a missing angle to this one product, without re-uploading the folder. */}
+        <button
+          onClick={() => addInputRef.current?.click()}
+          title="Add images to this product"
+          className="flex aspect-square flex-col items-center justify-center gap-0.5 rounded-lg border border-dashed border-border text-muted-foreground transition-colors hover:bg-muted/60"
+        >
+          <Plus className="h-4 w-4" />
+          <span className="text-[9px]">add</span>
+        </button>
       </div>
+
+      {product.images.length === 0 && (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-[11px] text-amber-700 dark:text-amber-500">
+          No images left, so this product will be skipped. Add one, or remove the product.
+        </p>
+      )}
+
+      <input
+        ref={addInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          const files = Array.from(e.target.files || []);
+          if (addInputRef.current) addInputRef.current.value = "";
+          if (files.length > 0) onAddImages(product.id, files);
+        }}
+      />
 
       {contextPreview && (
         <p className="text-xs text-muted-foreground line-clamp-2" title={contextPreview}>
@@ -419,6 +461,33 @@ export function StepPdpProducts({ store }: { store: VTONStore }) {
     [setPdpProducts]
   );
 
+  const removeImage = useCallback(
+    (productId: string, imageId: string) => {
+      setPdpProducts((prev) =>
+        prev.map((p) => {
+          if (p.id !== productId) return p;
+          const target = p.images.find((i) => i.id === imageId);
+          if (target) URL.revokeObjectURL(target.preview);
+          return { ...p, images: p.images.filter((i) => i.id !== imageId) };
+        })
+      );
+    },
+    [setPdpProducts]
+  );
+
+  const addImages = useCallback(
+    (productId: string, files: File[]) => {
+      const next = files
+        .filter((f) => f.type.startsWith("image/"))
+        .map((file) => ({ id: uid("pdp-img"), file, preview: URL.createObjectURL(file) }));
+      if (next.length === 0) return;
+      setPdpProducts((prev) =>
+        prev.map((p) => (p.id === productId ? { ...p, images: [...p.images, ...next] } : p))
+      );
+    },
+    [setPdpProducts]
+  );
+
   const setLogo = useCallback(
     (key: "brandLogo" | "optionalLogo", file: File | null) => {
       setPdpLogos((prev) => {
@@ -465,6 +534,8 @@ export function StepPdpProducts({ store }: { store: VTONStore }) {
                 onRemove={removeProduct}
                 onLayers={setLayers}
                 onCycleSide={cycleSide}
+                onRemoveImage={removeImage}
+                onAddImages={addImages}
                 contextColumns={contextColumns}
               />
             ))}
