@@ -40,6 +40,7 @@ import {
 import { resolvePdpCopy } from "@/lib/pdp-sheet";
 import { savePdpImage, readPdpImage, clearPdpRun } from "@/lib/pdp-result-store";
 import { downloadGroupedZip, downloadImage } from "@/lib/result-zip";
+import { isChunkLoadError, STALE_BUILD_MESSAGE } from "@/lib/stale-build";
 import { runPool } from "@/lib/two-lane-runner";
 import { withPdpRetry, PdpConcurrencyGovernor } from "@/lib/pdp-retry";
 import { dataUrlToFile } from "@/lib/model-creation-client";
@@ -127,6 +128,10 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
 
   const abortRef = useRef<AbortController | null>(null);
   const [castNote, setCastNote] = useState<string | null>(null);
+  /** Outcome of the last download, so a batch download can never fail silently. */
+  const [downloadNote, setDownloadNote] = useState<{ tone: "info" | "error"; text: string } | null>(
+    null
+  );
   /** Result currently open in the full-screen viewer. */
   const [viewerId, setViewerId] = useState<string | null>(null);
   /** Full image for the open viewer, read from the store on demand. */
@@ -620,20 +625,59 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
     return [...bySku.entries()].map(([folder, entries]) => ({ folder, entries }));
   }, []);
 
-  const handleDownloadAll = useCallback(async () => {
-    const groups = await collectGroups(pdpResults);
-    if (groups.length === 0) return;
-    await downloadGroupedZip(groups, "pdp-set.zip");
-  }, [pdpResults, collectGroups]);
+  /**
+   * Run one archive download and always report what happened.
+   *
+   * Both batch buttons used to hand React a floating promise and return silently when
+   * they had nothing, so every failure — a chunk lost to a redeploy, an image that would
+   * not read back, a zip too large for the tab — looked identical to a dead button. Every
+   * path through here now ends in a visible note, the successful one included, because
+   * "27 images downloaded" is how the operator knows the archive is complete.
+   */
+  const runDownload = useCallback(
+    async (label: string, results: PdpResult[], zipName: string) => {
+      setDownloadNote(null);
+      try {
+        const groups = await collectGroups(results);
+        if (groups.length === 0) {
+          setDownloadNote({
+            tone: "error",
+            text: `Nothing to download for ${label}. No completed image could be read back from storage.`,
+          });
+          return;
+        }
+        const { written, skipped } = await downloadGroupedZip(groups, zipName);
+        const plural = written === 1 ? "" : "s";
+        setDownloadNote(
+          skipped > 0
+            ? {
+                tone: "error",
+                text: `${label}: ${written} image${plural} downloaded as ${zipName}, ${skipped} skipped because the stored image could not be read.`,
+              }
+            : { tone: "info", text: `${label}: ${written} image${plural} downloaded as ${zipName}.` }
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // A chunk that will not load is worth naming separately: the fix is a reload, not
+        // a re-run, and nothing about the results themselves is wrong.
+        setDownloadNote({
+          tone: "error",
+          text: isChunkLoadError(err) ? STALE_BUILD_MESSAGE : `Download failed: ${message}`,
+        });
+      }
+    },
+    [collectGroups]
+  );
+
+  const handleDownloadAll = useCallback(
+    () => runDownload("All products", pdpResults, "pdp-set.zip"),
+    [pdpResults, runDownload]
+  );
 
   /** One product's images as their own archive, still foldered by SKU inside. */
   const handleDownloadProduct = useCallback(
-    async (sku: string, results: PdpResult[]) => {
-      const groups = await collectGroups(results);
-      if (groups.length === 0) return;
-      await downloadGroupedZip(groups, `${sku}.zip`);
-    },
-    [collectGroups]
+    (sku: string, results: PdpResult[]) => runDownload(sku, results, `${sku}.zip`),
+    [runDownload]
   );
 
   // ── Viewer and contextual retry ───────────────────────────────────────────
@@ -856,7 +900,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
           </Button>
         )}
         {doneCount > 0 && !isPdpGenerating && (
-          <Button onClick={handleDownloadAll} variant="outline" size="lg">
+          <Button onClick={() => void handleDownloadAll()} variant="outline" size="lg">
             <Package className="mr-1.5 h-4 w-4" />
             Download all as ZIP
           </Button>
@@ -870,6 +914,18 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
         <p className="flex items-center gap-1.5 text-xs text-primary">
           <Loader2 className="h-3 w-3 animate-spin" />
           {castNote}
+        </p>
+      )}
+
+      {downloadNote && (
+        <p
+          className={
+            downloadNote.tone === "error"
+              ? "rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+              : "rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+          }
+        >
+          {downloadNote.text}
         </p>
       )}
 

@@ -1,5 +1,7 @@
 "use client";
 
+import JSZip from "jszip";
+
 /**
  * Generic grouped ZIP export.
  *
@@ -12,6 +14,15 @@
  * Entries carry base64 data URLs and are written with jszip's `base64` option, which
  * avoids a fetch and blob round trip per image. That matters here: a run can hold several
  * hundred images and the round trip version stalls the tab noticeably.
+ *
+ * jszip is imported STATICALLY, deliberately. The rest of the app reaches for
+ * `await import("jszip")`, which fetches a separate chunk at the moment the operator
+ * clicks. `next build` re-hashes every chunk, so a tab that was open across a redeploy
+ * asks for a filename the server no longer has and the click dies with a ChunkLoadError
+ * and no visible symptom. A static import puts jszip in the chunk graph the page already
+ * loaded, so a page that rendered at all can always finish a download. The cost is around
+ * 30KB gzipped on one internal route, which is the right trade for the button that
+ * actually delivers the work.
  */
 
 export interface ZipEntry {
@@ -69,7 +80,6 @@ export async function downloadGroupedZip(
   groups: ZipGroup[],
   zipName: string
 ): Promise<{ written: number; skipped: number }> {
-  const JSZip = (await import("jszip")).default;
   const zip = new JSZip();
   let written = 0;
   let skipped = 0;

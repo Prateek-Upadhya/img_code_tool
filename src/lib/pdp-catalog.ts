@@ -279,31 +279,73 @@ const SOLE_CONSTRUCTION: PdpShotOption = {
   promptSnippet: `COMPOSITION: a technical exploded diagram of EXACTLY ONE shoe, separated into distinct horizontal layers hovering in vertical alignment over the midfoot centre, with exactly one short callout pinned to each layer. The footbed layer is a SMOOTH, CONTINUOUS surface with NO slots, grooves, cutouts or recesses of any kind.`,
 };
 
-const SIZE_CHART: PdpShotOption = {
-  id: "pdp-size-chart",
-  heading: "infographic",
-  label: "Size chart",
-  icon: "📏",
-  description: "The size table, rendered minimalistic and themed rather than dense and utilitarian.",
-  requiresModel: false,
-  consumesCopy: false,
-  bearsText: true,
-  promptSnippet: `COMPOSITION: a size guide built around EXACTLY ONE shoe and one size table. The brief here is restraint: this must read as a designed, minimalistic, textural piece rather than as a dense utility table.
+/**
+ * The two size charts are one brief with two table bodies.
+ *
+ * Written as a factory rather than as two hand-maintained strings because everything
+ * except the numbers and the audience is identical, and a later edit to the restraint
+ * rules or the measurement indicator has to reach both. Two copies would silently drift.
+ */
+function buildSizeChartSnippet(audience: "MEN'S" | "WOMEN'S", rows: string[]): string {
+  return `COMPOSITION: a size guide built around EXACTLY ONE shoe and one size table. The brief here is restraint: this must read as a designed, minimalistic, textural piece rather than as a dense utility table.
 
 THE TABLE (reproduce these values exactly, verbatim, with no additions, omissions or alterations):
 Header row: "UK"  "US"  "EU"  "CM"
-Row 1: "6"  "7"  "40"  "26.4"
-Row 2: "7"  "8"  "41"  "27.2"
-Row 3: "8"  "9"  "42"  "28.0"
-Row 4: "9"  "10"  "43"  "28.8"
-Row 5: "10"  "11"  "44"  "29.5"
-Row 6: "11"  "12"  "45"  "30.4"
+${rows.join("\n")}
 
 - TABLE RENDERING: treat the table as ONE structured block, not as many separate labels. Set it large, clean and generously spaced, in a single modern sans serif, with a clearly differentiated header row. Every figure must be crisp and unambiguous. Numbers are the one thing in this image that MUST be perfectly legible, so give them room.
 - THE SHOE: EXACTLY ONE shoe, presented beside or beneath the table, angled to show its length clearly. Include ONE slim measurement indicator running along the shoe's length from heel to toe, a thin line with end markers, carrying the single short label "HEEL TO TOE".
-- RESTRAINT: apart from the table and that one measurement label, use AT MOST two further text elements in the whole image. One short title, and optionally one short fit note of at most ten words. Do not add a how to measure paragraph, do not add fit advice columns, do not add a footnote.
+- THE TITLE: the one short title MUST begin with the word ${audience}, in the expected form "${audience} SIZE GUIDE". This is the only thing separating this image from its counterpart chart, so it must be present and unambiguous. NEVER render the other audience's word anywhere in the image.
+- RESTRAINT: apart from the table and that one measurement label, use AT MOST two further text elements in the whole image. The title, and optionally one short fit note of at most ten words. Do not add a how to measure paragraph, do not add fit advice columns, do not add a footnote.
 - LET THE IMAGE CARRY IT: the measurement indicator on the shoe should communicate how to measure without a paragraph explaining it.
-- TEXTURE AND THEME: the surface, ground and palette should feel material and considered, in keeping with the artistic style, rather than flat and clinical.`,
+- TEXTURE AND THEME: the surface, ground and palette should feel material and considered, in keeping with the artistic style, rather than flat and clinical.`;
+}
+
+const SIZE_CHART: PdpShotOption = {
+  // Id deliberately unchanged when this was relabelled for men. Selections and per-option
+  // column assignments are keyed by id, so renaming it would drop saved picks silently.
+  id: "pdp-size-chart",
+  heading: "infographic",
+  label: "Size chart (men)",
+  icon: "📏",
+  description:
+    "The men's size table, rendered minimalistic and themed rather than dense and utilitarian.",
+  requiresModel: false,
+  consumesCopy: false,
+  bearsText: true,
+  promptSnippet: buildSizeChartSnippet("MEN'S", [
+    `Row 1: "6"  "7"  "40"  "26.4"`,
+    `Row 2: "7"  "8"  "41"  "27.2"`,
+    `Row 3: "8"  "9"  "42"  "28.0"`,
+    `Row 4: "9"  "10"  "43"  "28.8"`,
+    `Row 5: "10"  "11"  "44"  "29.5"`,
+    `Row 6: "11"  "12"  "45"  "30.4"`,
+  ]),
+};
+
+const SIZE_CHART_WOMEN: PdpShotOption = {
+  id: "pdp-size-chart-women",
+  heading: "infographic",
+  label: "Size chart (women)",
+  icon: "📏",
+  description:
+    "The women's size table, same designed treatment as the men's chart with the women's numbers.",
+  requiresModel: false,
+  consumesCopy: false,
+  bearsText: true,
+  // Values from the supplied women's chart. Two deliberate departures from that artwork:
+  // its final CM cell reads "27", set here as "27.0" so the column holds one decimal
+  // throughout and reads as a table rather than a ragged list; and its header reads
+  // "UK/IND" where the men's chart reads "UK", kept as "UK" so the two charts are
+  // identical apart from their numbers.
+  promptSnippet: buildSizeChartSnippet("WOMEN'S", [
+    `Row 1: "3"  "4"  "36"  "23.5"`,
+    `Row 2: "4"  "5"  "37"  "24.2"`,
+    `Row 3: "5"  "6"  "38"  "24.9"`,
+    `Row 4: "6"  "7"  "39"  "25.6"`,
+    `Row 5: "7"  "8"  "40"  "26.3"`,
+    `Row 6: "8"  "9"  "41"  "27.0"`,
+  ]),
 };
 
 const COMPARISON: PdpShotOption = {
@@ -357,6 +399,7 @@ export const PDP_CATALOG: PdpShotOption[] = [
   FEATURE_CALLOUTS,
   SOLE_CONSTRUCTION,
   SIZE_CHART,
+  SIZE_CHART_WOMEN,
   COMPARISON,
 ];
 
