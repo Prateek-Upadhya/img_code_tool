@@ -11,8 +11,11 @@ import type { FootwearSide, OverlayPosition, PdpLogos, PdpShotOption } from "./t
  *   capitalised negatives for LOCK and SUPPRESSION constraints.
  * - Reference images must be labelled with their role, or the model interprets subjects
  *   inconsistently across a multi image request.
- * - Three to five distinct text elements per image is the reliable ceiling. Beyond that,
- *   duplication and clipping appear before misspelling does.
+ * - Layout degrades before spelling does: past roughly five distinct text elements,
+ *   duplication and edge clipping start appearing. The rules below allow up to seven
+ *   because a rich feature board genuinely needs them, so they pair that headroom with
+ *   the mitigations that hold it together, larger type and wider spacing rather than more
+ *   of everything squeezed smaller.
  * - Naming a camera body, lens and aperture does far more for photoreal skin than the
  *   word "photorealistic", which appears to be an actively discounted buzzword.
  * - The model substitutes canonical well known versions of marks in place of supplied
@@ -84,9 +87,13 @@ NEVER produce extra or missing fingers, fused digits or malformed hands.`;
 /**
  * On-image text rules.
  *
- * The element ceiling is the important constraint. This model degrades on layout before
- * it degrades on spelling, so capping element count prevents the duplication and edge
- * clipping that are the real observed failures in dense infographics.
+ * The element ceiling is the constraint that matters, because this model degrades on
+ * layout before it degrades on spelling: dense boards produce duplicated and edge clipped
+ * text well before they produce a misspelling.
+ *
+ * The ceiling is seven rather than five, which is past the comfortable limit, so it is
+ * stated as a budget to be earned rather than a target to fill, and the prompt says
+ * plainly that the risk rises with the count and how to counter it.
  */
 export const PDP_TEXT_RULES = `═══ ON IMAGE TEXT ═══
 - Every piece of on-image copy MUST be wrapped in double quotes in the composition you author, so it renders verbatim. Spell every word correctly.
