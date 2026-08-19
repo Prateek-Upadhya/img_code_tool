@@ -21,7 +21,85 @@ export const maxDuration = 300;
  * as prototype getters, which are dropped by JSON serialization. We materialize
  * them onto the payload so the client shim sees the same shape the SDK gave.
  */
+/** What we can say about a request without ever logging its base64 bodies. */
+interface RequestShape {
+  model: string;
+  parts: number;
+  images: number;
+  /** Approximate outbound size in MB, counting base64 payloads. */
+  approxMb: number;
+  /** Byte length of the largest single inline part, base64. */
+  largestPartMb: number;
+  mimeTypes: string[];
+  /** Inline parts carrying no data at all — a documented cause of INVALID_ARGUMENT. */
+  emptyParts: number;
+}
+
+type InlinePart = { inlineData?: { mimeType?: string; data?: string }; text?: string };
+
+/**
+ * Summarise the outbound request for the error log.
+ *
+ * Never throws and never returns the payload itself: this runs on a failure path, where a
+ * second exception would bury the original, and where dumping base64 would be useless
+ * noise.
+ */
+function summariseRequest(params: unknown): RequestShape | null {
+  try {
+    const p = params as { model?: string; contents?: unknown };
+    const raw = Array.isArray(p?.contents) ? (p.contents as unknown[]) : [];
+    // `contents` is either a flat Part[] or [{ role, parts }]; flatten both.
+    const parts: InlinePart[] = raw.flatMap((entry) => {
+      const e = entry as { parts?: unknown };
+      return Array.isArray(e?.parts) ? (e.parts as InlinePart[]) : [entry as InlinePart];
+    });
+
+    let bytes = 0;
+    let largest = 0;
+    let images = 0;
+    let emptyParts = 0;
+    const mimeTypes = new Set<string>();
+
+    for (const part of parts) {
+      if (part?.text) bytes += part.text.length;
+      const inline = part?.inlineData;
+      if (!inline) continue;
+      images += 1;
+      mimeTypes.add(inline.mimeType || "(missing)");
+      const len = inline.data?.length ?? 0;
+      if (len === 0) emptyParts += 1;
+      bytes += len;
+      if (len > largest) largest = len;
+    }
+
+    const mb = (n: number) => Math.round((n / 1_048_576) * 100) / 100;
+    return {
+      model: p?.model ?? "(unknown)",
+      parts: parts.length,
+      images,
+      approxMb: mb(bytes),
+      largestPartMb: mb(largest),
+      mimeTypes: [...mimeTypes],
+      emptyParts,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function describeFailedRequest(shape: RequestShape | null, durationMs: number): string {
+  if (!shape) return `(request shape unavailable, ${durationMs}ms)`;
+  return (
+    `model=${shape.model} parts=${shape.parts} images=${shape.images} ` +
+    `approx=${shape.approxMb}MB largestPart=${shape.largestPartMb}MB ` +
+    `mimes=[${shape.mimeTypes.join(", ")}] emptyParts=${shape.emptyParts} ` +
+    `duration=${durationMs}ms`
+  );
+}
+
 export async function POST(request: NextRequest) {
+  const startedAt = Date.now();
+  let shape: RequestShape | null = null;
   // Gate BEFORE parsing the body. `request.json()` on an image request
   // materializes a multi-MB base64 payload, and a queued request would otherwise
   // hold that in the heap for its entire wait — making queue depth cost as much
@@ -52,6 +130,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    shape = summariseRequest(params);
+
     const backend: GoogleBackend =
       request.headers.get("x-google-backend") === "gemini" ? "gemini" : "vertex";
 
@@ -76,7 +156,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(payload);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error("Vertex generateContent error:", message);
+    // Describe the request that failed, not just the failure. A bare INVALID_ARGUMENT
+    // carries no field names, so without this the only way to tell an oversized payload
+    // from a malformed part from a provider-side refusal is to guess. Latency is included
+    // because a preflight rejection returns far faster than a real generation, which is
+    // the cheapest signal for telling "our request was bad" from "the service refused a
+    // good one". Base64 bodies are measured, never logged.
+    console.error("Vertex generateContent error:", message, describeFailedRequest(shape, Date.now() - startedAt));
     return NextResponse.json({ error: message }, { status: 500 });
   } finally {
     if (isGeminiImage) releaseGeminiImageSlot();

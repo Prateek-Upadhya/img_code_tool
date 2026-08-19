@@ -112,12 +112,14 @@ const MODEL_DYNAMIC: PdpShotOption = {
   requiresModel: true,
   consumesCopy: false,
   bearsText: false,
-  promptSnippet: `COMPOSITION: a plain lifestyle photograph of EXACTLY ONE human model wearing this footwear, placed contextually within the setting. This is a straight PDP photograph, not an information graphic.
-- FRAMING: the frame still shows the model head to feet, complete and uncropped. The full body must survive the angle.
-- THE FOOTWEAR IS THE SUBJECT AND MUST BE THE CLOSEST THING TO THE VIEWER. Achieve that with the CAMERA, never by cropping the model.
-- BOLD CAMERA ANGLE, commit to one and make it unmistakable: drop the camera to near ground level looking up along the body so the feet sit nearest the lens and read largest in the frame; or take a steep high angle looking straight down the length of the body onto the shoes; or use a raking low diagonal from the front quarter with the leading foot pushed toward the camera. NEVER settle for a flat, straight on, eye level snapshot.
-- PERSPECTIVE: shoot wider and closer to the feet so perspective genuinely enlarges them relative to the head. The exaggeration should be visible and deliberate, while the body still reads as a real person rather than a distortion.
-- FOCUS: set the plane of sharpness ON THE FOOTWEAR. Let the torso and head fall gently softer with distance so the eye lands on the shoes first and stays there.
+  promptSnippet: `COMPOSITION: a plain lifestyle photograph of EXACTLY ONE human model wearing this footwear, placed contextually within the setting, caught in a natural candid moment. This is a straight PDP photograph, not an information graphic.
+- FRAMING: the model is shown head to feet, complete and uncropped, with the head clearly visible.
+- THE FOOTWEAR IS THE SUBJECT AND SITS NEAREST THE VIEWER.
+- HOW TO ACHIEVE THAT, and this is the important part: bring the feet close through the MODEL'S POSE, not through lens exaggeration. Put the model in a position that naturally carries the feet toward the camera while the body folds away behind them. Choose one and commit: perched on a low wall, railing, step or ledge with the knees bent and the legs folded forward; seated on the ground or an edge with one leg extended toward the lens; crouching; caught mid step-over or mid stride with the leading foot advanced. The shoes end up largest because they are genuinely closest, not because the image has been distorted.
+- CAMERA: low and close, at or slightly below the height of the feet, angled a little upward along the body. Use a normal to moderately wide focal length. Keep the camera close to the shoes rather than reaching for an extreme wide lens.
+- BOTH SHOES: where the pose allows, show both. The strongest version presents one shoe's SOLE and tread toward the camera while the other shows its upper and strap, so a single frame carries both faces of the product.
+- FOCUS: the plane of sharpness sits ON THE FOOTWEAR. Let the torso and head fall gently softer with distance so the eye lands on the shoes first.
+- ANATOMY IS NOT NEGOTIABLE. The person MUST remain correctly proportioned. NEVER elongate or stretch the legs, arms or torso. NEVER render the feet or shoes oversized relative to a real human body. NEVER apply fisheye, barrel or any lens warping. NEVER distort the face, hands or limbs because they are near the lens. If a pose cannot deliver foreground feet without distorting the body, choose a different pose rather than distorting the body.
 ${MODEL_SHARED_RULES}`,
 };
 

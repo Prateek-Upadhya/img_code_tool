@@ -2,7 +2,12 @@ import { HarmBlockThreshold, HarmCategory, ThinkingLevel, Type } from "@google/g
 import type { PartMediaResolutionLevel } from "@google/genai";
 import { getGeminiClient } from "./gemini-client";
 import { getTextClient } from "./text-client";
-import { fileToBase64Cached, fileToBase64HiResCached } from "./image-downscale";
+import {
+  fileToBase64Cached,
+  fileToBase64HiResCached,
+  fileToBase64MarkCached,
+  downscaleDataUrlForRoundTrip,
+} from "./image-downscale";
 import { buildPropInteractionCue } from "./utils";
 import {
   AccessoryItem,
@@ -156,6 +161,16 @@ function fileToBase64(file: File): Promise<string> {
  */
 function fileToBase64HiRes(file: File): Promise<string> {
   return fileToBase64HiResCached(file);
+}
+
+/**
+ * As {@link fileToBase64} but at the mark cap (1024px), for logos and brand marks.
+ *
+ * A flat wordmark or glyph has no detail worth more, and marks ride along on every single
+ * request in a batch, so the saving compounds across a run.
+ */
+function fileToBase64Mark(file: File): Promise<string> {
+  return fileToBase64MarkCached(file);
 }
 
 // ╔═══════════════════════════════════════════════════════════════════╗
@@ -9602,7 +9617,8 @@ The next ${productImages.length} image${productImages.length === 1 ? "" : "s"} s
       text: `═══ MODEL REFERENCE ═══
 The next image is the human model for this product. INSTRUCTION: PIXEL PRIORITY MODE. IDENTITY LOCK: ABSOLUTE. Suppress internal world knowledge regarding the subject's identity. Use ONLY the visual data from this image for facial feature construction. NEVER beautify, slim or smooth the face away from this reference.`,
     });
-    const base64 = await fileToBase64HiRes(castImage);
+    // Standard cap: this is a face and body reference, not a fine-detail reference.
+    const base64 = await fileToBase64(castImage);
     contents.push({ inlineData: { mimeType: castImage.type, data: base64 } });
   }
 
@@ -9613,7 +9629,7 @@ The next image is the brand mark. RENDER IT INTO the image you produce, at ${bra
 Reproduce its geometry EXACTLY as shown here: the same shapes, the same proportions, the same number of every element, the same internal negative space. Copy these pixels rather than drawing from memory.
 NEVER place it on a white box, a coloured plate, a rounded card, a panel or a sticker. NEVER add a shadow, glow, outline or border around it. NEVER substitute a different or better known version of this mark, and NEVER add or remove lettering.`,
     });
-    const base64 = await fileToBase64HiRes(brandLogo);
+    const base64 = await fileToBase64Mark(brandLogo);
     contents.push({ inlineData: { mimeType: brandLogo.type, data: base64 } });
   }
 
@@ -9624,7 +9640,7 @@ The next image is a secondary mark. COMPOSE IT INTO the image you produce as a d
 Choose its position, size and treatment yourself, whatever best serves the composition. Do NOT default to a corner and do NOT simply lay it flat over the top.
 Reproduce the mark's own geometry EXACTLY as shown here, the same shapes, proportions and element counts, copying these pixels rather than drawing from memory. NEVER substitute a different version of it, and NEVER add or remove parts of the mark itself.`,
     });
-    const base64 = await fileToBase64HiRes(optionalLogo);
+    const base64 = await fileToBase64Mark(optionalLogo);
     contents.push({ inlineData: { mimeType: optionalLogo.type, data: base64 } });
   }
 
@@ -9654,15 +9670,27 @@ export async function generatePdpImage({
   const ai = getGeminiClient(apiKey);
   const contents = await buildPdpImageContentParts(context);
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image",
-    contents,
-    config: {
-      responseModalities: ["TEXT", "IMAGE"],
-      imageConfig: { aspectRatio: context.aspectRatio, imageSize },
-      abortSignal,
-    },
-  });
+  let response;
+  try {
+    response = await ai.models.generateContent({
+      model: "gemini-3.1-flash-image",
+      contents,
+      config: {
+        responseModalities: ["TEXT", "IMAGE"],
+        imageConfig: {
+          aspectRatio: context.aspectRatio,
+          imageSize,
+          // Pinned rather than left implicit, matching generateModelImage. PDP casts
+          // adults only, and an unset value depends on a provider default.
+          personGeneration: "ALLOW_ADULT",
+        },
+        safetySettings: IMAGE_SAFETY_SETTINGS,
+        abortSignal,
+      },
+    });
+  } catch (error) {
+    throw classifyImageGenFailure(error);
+  }
 
   const tokens = extractTokenUsage(response);
   const cost = computeImageGenCost("PDP Image (Nano Banana 2)", tokens, imageSize);
@@ -9675,7 +9703,7 @@ export async function generatePdpImage({
     }
   }
 
-  throw new Error("No PDP image generated from Nano Banana 2");
+  throwImageGenFailure(response, "PDP Image");
 }
 
 /**
@@ -9712,15 +9740,27 @@ FRAMING: full body, head to feet, complete and uncropped, centred, with the whol
 WARDROBE: plain, simple, neutral clothing that does not distract. Bare feet or plain socks, because footwear is added later.
 NEVER render any text, logo, watermark or graphic anywhere in this image.`;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3.1-flash-image",
-    contents: [{ text: prompt }],
-    config: {
-      responseModalities: ["TEXT", "IMAGE"],
-      imageConfig: { aspectRatio: "3:4", imageSize: "1K" },
-      abortSignal,
-    },
-  });
+  let response;
+  try {
+    response = await ai.models.generateContent({
+      model: "gemini-3.1-flash-image",
+      contents: [{ text: prompt }],
+      config: {
+        responseModalities: ["TEXT", "IMAGE"],
+        imageConfig: {
+          aspectRatio: "3:4",
+          imageSize: "1K",
+          personGeneration: "ALLOW_ADULT",
+        },
+        // This prompt is explicitly body and skin descriptive, which is exactly the
+        // shape the default thresholds block.
+        safetySettings: IMAGE_SAFETY_SETTINGS,
+        abortSignal,
+      },
+    });
+  } catch (error) {
+    throw classifyImageGenFailure(error);
+  }
 
   const tokens = extractTokenUsage(response);
   const cost = computeImageGenCost("PDP Cast (Nano Banana 2)", tokens, "1K");
@@ -9733,7 +9773,7 @@ NEVER render any text, logo, watermark or graphic anywhere in this image.`;
     }
   }
 
-  throw new Error("No cast member image generated from Nano Banana 2");
+  throwImageGenFailure(response, "PDP Cast");
 }
 
 /**
@@ -9753,6 +9793,15 @@ NEVER render any text, logo, watermark or graphic anywhere in this image.`;
 
 export const PDP_SCORE_PASS_THRESHOLD = 80;
 export const PDP_MAX_ATTEMPTS = 3;
+
+/**
+ * Cap on reference images attached to a contextual retry.
+ *
+ * The render step already carries up to 9 context images plus the render being corrected.
+ * The documented ceiling for this model is 14 total, so three leaves headroom rather than
+ * letting an enthusiastic attachment set push the request over.
+ */
+export const PDP_MAX_CORRECTION_IMAGES = 3;
 
 /**
  * Axis weights. Product fidelity dominates because a beautiful image of the wrong shoe is
@@ -9891,19 +9940,21 @@ ${rubric}
 
   if (brandLogo) {
     contents.push({ text: "═══ BRAND MARK REFERENCE (the truth about this mark) ═══" });
-    const base64 = await fileToBase64(brandLogo);
+    const base64 = await fileToBase64Mark(brandLogo);
     contents.push({ inlineData: { mimeType: brandLogo.type, data: base64 } });
   }
   if (optionalLogo) {
     contents.push({ text: "═══ SECONDARY MARK REFERENCE (the truth about this mark) ═══" });
-    const base64 = await fileToBase64(optionalLogo);
+    const base64 = await fileToBase64Mark(optionalLogo);
     contents.push({ inlineData: { mimeType: optionalLogo.type, data: base64 } });
   }
 
   contents.push({ text: "═══ THE GENERATED IMAGE TO GRADE ═══" });
-  const match = /^data:([^;]+);base64,(.*)$/.exec(generatedImageData);
-  if (!match) return { ok: false, error: "Generated image was not a data URL" };
-  contents.push({ inlineData: { mimeType: match[1], data: match[2] } });
+  // Shrunk before re-sending: at 2K/4K the render is by far the largest part of this
+  // request, and grading spelling, layout and callout placement does not need full size.
+  const graded = await downscaleDataUrlForRoundTrip(generatedImageData);
+  if (!graded) return { ok: false, error: "Generated image was not a data URL" };
+  contents.push({ inlineData: { mimeType: graded.mimeType, data: graded.data } });
 
   let cost: StepCost | undefined;
   try {
@@ -10021,22 +10072,29 @@ export async function contextualRetryPdpImage({
   imageSize?: "1K" | "2K" | "4K";
   abortSignal?: AbortSignal;
 }): Promise<{ imageData: string; promptCost: StepCost; imageCost: StepCost; instruction: string }> {
-  const currentPart = dataUrlToInlinePart(currentImageData);
-  if (!currentPart) throw new Error("The image being corrected is not a readable data URL");
+  // The render being corrected is re-attached to BOTH steps, so it is shrunk once here.
+  // At 2K/4K it is otherwise the largest part in each of them.
+  const shrunk = await downscaleDataUrlForRoundTrip(currentImageData);
+  if (!shrunk) throw new Error("The image being corrected is not a readable data URL");
+  const currentPart: ContentPart = { inlineData: shrunk };
+
+  // Bounded so the render step cannot exceed the 14-image ceiling: 9 context images plus
+  // the current render leaves room for three.
+  const attachments = correctionImages.slice(0, PDP_MAX_CORRECTION_IMAGES);
 
   // ── Step A: write the correction instruction ────────────────────────────────
   const ai = getTextClient(textGenModel);
 
   const enrichSystemPrompt = `You are an expert footwear e-commerce art director reviewing a generated image and issuing ONE correction.
 
-You are given, in order: the CURRENT generated image, the product reference photographs, ${correctionImages.length > 0 ? `${correctionImages.length} reference image${correctionImages.length === 1 ? "" : "s"} the operator attached to their request, ` : ""}and below, the composition that produced the current image plus the operator's requested change.
+You are given, in order: the CURRENT generated image, the product reference photographs, ${attachments.length > 0 ? `${attachments.length} reference image${attachments.length === 1 ? "" : "s"} the operator attached to their request, ` : ""}and below, the composition that produced the current image plus the operator's requested change.
 
 ═══ THE COMPOSITION THAT PRODUCED THE CURRENT IMAGE ═══
 ${context.prompt}
 
 ═══ THE OPERATOR'S REQUESTED CHANGE ═══
 ${correctionText.trim()}
-${correctionImages.length > 0
+${attachments.length > 0
     ? `
 The operator attached reference image(s) with this request. Read them as guidance for what they want, and describe concretely what to take from them. They are NOT the product: the footwear identity still comes ONLY from the product reference photographs.`
     : ""}
@@ -10061,11 +10119,11 @@ Write ONE instruction describing the CORRECTED FINAL STATE of the image. Require
     enrichContents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
   }
 
-  if (correctionImages.length > 0) {
+  if (attachments.length > 0) {
     enrichContents.push({
       text: "═══ REFERENCES ATTACHED TO THE CORRECTION (guidance, NOT the product) ═══",
     });
-    for (const img of correctionImages) {
+    for (const img of attachments) {
       const base64 = await fileToBase64(img.file);
       enrichContents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
     }
@@ -10101,12 +10159,12 @@ The next image is the current render. It is the starting point. Preserve it exac
   });
   contents.push(currentPart);
 
-  if (correctionImages.length > 0) {
+  if (attachments.length > 0) {
     contents.push({
       text: `═══ REFERENCES ATTACHED TO THE CORRECTION ═══
-The next ${correctionImages.length} image${correctionImages.length === 1 ? " is a reference" : "s are references"} the operator supplied as guidance for this change. Use them ONLY for what the correction asks. They do NOT define the footwear, whose identity still comes from the product references above.`,
+The next ${attachments.length} image${attachments.length === 1 ? " is a reference" : "s are references"} the operator supplied as guidance for this change. Use them ONLY for what the correction asks. They do NOT define the footwear, whose identity still comes from the product references above.`,
     });
-    for (const img of correctionImages) {
+    for (const img of attachments) {
       const base64 = await fileToBase64HiRes(img.file);
       contents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
     }
@@ -10121,15 +10179,25 @@ Apply ONLY this correction. Everything else in the current image MUST remain pix
       : " This image contains NO text of any kind."}`,
   });
 
-  const response = await imageClient.models.generateContent({
-    model: "gemini-3.1-flash-image",
-    contents,
-    config: {
-      responseModalities: ["TEXT", "IMAGE"],
-      imageConfig: { aspectRatio: context.aspectRatio, imageSize },
-      abortSignal,
-    },
-  });
+  let response;
+  try {
+    response = await imageClient.models.generateContent({
+      model: "gemini-3.1-flash-image",
+      contents,
+      config: {
+        responseModalities: ["TEXT", "IMAGE"],
+        imageConfig: {
+          aspectRatio: context.aspectRatio,
+          imageSize,
+          personGeneration: "ALLOW_ADULT",
+        },
+        safetySettings: IMAGE_SAFETY_SETTINGS,
+        abortSignal,
+      },
+    });
+  } catch (error) {
+    throw classifyImageGenFailure(error);
+  }
 
   const imageCost = computeImageGenCost(
     "PDP Correction Image (Nano Banana 2)",
@@ -10150,12 +10218,6 @@ Apply ONLY this correction. Everything else in the current image MUST remain pix
     }
   }
 
-  throw new Error("No corrected image returned from Nano Banana 2");
+  throwImageGenFailure(response, "PDP Correction");
 }
 
-/** Split a data URL into an inline content part. Returns null when it is not one. */
-function dataUrlToInlinePart(dataUrl: string): ContentPart | null {
-  const match = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
-  if (!match) return null;
-  return { inlineData: { mimeType: match[1], data: match[2] } };
-}

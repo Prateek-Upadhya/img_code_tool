@@ -41,6 +41,7 @@ import { resolvePdpCopy } from "@/lib/pdp-sheet";
 import { savePdpImage, readPdpImage, clearPdpRun } from "@/lib/pdp-result-store";
 import { downloadGroupedZip, downloadImage } from "@/lib/result-zip";
 import { runPool } from "@/lib/two-lane-runner";
+import { withPdpRetry, PdpConcurrencyGovernor } from "@/lib/pdp-retry";
 import { dataUrlToFile } from "@/lib/model-creation-client";
 import type { VTONStore } from "@/store/vton-store";
 import type { PdpProduct, PdpResult, PdpShotOption, StepCost } from "@/lib/types";
@@ -132,6 +133,23 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
   const [viewerImage, setViewerImage] = useState<string | null>(null);
   /** Result ids with a correction in flight. */
   const [correcting, setCorrecting] = useState<string[]>([]);
+  /** Set when the governor steps the worker count down, so the run says why it slowed. */
+  const [backedOffTo, setBackedOffTo] = useState<number | null>(null);
+  /**
+   * Governor for the active run. Held in a ref because it is mutated from inside worker
+   * closures and must not re-render on every reported failure.
+   */
+  const governorRef = useRef<PdpConcurrencyGovernor>(new PdpConcurrencyGovernor(PDP_CONCURRENCY));
+
+  /** Record that a result needed more than one attempt, so a shaky run is visible. */
+  const noteRetry = useCallback(
+    (id: string, attempt: number) => {
+      setPdpResults((prev) =>
+        prev.map((r) => (r.id === id ? { ...r, callRetries: Math.max(r.callRetries ?? 0, attempt) } : r))
+      );
+    },
+    [setPdpResults]
+  );
 
   const allOptions = useMemo(() => [...PDP_CATALOG, ...pdpCustomOptions], [pdpCustomOptions]);
 
@@ -267,6 +285,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
       runId: string,
       signal: AbortSignal
     ) => {
+      const governor = governorRef.current;
       const costs: StepCost[] = [];
       let best: { imageData: string; prompt: string; score: number; summary: string; attempt: number } | null =
         null;
@@ -347,7 +366,10 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
             attempt,
           });
 
-          const { enrichedPrompt, cost: promptCost } = await generatePdpPrompt({
+          // Each call retries transport failures and bare INVALID_ARGUMENTs on its own,
+          // independently of the judge-driven re-roll this loop performs.
+          const { value: promptRes } = await withPdpRetry(
+            () => generatePdpPrompt({
             apiKey,
             textGenModel,
             option,
@@ -363,13 +385,17 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
             castDescription: option.requiresModel ? pdpCastDescription : undefined,
             correctionFeedback: correction,
             abortSignal: signal,
-          });
+            }),
+            { signal, onRetry: (n, err) => { governor.report(err); noteRetry(result.id, n); } }
+          );
+          const { enrichedPrompt, cost: promptCost } = promptRes;
           costs.push(promptCost);
           if (signal.aborted) break;
 
           updateResult(result.id, { status: "generating-image", prompt: enrichedPrompt });
 
-          const { imageData, cost: imageCost } = await generatePdpImage({
+          const { value: imageRes } = await withPdpRetry(
+            () => generatePdpImage({
             apiKey,
             prompt: enrichedPrompt,
             option,
@@ -383,7 +409,10 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
             aspectRatio: pdpAspectRatio,
             imageSize: resolvePdpImageSize(option, pdpImageSize),
             abortSignal: signal,
-          });
+            }),
+            { signal, onRetry: (n, err) => { governor.report(err); noteRetry(result.id, n); } }
+          );
+          const { imageData, cost: imageCost } = imageRes;
           costs.push(imageCost);
           if (signal.aborted) break;
 
@@ -456,6 +485,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
     [
       apiKey,
       textGenModel,
+      noteRetry,
       pdpSheetSession,
       pdpOptionColumns,
       pdpOptionMarkCaptions,
@@ -474,6 +504,10 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
     const controller = new AbortController();
     abortRef.current = controller;
     setIsPdpGenerating(true);
+
+    setBackedOffTo(null);
+    const governor = new PdpConcurrencyGovernor(PDP_CONCURRENCY, (next) => setBackedOffTo(next));
+    governorRef.current = governor;
 
     const runId = uid("pdp-run");
     if (pdpRunId) await clearPdpRun(pdpRunId);
@@ -497,7 +531,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
       // always working until the queue drains.
       await runPool(
         initial.map((result, i) => ({ result, ...plan[i] })),
-        PDP_CONCURRENCY,
+        governor.current,
         ({ result, product, option }) =>
           runOne(result, product, option, castByProduct.get(product.id), runId, controller.signal),
         controller.signal
@@ -710,6 +744,22 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
 
   const doneCount = pdpResults.filter((r) => r.status === "completed").length;
   const failedCount = pdpResults.filter((r) => r.status === "error").length;
+  const retriedCount = pdpResults.filter((r) => (r.callRetries ?? 0) > 0).length;
+
+  /**
+   * Failures grouped by message. Twenty-five cards carrying the same error is one cause,
+   * not twenty-five, and reading it as one line is the difference between diagnosing it
+   * and opening every card.
+   */
+  const failureGroups = useMemo(() => {
+    const groups = new Map<string, number>();
+    for (const r of pdpResults) {
+      if (r.status !== "error") continue;
+      const key = (r.error ?? "Unknown error").slice(0, 160);
+      groups.set(key, (groups.get(key) ?? 0) + 1);
+    }
+    return [...groups.entries()].sort((a, b) => b[1] - a[1]);
+  }, [pdpResults]);
 
   return (
     <div className="space-y-6 animate-fade-in-up">
@@ -799,10 +849,32 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
       )}
 
       {pdpResults.length > 0 && (
-        <p className="text-xs text-muted-foreground">
-          {doneCount} of {pdpResults.length} complete
-          {failedCount > 0 && ` · ${failedCount} failed`}
-        </p>
+        <div className="space-y-1.5">
+          <p className="text-xs text-muted-foreground">
+            {doneCount} of {pdpResults.length} complete
+            {failedCount > 0 && ` · ${failedCount} failed`}
+            {retriedCount > 0 && ` · ${retriedCount} needed a retry`}
+          </p>
+
+          {backedOffTo !== null && (
+            <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-500">
+              Repeated connection failures, so this run stepped down to {backedOffTo} at a time. It
+              will finish, just more slowly. If this keeps happening, the deployment is running out
+              of memory under load rather than anything being wrong with the request.
+            </p>
+          )}
+
+          {/* One line per distinct cause, rather than one card per symptom. */}
+          {failureGroups.length > 0 && (
+            <div className="space-y-1 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
+              {failureGroups.map(([message, count]) => (
+                <p key={message} className="text-xs text-destructive">
+                  <span className="font-medium tabular-nums">{count}×</span> {message}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Results, grouped by SKU, which is also how they are delivered */}

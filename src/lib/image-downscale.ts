@@ -49,8 +49,28 @@ const MAX_EDGE = 2048;
 const MAX_EDGE_HIRES = 3072;
 /** JPEG/WebP re-encode quality (ignored by PNG, which stays lossless). */
 const QUALITY = 0.9;
-/** Below this byte size an image is already small enough — send it untouched. */
-const SKIP_BELOW_BYTES = 1_000_000;
+/**
+ * Longest-edge ceiling for logos and brand marks. A flat wordmark or glyph carries no
+ * detail worth 2048px, let alone 3072, and marks are attached to every single request.
+ */
+const MAX_EDGE_MARK = 1024;
+/**
+ * Longest-edge ceiling for a generated image that is being sent BACK into a later call,
+ * as the judge and the contextual retry both do. Grading spelling, layout and callout
+ * placement does not need the full render, and at 2K/4K the returned image is by far the
+ * largest single part in those requests.
+ */
+const MAX_EDGE_ROUNDTRIP = 1536;
+/**
+ * Below this byte size an image is sent untouched.
+ *
+ * This was 1MB, which turned out to skip almost everything real: ordinary e-commerce
+ * product photography lands at 600 to 950KB, so a six-reference request shipped six images
+ * at their full original pixel dimensions. The guard was written to skip *small* images
+ * and was instead skipping *most* images. 256KB is genuinely small: below it, decoding and
+ * re-encoding costs more than it saves.
+ */
+const SKIP_BELOW_BYTES = 256_000;
 /** Mime types we can safely decode + re-encode via canvas. */
 const ENCODABLE = new Set(["image/jpeg", "image/png", "image/webp"]);
 
@@ -166,4 +186,59 @@ export function fileToBase64HiResCached(file: File): Promise<string> {
     pending.catch(() => hiResCache.delete(file));
   }
   return pending;
+}
+
+/**
+ * {@link fileToBase64Cached} at {@link MAX_EDGE_MARK}, for logos and brand marks.
+ *
+ * Its own `WeakMap` for the same reason as the hi-res cache: one `File` may legitimately
+ * be encoded at more than one ceiling within a run.
+ */
+const markCache = new WeakMap<File, Promise<string>>();
+
+export function fileToBase64MarkCached(file: File): Promise<string> {
+  let pending = markCache.get(file);
+  if (!pending) {
+    pending = downscaleImageToBase64(file, MAX_EDGE_MARK);
+    markCache.set(file, pending);
+    pending.catch(() => markCache.delete(file));
+  }
+  return pending;
+}
+
+/** Split a data URL into its mime type and raw base64 payload. */
+export function splitImageDataUrl(dataUrl: string): { mimeType: string; data: string } | null {
+  const match = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
+  if (!match || !match[2]) return null;
+  return { mimeType: match[1], data: match[2] };
+}
+
+/**
+ * Shrink a generated image before sending it back into a later call.
+ *
+ * The judge and the contextual retry both re-attach the finished render, which at 2K or 4K
+ * is the single largest part in those requests and pushes them toward the 20MB inline
+ * ceiling. Grading and correcting do not need full resolution.
+ *
+ * Never throws: on any decode or canvas failure the original data URL's parts are returned
+ * unchanged, because a large request is better than a failed one.
+ */
+export async function downscaleDataUrlForRoundTrip(
+  dataUrl: string,
+  maxEdge: number = MAX_EDGE_ROUNDTRIP,
+): Promise<{ mimeType: string; data: string } | null> {
+  const parts = splitImageDataUrl(dataUrl);
+  if (!parts) return null;
+
+  try {
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    // Below the skip threshold the helper returns the original bytes anyway, so this
+    // costs one decode at most and never inflates a small image.
+    const file = new File([blob], "roundtrip", { type: parts.mimeType });
+    const data = await downscaleImageToBase64(file, maxEdge);
+    return { mimeType: parts.mimeType, data };
+  } catch {
+    return parts;
+  }
 }

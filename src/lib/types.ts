@@ -2023,6 +2023,12 @@ export interface PdpResult {
   score?: number;
   /** 1-based attempt the kept image came from. */
   attempt?: number;
+  /**
+   * Highest call-level retry this result needed. Distinct from `attempt`, which counts
+   * judge-driven re-rolls: this counts a call that failed outright and was retried, so a
+   * run that only survived on retries is visibly different from a clean one.
+   */
+  callRetries?: number;
   /** Judge summary for the kept image, surfaced on the card. */
   scoreSummary?: string;
   error?: string;
