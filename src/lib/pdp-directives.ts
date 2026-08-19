@@ -118,11 +118,21 @@ export const PDP_TEXT_RULES = `═══ ON IMAGE TEXT ═══
  * physically ON the shoe is part of the product and is replicated from the product
  * photographs, not from these files.
  */
+/**
+ * The logo reference files are JPEGs, so the white field around a mark is opaque pixels
+ * rather than transparency. Asked simply to "reproduce this image", the model paints the
+ * white card along with the mark. This clause draws the distinction explicitly.
+ */
+const PDP_MARK_INK_ONLY = `INK ONLY: the reference image shows the mark as dark shapes on a plain white field. That white field is NOT part of the mark. It is only the paper the mark was supplied on. Reproduce ONLY the dark shapes. Whatever the composition already places behind the mark stays visible around and between those shapes.
+NEVER draw the white field, a white box, a white rectangle, a light plate or any lighter patch behind or around the mark.`;
+
 export function buildPdpMarkDirective(opts: {
   brandPlacementLabel?: string;
   /** Roughly how much of the canvas width the brand mark spans, 0 to 1. */
   brandScale?: number;
   optionalMarkPurpose?: string;
+  /** Claim text rendered with the secondary mark, authored per shot option. */
+  optionalMarkCaption?: string;
 }): string {
   const parts: string[] = [];
 
@@ -130,14 +140,20 @@ export function buildPdpMarkDirective(opts: {
     const pct = Math.round((opts.brandScale ?? 0.18) * 100);
     parts.push(`BRAND MARK:
 Render the brand mark shown in the attached brand logo reference at ${opts.brandPlacementLabel} of the frame, spanning roughly ${pct} percent of the canvas width.
-It MUST sit DIRECTLY on the background surface itself, as though printed, screened or laid onto that surface. NEVER place it on a white box, a coloured plate, a rounded card, a panel, a sticker or any container. NEVER add a drop shadow, glow, outline or border around it.
-Give it a clean, uncluttered patch of background to sit on so it stays legible, and let it pick up the scene's own lighting so it belongs to the image.`);
+${PDP_MARK_INK_ONLY}
+COLOUR: render the mark as a SINGLE FLAT COLOUR chosen so it reads clearly against whatever sits behind it at that position. On a light background use near black. On a dark background use white. Use ONLY black or white, never a mid tone, never a colour sampled from the scene, and never a gradient.
+It MUST sit DIRECTLY on the background surface itself, as though printed or screened onto that surface. NEVER place it on a white box, a coloured plate, a rounded card, a panel, a sticker or any container. NEVER add a drop shadow, glow, outline or border around it.`);
   }
 
   if (opts.optionalMarkPurpose) {
     parts.push(`SECONDARY MARK:
-Compose the mark shown in the attached secondary logo reference INTO this image as a designed component. ${opts.optionalMarkPurpose}
-Decide its position, size and treatment yourself, choosing whatever serves the composition best. Do NOT default to a corner. It may become a circular seal or stamp with its claim set in a ring around the mark, a badge worked into the layout, or an element that sits naturally within the scene.
+Compose the mark shown in the attached secondary logo reference INTO this image as a designed component.
+${PDP_MARK_INK_ONLY}
+${opts.optionalMarkCaption?.trim()
+      ? `ACCOMPANYING TEXT: this mark MUST be rendered together with the words "${opts.optionalMarkCaption.trim()}". Set that text as part of the same designed element, not floating separately elsewhere in the frame. Spell it exactly as given.`
+      : "If the mark carries a claim, express it through the design of the element itself rather than adding invented wording."}
+CONSTRUCTION: decide the position, size, colour and form yourself, choosing whatever serves this composition best. Do NOT default to a corner. Good forms include a circular seal or stamp with the mark at its centre and the text set in a ring around the rim, a rounded badge with the mark beside the text, or a bar or panel at the base of the frame carrying both. Pick ONE and commit to it.
+COLOUR: this element may take a colour that suits its meaning and the palette, and the mark inside it is rendered in whatever single flat tone reads cleanly against that element.
 It MUST read as a deliberate part of the design rather than something laid over the top.`);
   }
 
@@ -151,9 +167,9 @@ Branding that is physically part of the footwear itself, printed, embossed or mo
 ${parts.join("\n\n")}
 
 SHAPE LOCK, applies to every mark above:
-Reproduce each mark's geometry EXACTLY as it appears in its reference image: the same shapes, the same proportions, the same counts of every element, the same spacing, the same negative space inside it. Copy the reference pixels rather than drawing from memory.
+Reproduce each mark's GEOMETRY exactly as it appears in its reference image: the same shapes, the same proportions, the same counts of every element, the same spacing, the same negative space inside and between the shapes. Copy the reference pixels rather than drawing from memory.
 NEVER substitute a different or better known version of a mark. NEVER redraw, restyle, simplify, embellish, rotate or mirror it. NEVER add letters, words or symbols to a mark that does not have them, and NEVER drop any it does have.
-Reproduce it flat and solid in its own colour unless the instruction above explicitly asks for a treatment.`;
+Geometry is locked; COLOUR is not. Each mark is rendered as a single flat tone chosen for contrast, per its instruction above. Never render a mark with a gradient, a texture, a bevel or a highlight.`;
 }
 
 /**
@@ -170,6 +186,37 @@ export function buildPdpReferenceManifest(labels: string[]): string {
 The attached images are, in order:
 ${lines}
 Use each image ONLY for the role named above.`;
+}
+
+/**
+ * Composition-side awareness of the marks.
+ *
+ * Fed to the enrichment step rather than the render step. The marks are drawn by the
+ * generator, but the composition still has to expect them: if the chosen corner ends up
+ * carrying the product, a busy texture or a tonal transition, the mark lands on top of it
+ * and stops reading. This asks the art direction to plan the space, which is the
+ * reservation idea from the compositor era applied to a mark the model draws itself.
+ */
+export function buildPdpMarkAwarenessClause(opts: {
+  brandPlacementLabel?: string;
+  hasOptionalMark?: boolean;
+}): string {
+  if (!opts.brandPlacementLabel && !opts.hasOptionalMark) return "";
+
+  const lines: string[] = [];
+  if (opts.brandPlacementLabel) {
+    lines.push(
+      `A brand mark will be rendered at ${opts.brandPlacementLabel} of the finished frame. Compose so that area is calm and tonally even: no product, no callout, no busy texture and no tonal transition running through it, and enough contrast there for a flat black or flat white mark to read cleanly. State in your composition what sits behind that area and whether it is light or dark.`
+    );
+  }
+  if (opts.hasOptionalMark) {
+    lines.push(
+      `A secondary mark will also be composed into the frame as a designed element such as a seal or badge. Leave it somewhere sensible to live and say where, so it does not collide with the product or the callouts.`
+    );
+  }
+
+  return `═══ MARKS THE COMPOSITION MUST ALLOW FOR ═══
+${lines.join("\n")}`;
 }
 
 /** Human readable role for one tagged product photograph. */
@@ -279,6 +326,7 @@ export function buildPdpGlobalDirectives(opts: {
   brandPlacementLabel?: string;
   brandScale?: number;
   optionalMarkPurpose?: string;
+  optionalMarkCaption?: string;
 }): string {
   const blocks = [
     buildPdpReferenceManifest(opts.referenceLabels),
@@ -291,6 +339,7 @@ export function buildPdpGlobalDirectives(opts: {
       brandPlacementLabel: opts.brandPlacementLabel,
       brandScale: opts.brandScale,
       optionalMarkPurpose: opts.optionalMarkPurpose,
+      optionalMarkCaption: opts.optionalMarkCaption,
     }),
   ];
   return blocks.filter(Boolean).join("\n\n");

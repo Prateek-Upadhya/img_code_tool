@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import Image from "next/image";
 import { Check, Plus, Trash2, AlertTriangle, Tag } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
@@ -75,6 +76,9 @@ function OptionCard({
   onColumns,
   optionalLogoAvailable,
   optionalLogoOn,
+  optionalLogoPreview,
+  markCaption,
+  onMarkCaption,
   onToggleOptionalLogo,
   onDelete,
 }: {
@@ -86,6 +90,9 @@ function OptionCard({
   onColumns: (columns: string[]) => void;
   optionalLogoAvailable: boolean;
   optionalLogoOn: boolean;
+  optionalLogoPreview?: string;
+  markCaption: string;
+  onMarkCaption: (caption: string) => void;
   onToggleOptionalLogo: () => void;
   onDelete?: () => void;
 }) {
@@ -193,6 +200,34 @@ function OptionCard({
               Add the optional logo
             </button>
           )}
+
+          {/* The mark is rendered with its claim text, and the wording belongs to the shot
+              rather than the batch. The thumbnail sits beside the field so it is obvious
+              which mark is being captioned. */}
+          {optionalLogoOn && optionalLogoPreview && (
+            <div className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-2">
+              <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded bg-background">
+                <Image
+                  src={optionalLogoPreview}
+                  alt="Secondary mark"
+                  fill
+                  sizes="36px"
+                  className="object-contain p-0.5"
+                  unoptimized
+                />
+              </div>
+              <div className="min-w-0 flex-1 space-y-1">
+                <p className="text-[10px] font-medium text-muted-foreground">Text with this mark</p>
+                <Input
+                  value={markCaption}
+                  onChange={(e) => onMarkCaption(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  placeholder="e.g. 100% BIODEGRADABLE SOLE"
+                  className="h-7 text-xs"
+                />
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -273,6 +308,8 @@ export function StepPdpShots({ store }: { store: VTONStore }) {
     togglePdpOption,
     pdpOptionColumns,
     setPdpOptionColumnsFor,
+    pdpOptionMarkCaptions,
+    setPdpOptionMarkCaptionFor,
     pdpCustomOptions,
     addPdpCustomOption,
     removePdpCustomOption,
@@ -360,6 +397,9 @@ export function StepPdpShots({ store }: { store: VTONStore }) {
                   onColumns={(cols) => setPdpOptionColumnsFor(option.id, cols)}
                   optionalLogoAvailable={Boolean(pdpLogos.optionalLogo)}
                   optionalLogoOn={shouldDrawOptionalLogo(option, pdpLogos)}
+                  optionalLogoPreview={pdpLogos.optionalLogo?.preview}
+                  markCaption={pdpOptionMarkCaptions[option.id] ?? ""}
+                  onMarkCaption={(caption) => setPdpOptionMarkCaptionFor(option.id, caption)}
                   onToggleOptionalLogo={() => toggleOptionalLogo(option.id)}
                   onDelete={option.isCustom ? () => removePdpCustomOption(option.id) : undefined}
                 />

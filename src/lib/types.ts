@@ -1861,6 +1861,15 @@ export interface PdpSheetSession {
 export type PdpOptionColumns = Record<string, string[]>;
 
 /**
+ * Option id to the claim text rendered with the secondary mark on that shot.
+ *
+ * Authored per option rather than once per batch, because the mark is enabled per option
+ * and the wording that belongs with it differs by context: a comparison board and a
+ * sustainability hero want different phrasing of the same claim.
+ */
+export type PdpOptionMarkCaptions = Record<string, string>;
+
+/**
  * One uploaded product photograph, optionally tagged with which side of the shoe it
  * shows. The tag is forwarded to the image model as an authoritative positional label,
  * which stops branding being mirrored onto the wrong side and gives the sole-construction
@@ -2002,6 +2011,14 @@ export interface PdpResult {
   /** Small data URL retained in React state so a batch does not pin ~200 full images in memory. */
   thumbnail?: string;
   prompt?: string;
+  /**
+   * A contextual-retry result awaiting the operator's decision. Held on the record rather
+   * than in dialog state so closing and reopening the viewer does not lose it, and never
+   * written to the image store until approved.
+   */
+  candidate?: { imageData: string; correction: string; createdAt: number };
+  /** Corrections already applied, oldest first. Shown in the viewer as an audit trail. */
+  corrections?: string[];
   /** Best score achieved across attempts. */
   score?: number;
   /** 1-based attempt the kept image came from. */

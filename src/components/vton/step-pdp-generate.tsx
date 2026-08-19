@@ -21,13 +21,16 @@ import {
   generatePdpImage,
   generatePdpCastMember,
   scorePdpImage,
+  contextualRetryPdpImage,
   PDP_MAX_ATTEMPTS,
   PDP_SCORE_PASS_THRESHOLD,
 } from "@/lib/gemini";
+import { PdpImageViewer } from "./pdp-image-viewer";
 import { PDP_CATALOG } from "@/lib/pdp-catalog";
 import { buildPdpStyleBlock, describePdpStyle } from "@/lib/pdp-style";
 import {
   buildPdpGlobalDirectives,
+  buildPdpMarkAwarenessClause,
   resolvePdpImageSize,
   selectPdpReferences,
   footwearSideLabel,
@@ -37,6 +40,7 @@ import {
 import { resolvePdpCopy } from "@/lib/pdp-sheet";
 import { savePdpImage, readPdpImage, clearPdpRun } from "@/lib/pdp-result-store";
 import { downloadGroupedZip, downloadImage } from "@/lib/result-zip";
+import { runPool } from "@/lib/two-lane-runner";
 import { dataUrlToFile } from "@/lib/model-creation-client";
 import type { VTONStore } from "@/store/vton-store";
 import type { PdpProduct, PdpResult, PdpShotOption, StepCost } from "@/lib/types";
@@ -46,14 +50,18 @@ function uid(prefix: string) {
 }
 
 /**
- * Concurrency for the batch.
+ * Concurrency for the batch: 20 jobs in flight, the rest queued behind them.
  *
  * The server side gate in gemini-image-gate.ts caps Gemini image calls at 30 across the
- * whole process, so this per-tab number only needs to avoid over-queuing. Kept at 6
- * because a PDP run is long and a mid-run failure is more costly here than elsewhere: the
- * lower number leaves headroom for another tab.
+ * whole process. Each job here is internally sequential (prompt, then image, then judge),
+ * so 20 workers means at most 20 concurrent image calls, leaving 10 slots for a second tab
+ * or another mode rather than pushing them into the server queue.
+ *
+ * Note this multiplies burn rate as well as throughput: each job may run up to three
+ * attempts through the judge loop, so a batch that is failing spends roughly three times
+ * faster than the nominal figure. Stop is the only brake.
  */
-const PDP_CONCURRENCY = 6;
+const PDP_CONCURRENCY = 20;
 
 const BUSY: PdpResult["status"][] = [
   "pending",
@@ -97,6 +105,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
     setPdpProducts,
     pdpSheetSession,
     pdpOptionColumns,
+    pdpOptionMarkCaptions,
     pdpCustomOptions,
     pdpSelectedOptions,
     pdpStyle,
@@ -117,6 +126,12 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
 
   const abortRef = useRef<AbortController | null>(null);
   const [castNote, setCastNote] = useState<string | null>(null);
+  /** Result currently open in the full-screen viewer. */
+  const [viewerId, setViewerId] = useState<string | null>(null);
+  /** Full image for the open viewer, read from the store on demand. */
+  const [viewerImage, setViewerImage] = useState<string | null>(null);
+  /** Result ids with a correction in flight. */
+  const [correcting, setCorrecting] = useState<string[]>([]);
 
   const allOptions = useMemo(() => [...PDP_CATALOG, ...pdpCustomOptions], [pdpCustomOptions]);
 
@@ -311,9 +326,15 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
             ? `the ${placementLabel(pdpLogos.brandPlacement)} area`
             : undefined,
           brandScale: pdpLogos.brandScale,
-          optionalMarkPurpose: wantsOptionalMark
-            ? "It carries the product's sustainability story, so give it the weight of a seal of approval."
+          optionalMarkPurpose: wantsOptionalMark ? "Give it the weight of a seal of approval." : undefined,
+          optionalMarkCaption: wantsOptionalMark ? pdpOptionMarkCaptions[option.id] : undefined,
+        });
+
+        const markAwareness = buildPdpMarkAwarenessClause({
+          brandPlacementLabel: pdpLogos.brandLogo
+            ? `the ${placementLabel(pdpLogos.brandPlacement)} area`
             : undefined,
+          hasOptionalMark: wantsOptionalMark,
         });
 
         let correction: string | undefined;
@@ -336,6 +357,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
             optionCopy: copy.optionCopy,
             styleBlock: option.bearsText ? styleBlocks.withText : styleBlocks.textFree,
             globalDirectives,
+            markAwareness,
             soleConstructionLayers: product.soleConstructionLayers ?? 3,
             aspectRatio: pdpAspectRatio,
             castDescription: option.requiresModel ? pdpCastDescription : undefined,
@@ -436,6 +458,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
       textGenModel,
       pdpSheetSession,
       pdpOptionColumns,
+      pdpOptionMarkCaptions,
       pdpLogos,
       styleBlocks,
       pdpAspectRatio,
@@ -470,24 +493,14 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
     try {
       const castByProduct = await prepareCast(controller.signal);
 
-      let index = 0;
-      const worker = async (): Promise<void> => {
-        while (index < initial.length && !controller.signal.aborted) {
-          const i = index++;
-          const { product, option } = plan[i];
-          await runOne(
-            initial[i],
-            product,
-            option,
-            castByProduct.get(product.id),
-            runId,
-            controller.signal
-          );
-        }
-      };
-
-      await Promise.all(
-        Array.from({ length: Math.min(PDP_CONCURRENCY, initial.length) }, () => worker())
+      // Sliding-window pool: as each job finishes the next starts, so PDP_CONCURRENCY are
+      // always working until the queue drains.
+      await runPool(
+        initial.map((result, i) => ({ result, ...plan[i] })),
+        PDP_CONCURRENCY,
+        ({ result, product, option }) =>
+          runOne(result, product, option, castByProduct.get(product.id), runId, controller.signal),
+        controller.signal
       );
     } finally {
       setIsPdpGenerating(false);
@@ -504,6 +517,38 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
     pdpRunId,
     setPdpRunId,
   ]);
+
+  /**
+   * Per-card retry, deliberately independent of the batch.
+   *
+   * Not async and not awaited, and it never touches `isPdpGenerating`, so a retry can run
+   * while the batch is still going and several cards can retry at once. It runs against a
+   * signal that never aborts, because there is no batch of its own to cancel; Stop only
+   * governs the main run.
+   */
+  const handleRetry = useCallback(
+    (result: PdpResult) => {
+      if (BUSY.includes(result.status) || !apiKey) return;
+      const product = readyProducts.find((p) => p.id === result.productId);
+      const option = allOptions.find((o) => o.id === result.optionId);
+      if (!product || !option) return;
+
+      const castFile =
+        pdpCastSource === "uploaded"
+          ? pdpCastImages[readyProducts.indexOf(product) % Math.max(1, pdpCastImages.length)]?.file
+          : product.castModel?.file;
+
+      void runOne(
+        { ...result, status: "pending", error: undefined },
+        product,
+        option,
+        castFile,
+        pdpRunId || uid("pdp-run"),
+        new AbortController().signal
+      );
+    },
+    [apiKey, readyProducts, allOptions, pdpCastSource, pdpCastImages, pdpRunId, runOne]
+  );
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
@@ -531,6 +576,122 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
       "pdp-set.zip"
     );
   }, [pdpResults]);
+
+  // ── Viewer and contextual retry ───────────────────────────────────────────
+  const viewerResult = useMemo(
+    () => pdpResults.find((r) => r.id === viewerId) ?? null,
+    [pdpResults, viewerId]
+  );
+
+  const openViewer = useCallback(async (result: PdpResult) => {
+    setViewerId(result.id);
+    setViewerImage(result.thumbnail ?? null);
+    // The thumbnail shows instantly; the full image swaps in once read.
+    const full = await readPdpImage(result.id);
+    if (full) setViewerImage(full);
+  }, []);
+
+  const closeViewer = useCallback(() => {
+    setViewerId(null);
+    setViewerImage(null);
+  }, []);
+
+  /**
+   * Build the same render context the original generation used, so a correction changes
+   * only what was asked and nothing drifts underneath it.
+   */
+  const rebuildContext = useCallback(
+    (result: PdpResult) => {
+      const product = readyProducts.find((p) => p.id === result.productId);
+      const option = allOptions.find((o) => o.id === result.optionId);
+      if (!product || !option || !result.prompt) return null;
+
+      const wantsOptionalMark = shouldDrawOptionalLogo(option, pdpLogos);
+      return {
+        prompt: result.prompt,
+        option,
+        productImages: selectPdpReferences(product.images),
+        castImage: option.requiresModel ? product.castModel?.file : undefined,
+        brandLogo: pdpLogos.brandLogo?.file,
+        brandPlacementLabel: pdpLogos.brandLogo
+          ? `the ${placementLabel(pdpLogos.brandPlacement)} area`
+          : undefined,
+        optionalLogo: wantsOptionalMark ? pdpLogos.optionalLogo?.file : undefined,
+        aspectRatio: pdpAspectRatio,
+      };
+    },
+    [readyProducts, allOptions, pdpLogos, pdpAspectRatio]
+  );
+
+  const handleCorrect = useCallback(
+    async (result: PdpResult, text: string, attachments: { file: File }[]) => {
+      const context = rebuildContext(result);
+      if (!context || !apiKey) return;
+
+      const current = (await readPdpImage(result.id)) ?? result.thumbnail;
+      if (!current) return;
+
+      setCorrecting((prev) => [...prev, result.id]);
+      try {
+        const res = await contextualRetryPdpImage({
+          apiKey,
+          textGenModel,
+          context,
+          currentImageData: current,
+          correctionText: text,
+          correctionImages: attachments,
+          imageSize: resolvePdpImageSize(context.option, pdpImageSize),
+        });
+        // Held as a candidate, not written to the store: the operator decides.
+        updateResult(result.id, {
+          candidate: { imageData: res.imageData, correction: text, createdAt: Date.now() },
+          costBreakdown: {
+            steps: [...(result.costBreakdown?.steps ?? []), res.promptCost, res.imageCost],
+            totalCost:
+              (result.costBreakdown?.totalCost ?? 0) + res.promptCost.totalCost + res.imageCost.totalCost,
+          },
+        });
+      } catch (err) {
+        updateResult(result.id, {
+          error: err instanceof Error ? err.message : "Correction failed",
+        });
+      } finally {
+        setCorrecting((prev) => prev.filter((id) => id !== result.id));
+      }
+    },
+    [rebuildContext, apiKey, textGenModel, pdpImageSize, updateResult]
+  );
+
+  const approveCandidate = useCallback(
+    async (result: PdpResult) => {
+      const candidate = result.candidate;
+      if (!candidate) return;
+
+      await savePdpImage({
+        id: result.id,
+        runId: pdpRunId,
+        sku: result.sku,
+        optionId: result.optionId,
+        optionLabel: result.optionLabel,
+        imageData: candidate.imageData,
+        createdAt: Date.now(),
+      });
+
+      updateResult(result.id, {
+        thumbnail: candidate.imageData,
+        candidate: undefined,
+        corrections: [...(result.corrections ?? []), candidate.correction],
+        error: undefined,
+      });
+      setViewerImage(candidate.imageData);
+    },
+    [pdpRunId, updateResult]
+  );
+
+  const discardCandidate = useCallback(
+    (result: PdpResult) => updateResult(result.id, { candidate: undefined }),
+    [updateResult]
+  );
 
   const handleDownloadOne = useCallback(async (result: PdpResult) => {
     const dataUrl = (await readPdpImage(result.id)) ?? result.thumbnail;
@@ -654,22 +815,34 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
                 key={result.id}
                 className="overflow-hidden rounded-xl border border-border bg-card"
               >
-                <div className="relative aspect-square bg-muted/40">
+                <button
+                  onClick={() => result.thumbnail && void openViewer(result)}
+                  disabled={!result.thumbnail}
+                  className="relative block aspect-square w-full bg-muted/40 disabled:cursor-default"
+                  title={result.thumbnail ? "Click to enlarge" : undefined}
+                >
                   {result.thumbnail ? (
-                    <Image
-                      src={result.thumbnail}
-                      alt={result.optionLabel}
-                      fill
-                      sizes="200px"
-                      className="object-cover"
-                      unoptimized
-                    />
+                    <>
+                      <Image
+                        src={result.thumbnail}
+                        alt={result.optionLabel}
+                        fill
+                        sizes="200px"
+                        className="object-cover"
+                        unoptimized
+                      />
+                      {result.candidate && (
+                        <span className="absolute left-1 top-1 rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
+                          review
+                        </span>
+                      )}
+                    </>
                   ) : (
                     <div className="flex h-full items-center justify-center">
                       <StatusBadge status={result.status} />
                     </div>
                   )}
-                </div>
+                </button>
                 <div className="space-y-1 p-2">
                   <div className="flex items-center gap-1.5">
                     <p className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
@@ -694,15 +867,26 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
                   </div>
                   <div className="flex items-center justify-between gap-1">
                     <StatusBadge status={result.status} />
-                    {result.status === "completed" && (
+                    <div className="flex items-center gap-0.5">
                       <button
-                        onClick={() => handleDownloadOne(result)}
-                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                        aria-label="Download"
+                        onClick={() => handleRetry(result)}
+                        disabled={BUSY.includes(result.status) || !apiKey}
+                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30"
+                        aria-label="Retry"
+                        title="Retry this image"
                       >
-                        <Download className="h-3 w-3" />
+                        <RotateCw className="h-3 w-3" />
                       </button>
-                    )}
+                      {result.status === "completed" && (
+                        <button
+                          onClick={() => handleDownloadOne(result)}
+                          className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          aria-label="Download"
+                        >
+                          <Download className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                   {result.error && (
                     <p className="text-[10px] leading-tight text-destructive" title={result.error}>
@@ -723,6 +907,20 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
             {plan.length} image{plan.length === 1 ? "" : "s"} ready to generate.
           </p>
         </div>
+      )}
+
+      {viewerResult && (
+        <PdpImageViewer
+          result={viewerResult}
+          imageData={viewerImage}
+          busy={correcting.includes(viewerResult.id) || BUSY.includes(viewerResult.status)}
+          onClose={closeViewer}
+          onRetry={() => handleRetry(viewerResult)}
+          onDownload={() => void handleDownloadOne(viewerResult)}
+          onCorrect={(text, attachments) => void handleCorrect(viewerResult, text, attachments)}
+          onApprove={() => void approveCandidate(viewerResult)}
+          onDiscard={() => discardCandidate(viewerResult)}
+        />
       )}
     </div>
   );

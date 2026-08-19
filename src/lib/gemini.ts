@@ -9434,6 +9434,7 @@ export async function generatePdpPrompt({
   optionCopy,
   styleBlock,
   globalDirectives,
+  markAwareness,
   soleConstructionLayers = 3,
   aspectRatio,
   castDescription,
@@ -9449,6 +9450,8 @@ export async function generatePdpPrompt({
   optionCopy: string;
   styleBlock: string;
   globalDirectives: string;
+  /** Tells the composition to leave the marks somewhere legible to live. */
+  markAwareness?: string;
   soleConstructionLayers?: SoleConstructionLayerCount;
   aspectRatio: AspectRatio;
   castDescription?: string;
@@ -9477,7 +9480,7 @@ ${compositionBrief}
 ${styleBlock}
 
 ${globalDirectives}
-${castDescription?.trim()
+${markAwareness?.trim() ? `\n${markAwareness.trim()}\n` : ""}${castDescription?.trim()
     ? `
 ═══ CAST ═══
 A human model reference image is attached to the render request and is the cast member for this product. General casting direction for the batch: ${castDescription.trim()}.
@@ -9535,21 +9538,8 @@ Write no preamble, no commentary and no closing remarks. Output the composition 
   return { enrichedPrompt: text.trim(), cost };
 }
 
-/** Step 2 — render one PDP image. */
-export async function generatePdpImage({
-  apiKey,
-  prompt,
-  option,
-  productImages,
-  castImage,
-  brandLogo,
-  brandPlacementLabel,
-  optionalLogo,
-  aspectRatio,
-  imageSize = "2K",
-  abortSignal,
-}: {
-  apiKey: string;
+/** Everything a PDP render needs besides the API key and the output size. */
+export interface PdpImageContext {
   prompt: string;
   option: PdpShotOption;
   /** Product photographs, optionally tagged with which side of the shoe they show. */
@@ -9561,10 +9551,26 @@ export async function generatePdpImage({
   /** Secondary mark, rendered contextually as a designed component. */
   optionalLogo?: File;
   aspectRatio: AspectRatio;
-  imageSize?: "1K" | "2K" | "4K";
-  abortSignal?: AbortSignal;
-}): Promise<{ imageData: string; cost: StepCost }> {
-  const ai = getGeminiClient(apiKey);
+}
+
+/**
+ * Assemble the multimodal parts for a PDP render: product references with their side
+ * labels, the cast member, the two marks, and the composition itself.
+ *
+ * Extracted so the contextual retry can rebuild byte-identical context around a
+ * correction. Every sibling pipeline in this file already has such a builder; PDP was the
+ * outlier with its assembly inlined.
+ */
+export async function buildPdpImageContentParts({
+  prompt,
+  option,
+  productImages,
+  castImage,
+  brandLogo,
+  brandPlacementLabel,
+  optionalLogo,
+  aspectRatio,
+}: PdpImageContext): Promise<ContentPart[]> {
   const contents: ContentPart[] = [];
   const hasSideTags = productImages.some((p) => p.footwearSide);
 
@@ -9631,12 +9637,29 @@ Render a single finished, professional footwear image on a ${aspectRatio} canvas
       : " This image contains NO text, NO labels, NO captions and NO watermarks of any kind."}`,
   });
 
+  return contents;
+}
+
+/** Step 2 — render one PDP image. */
+export async function generatePdpImage({
+  apiKey,
+  imageSize = "2K",
+  abortSignal,
+  ...context
+}: PdpImageContext & {
+  apiKey: string;
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; cost: StepCost }> {
+  const ai = getGeminiClient(apiKey);
+  const contents = await buildPdpImageContentParts(context);
+
   const response = await ai.models.generateContent({
     model: "gemini-3.1-flash-image",
     contents,
     config: {
       responseModalities: ["TEXT", "IMAGE"],
-      imageConfig: { aspectRatio, imageSize },
+      imageConfig: { aspectRatio: context.aspectRatio, imageSize },
       abortSignal,
     },
   });
@@ -9957,4 +9980,182 @@ ${defects
 
 function severityRank(s: PdpScoreDefect["severity"]): number {
   return s === "critical" ? 3 : s === "major" ? 2 : s === "minor" ? 1 : 0;
+}
+
+/**
+ * Contextual retry: correct an already-generated PDP image from an operator's note, with
+ * optional reference images attached to that note.
+ *
+ * A fresh two-step call rather than a multi-turn replay, deliberately. The replay family
+ * elsewhere in this file needs the original `responseContent` and `contentParts` held in
+ * memory; PDP keeps only thumbnails in React state and its full images in IndexedDB, so a
+ * batch of two hundred neither exhausts the tab nor dies on refresh. A replay would undo
+ * that and still not survive a reload. It also cannot carry attached images, which is the
+ * whole point here.
+ *
+ * Step A: Gemini 3.1 Pro looks at the current render, the original composition, the
+ * product references and the operator's note plus attachments, and writes the corrected
+ * final state as one tightly scoped instruction.
+ * Step B: gemini-3.1-flash-image renders it with the same context the original had, plus
+ * the current image and the attachments.
+ */
+export async function contextualRetryPdpImage({
+  apiKey,
+  textGenModel = "gemini",
+  context,
+  currentImageData,
+  correctionText,
+  correctionImages = [],
+  imageSize = "2K",
+  abortSignal,
+}: {
+  apiKey: string;
+  textGenModel?: TextGenModel;
+  /** The same context the original render used. */
+  context: PdpImageContext;
+  /** The image being corrected, read back from the result store. */
+  currentImageData: string;
+  correctionText: string;
+  /** Reference images the operator attached to the correction. */
+  correctionImages?: { file: File }[];
+  imageSize?: "1K" | "2K" | "4K";
+  abortSignal?: AbortSignal;
+}): Promise<{ imageData: string; promptCost: StepCost; imageCost: StepCost; instruction: string }> {
+  const currentPart = dataUrlToInlinePart(currentImageData);
+  if (!currentPart) throw new Error("The image being corrected is not a readable data URL");
+
+  // ── Step A: write the correction instruction ────────────────────────────────
+  const ai = getTextClient(textGenModel);
+
+  const enrichSystemPrompt = `You are an expert footwear e-commerce art director reviewing a generated image and issuing ONE correction.
+
+You are given, in order: the CURRENT generated image, the product reference photographs, ${correctionImages.length > 0 ? `${correctionImages.length} reference image${correctionImages.length === 1 ? "" : "s"} the operator attached to their request, ` : ""}and below, the composition that produced the current image plus the operator's requested change.
+
+═══ THE COMPOSITION THAT PRODUCED THE CURRENT IMAGE ═══
+${context.prompt}
+
+═══ THE OPERATOR'S REQUESTED CHANGE ═══
+${correctionText.trim()}
+${correctionImages.length > 0
+    ? `
+The operator attached reference image(s) with this request. Read them as guidance for what they want, and describe concretely what to take from them. They are NOT the product: the footwear identity still comes ONLY from the product reference photographs.`
+    : ""}
+
+═══ WHAT TO WRITE ═══
+Write ONE instruction describing the CORRECTED FINAL STATE of the image. Requirements:
+- Begin with "Change only".
+- Address the operator's request precisely and completely, and nothing beyond it.
+- Describe the desired end state positively. Do not narrate what was wrong.
+- Restate any detail that must survive unchanged and would otherwise be at risk, especially the footwear's identity, its colourway, its on-product lettering, and any on-image text that is already correct. Quote existing on-image text verbatim so it is reproduced exactly.
+- End by stating that everything not mentioned stays pixel identical to the current image.
+- Keep it under 150 words. Write no preamble and no commentary.
+- NEVER use an em dash or an en dash.`;
+
+  const enrichContents: ContentPart[] = [{ text: enrichSystemPrompt }];
+  enrichContents.push({ text: "═══ CURRENT GENERATED IMAGE ═══" });
+  enrichContents.push(currentPart);
+
+  enrichContents.push({ text: "═══ PRODUCT REFERENCE PHOTOGRAPHS ═══" });
+  for (const img of context.productImages) {
+    const base64 = await fileToBase64(img.file);
+    enrichContents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+  }
+
+  if (correctionImages.length > 0) {
+    enrichContents.push({
+      text: "═══ REFERENCES ATTACHED TO THE CORRECTION (guidance, NOT the product) ═══",
+    });
+    for (const img of correctionImages) {
+      const base64 = await fileToBase64(img.file);
+      enrichContents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+    }
+  }
+
+  const enrichResponse = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents: enrichContents,
+    config: {
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+      abortSignal,
+    },
+  });
+
+  const instruction = enrichResponse.text?.trim();
+  if (!instruction) throw new Error("No correction instruction returned from Gemini 3.1 Pro");
+
+  const promptCost = computeStepCost(
+    textCostModel(textGenModel),
+    "PDP Correction Prompt (Gemini 3.1 Pro)",
+    extractTokenUsage(enrichResponse)
+  );
+
+  // ── Step B: render the correction ───────────────────────────────────────────
+  const imageClient = getGeminiClient(apiKey);
+
+  // Same context the original render had, so nothing silently drifts.
+  const contents = await buildPdpImageContentParts(context);
+
+  contents.push({
+    text: `═══ THE CURRENT IMAGE TO CORRECT ═══
+The next image is the current render. It is the starting point. Preserve it exactly except for the correction below.`,
+  });
+  contents.push(currentPart);
+
+  if (correctionImages.length > 0) {
+    contents.push({
+      text: `═══ REFERENCES ATTACHED TO THE CORRECTION ═══
+The next ${correctionImages.length} image${correctionImages.length === 1 ? " is a reference" : "s are references"} the operator supplied as guidance for this change. Use them ONLY for what the correction asks. They do NOT define the footwear, whose identity still comes from the product references above.`,
+    });
+    for (const img of correctionImages) {
+      const base64 = await fileToBase64HiRes(img.file);
+      contents.push({ inlineData: { mimeType: img.file.type, data: base64 } });
+    }
+  }
+
+  contents.push({
+    text: `═══ THE CORRECTION TO APPLY ═══
+${instruction}
+
+Apply ONLY this correction. Everything else in the current image MUST remain pixel identical: the same product, the same colours, the same composition, the same lighting, the same text.${context.option.bearsText
+      ? " Any on-image text that is already correct MUST be reproduced with the same wording and spelling. NEVER use an em dash or an en dash."
+      : " This image contains NO text of any kind."}`,
+  });
+
+  const response = await imageClient.models.generateContent({
+    model: "gemini-3.1-flash-image",
+    contents,
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: { aspectRatio: context.aspectRatio, imageSize },
+      abortSignal,
+    },
+  });
+
+  const imageCost = computeImageGenCost(
+    "PDP Correction Image (Nano Banana 2)",
+    extractTokenUsage(response),
+    imageSize
+  );
+
+  if (response.candidates && response.candidates[0]?.content?.parts) {
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData && part.inlineData.data) {
+        return {
+          imageData: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+          promptCost,
+          imageCost,
+          instruction,
+        };
+      }
+    }
+  }
+
+  throw new Error("No corrected image returned from Nano Banana 2");
+}
+
+/** Split a data URL into an inline content part. Returns null when it is not one. */
+function dataUrlToInlinePart(dataUrl: string): ContentPart | null {
+  const match = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
+  if (!match) return null;
+  return { inlineData: { mimeType: match[1], data: match[2] } };
 }

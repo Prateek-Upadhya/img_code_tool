@@ -80,24 +80,45 @@ const PAIR: PdpShotOption = {
 //  2) PRODUCT SHOTS WITH HUMAN MODEL
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MODEL_SINGLE: PdpShotOption = {
-  id: "pdp-model-single",
+/** Shared by both single-model briefs. Wardrobe and fit fail the same way regardless of angle. */
+const MODEL_SHARED_RULES = `- POSE: a natural, candid, unforced stance or stride suiting the footwear's character and the setting. Both feet clearly separated and fully visible, never overlapping, never cut off, never obscured by clothing or props.
+- WARDROBE: simple, quiet clothing in muted tones that complements the footwear and never competes with it. The lower leg must be visible so the fit on the foot reads clearly. Trousers must not break over and hide the shoe.
+- FIT: the footwear MUST sit on the feet at correct true scale and proportion, wrapping the foot the way real footwear does. Incorrect shoe scale is the most common failure in this kind of image, so verify the shoe reads neither oversized nor doll sized against the model's body.
+- NO text, NO callouts, NO labels, NO badges, NO icons and NO graphic overlays of any kind. This is photography only.`;
+
+const MODEL_CLASSIC: PdpShotOption = {
+  id: "pdp-model-classic",
   heading: "on-model",
-  label: "Single model image",
+  label: "Model shot, classic",
   icon: "🧍",
-  description: "A full body image with the model placed in context, framed so the footwear stays the focus.",
+  description: "A conventional full body lifestyle image, straight and clean, model placed in context.",
   requiresModel: true,
   consumesCopy: false,
   bearsText: false,
   promptSnippet: `COMPOSITION: a plain lifestyle photograph of EXACTLY ONE human model wearing this footwear, placed contextually within the setting rather than posed against a blank wall. This is a straight PDP photograph, not an information graphic.
-- FRAMING: the frame shows the model head to feet, complete and uncropped.
-- THE FOOTWEAR IS THE SUBJECT. Despite the full body crop, the shoes must read as what this photograph is about. Achieve that with the CAMERA, not by cropping the model.
-- DYNAMIC CAMERA ANGLE, commit to one and make it deliberate: drop the camera low, near ground level, looking slightly up along the body so the feet sit nearest the lens and read largest in frame; or shoot from a steep high angle looking down the length of the body onto the shoes; or take a raking low diagonal from the front quarter. Avoid a flat, straight on, eye level snapshot.
-- LENS AND DEPTH: use a wider focal length close to the feet so perspective naturally enlarges them, and set focus ON THE FOOTWEAR with the plane of sharpness at the shoes. Let the torso and head fall gently softer with distance, so the eye lands on the shoes first.
-- POSE: a natural, candid, unforced stance or stride suiting the footwear's character and the setting. Both feet clearly separated and fully visible, never overlapping, never cut off, never obscured by clothing or props.
-- WARDROBE: simple, quiet clothing in muted tones that complements the footwear and never competes with it. The lower leg must be visible so the fit on the foot reads clearly. Trousers must not break over and hide the shoe.
-- FIT: the footwear MUST sit on the feet at correct true scale and proportion, wrapping the foot the way real footwear does. Incorrect shoe scale is the most common failure in this kind of image, so verify the shoe reads neither oversized nor doll sized against the model's body.
-- NO text, NO callouts, NO labels, NO badges, NO icons and NO graphic overlays of any kind. This is photography only.`,
+- FRAMING: the frame shows the model head to feet, complete and uncropped, positioned squarely with comfortable headroom and floor beneath the feet.
+- CAMERA: conventional and unobtrusive. Place it at roughly the model's chest to eye height, straight on or at a slight three quarter turn, with the sensor plane upright so verticals stay vertical. This shot should read as classic, well made catalogue photography.
+- LENS AND DEPTH: a normal to short telephoto perspective from a natural working distance, so body proportions stay true with no wide angle distortion. Keep the whole figure acceptably sharp, including the footwear.
+- The footwear must be clearly and completely visible and well lit, but it is not exaggerated here. Its prominence comes from being clean, sharp and unobstructed rather than from an unusual viewpoint.
+${MODEL_SHARED_RULES}`,
+};
+
+const MODEL_DYNAMIC: PdpShotOption = {
+  id: "pdp-model-dynamic",
+  heading: "on-model",
+  label: "Model shot, dynamic",
+  icon: "📐",
+  description: "Still full body, but a bold camera angle that brings the footwear close and makes it the subject.",
+  requiresModel: true,
+  consumesCopy: false,
+  bearsText: false,
+  promptSnippet: `COMPOSITION: a plain lifestyle photograph of EXACTLY ONE human model wearing this footwear, placed contextually within the setting. This is a straight PDP photograph, not an information graphic.
+- FRAMING: the frame still shows the model head to feet, complete and uncropped. The full body must survive the angle.
+- THE FOOTWEAR IS THE SUBJECT AND MUST BE THE CLOSEST THING TO THE VIEWER. Achieve that with the CAMERA, never by cropping the model.
+- BOLD CAMERA ANGLE, commit to one and make it unmistakable: drop the camera to near ground level looking up along the body so the feet sit nearest the lens and read largest in the frame; or take a steep high angle looking straight down the length of the body onto the shoes; or use a raking low diagonal from the front quarter with the leading foot pushed toward the camera. NEVER settle for a flat, straight on, eye level snapshot.
+- PERSPECTIVE: shoot wider and closer to the feet so perspective genuinely enlarges them relative to the head. The exaggeration should be visible and deliberate, while the body still reads as a real person rather than a distortion.
+- FOCUS: set the plane of sharpness ON THE FOOTWEAR. Let the torso and head fall gently softer with distance so the eye lands on the shoes first and stays there.
+${MODEL_SHARED_RULES}`,
 };
 
 const MODEL_COLLAGE: PdpShotOption = {
@@ -262,7 +283,8 @@ const COMPARISON: PdpShotOption = {
 export const PDP_CATALOG: PdpShotOption[] = [
   SINGLE,
   PAIR,
-  MODEL_SINGLE,
+  MODEL_CLASSIC,
+  MODEL_DYNAMIC,
   MODEL_COLLAGE,
   INTERIOR_ANGLE,
   MODEL_INFOGRAPHIC,

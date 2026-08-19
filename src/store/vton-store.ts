@@ -113,6 +113,7 @@ import {
   PdpCastSource,
   PdpLogos,
   PdpOptionColumns,
+  PdpOptionMarkCaptions,
   PdpProduct,
   PdpResult,
   PdpSheetSession,
@@ -533,6 +534,8 @@ export function useVTONStore() {
   const [pdpSelectedOptions, setPdpSelectedOptions] = useState<string[]>([]);
   /** Option id to the sheet headers feeding its on-image copy. */
   const [pdpOptionColumns, setPdpOptionColumns] = useState<PdpOptionColumns>({});
+  /** Option id to the claim text rendered alongside the secondary mark on that shot. */
+  const [pdpOptionMarkCaptions, setPdpOptionMarkCaptions] = useState<PdpOptionMarkCaptions>({});
   const [pdpCustomOptions, setPdpCustomOptions] = useState<PdpShotOption[]>([]);
   const [pdpResults, setPdpResults] = useState<PdpResult[]>([]);
   const [isPdpGenerating, setIsPdpGenerating] = useState(false);
@@ -581,6 +584,10 @@ export function useVTONStore() {
 
   const setPdpOptionColumnsFor = useCallback((optionId: string, columns: string[]) => {
     setPdpOptionColumns((prev) => ({ ...prev, [optionId]: columns }));
+  }, []);
+
+  const setPdpOptionMarkCaptionFor = useCallback((optionId: string, caption: string) => {
+    setPdpOptionMarkCaptions((prev) => ({ ...prev, [optionId]: caption }));
   }, []);
 
   const addPdpCustomOption = useCallback((option: PdpShotOption) => {
@@ -3219,6 +3226,7 @@ export function useVTONStore() {
     pdpImageSize, setPdpImageSize,
     pdpSelectedOptions, setPdpSelectedOptions, togglePdpOption,
     pdpOptionColumns, setPdpOptionColumns, setPdpOptionColumnsFor,
+    pdpOptionMarkCaptions, setPdpOptionMarkCaptions, setPdpOptionMarkCaptionFor,
     pdpCustomOptions, addPdpCustomOption, removePdpCustomOption,
     pdpResults, setPdpResults,
     isPdpGenerating, setIsPdpGenerating,
