@@ -1851,6 +1851,43 @@ export interface PdpSheetSession {
    * fallback when an option has no column of its own.
    */
   overallContextColumns: string[];
+  /**
+   * Header carrying this product's STORY: its theme, use case, scenario and identity.
+   *
+   * Distinct from overall context, which is factual product information feeding accuracy.
+   * The story is creative direction, and it is treated as the strongest per-product
+   * influence in the set: it decides the setting, the model's pose, wardrobe and
+   * accessories, the callout voice, the typographic treatment and the iconography.
+   * Null when the sheet has no such column, in which case the set falls back to being
+   * driven by the artistic style alone.
+   */
+  storyColumn: string | null;
+}
+
+/**
+ * One product's story, read once and interpreted into concrete direction.
+ *
+ * Derived ONCE PER PRODUCT rather than per image, so every image of a product shares one
+ * setting, one wardrobe and one typographic treatment. Deriving per image would let a
+ * product's own set disagree with itself, which is worse than having no story at all.
+ */
+export interface PdpStoryDirection {
+  /** Where this product lives: location, environment, surfaces, weather, time of day. */
+  setting: string;
+  /** What the model wears and carries, beyond the footwear itself. */
+  wardrobe: string;
+  /** How the model holds themselves, and what they are in the middle of doing. */
+  pose: string;
+  /** The colour lean this story asks for, expressed inside the style's palette. */
+  palette: string;
+  /** How the chosen typeface pairing should be SET: weight, case, tracking, scale. */
+  typography: string;
+  /** Index into the style's typeface pairing pool, chosen to suit this story. */
+  typographyIndex: number;
+  /** The visual language for any icons: what they depict and how they are drawn. */
+  iconography: string;
+  /** The voice the on-image callouts should speak in. */
+  copyTone: string;
 }
 
 /**

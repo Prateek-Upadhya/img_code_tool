@@ -66,6 +66,8 @@ import {
   PdpScoreDefect,
   PdpScoreOutcome,
   PdpShotOption,
+  PdpStoryDirection,
+  PdpStyle,
   PDP_SCORE_AXES,
   VtonDefect,
   VtonScoreDimension,
@@ -73,7 +75,8 @@ import {
   VtonScoreResult,
   VTON_SCORE_DIMENSION_KEYS,
 } from "./types";
-import { PDP_HUMAN_REALISM } from "./pdp-directives";
+import { PDP_HUMAN_REALISM, stripDashes } from "./pdp-directives";
+import { PDP_STYLE_GRAMMARS } from "./pdp-style";
 import {
   PDP_SOLE_CONSTRUCTION_ID,
   PDP_WATERPROOF_ID,
@@ -9453,6 +9456,7 @@ export async function generatePdpPrompt({
   sku,
   overallContext,
   optionCopy,
+  storyBlock,
   styleBlock,
   globalDirectives,
   markAwareness,
@@ -9469,6 +9473,11 @@ export async function generatePdpPrompt({
   sku: string;
   overallContext: string;
   optionCopy: string;
+  /**
+   * The product story, already turned into direction. Empty when the sheet has no story
+   * column, in which case the set is driven by the artistic style alone exactly as before.
+   */
+  storyBlock?: string;
   styleBlock: string;
   globalDirectives: string;
   /** Tells the composition to leave the marks somewhere legible to live. */
@@ -9502,7 +9511,7 @@ This is a FOOTWEAR product. Every instruction you write assumes footwear.
 
 ═══ COMPOSITION BRIEF (what this image must contain) ═══
 ${compositionBrief}
-
+${storyBlock?.trim() ? `\n${storyBlock.trim()}\n` : ""}
 ${styleBlock}
 
 ${globalDirectives}
@@ -9530,10 +9539,10 @@ Output ONLY the composition description, as flowing well-structured prose. You m
 3. The single light source, its direction, and the resulting shadow direction and softness.
 4. The background or stage exactly per the style direction, with concrete hex values.
 ${option.bearsText
-    ? `5. Every piece of on-image text, with its EXACT wording in double quotes, its typographic treatment, and its position in the frame. Count them, and confirm there are no more than five.
-6. Which clean flat areas are reserved and left empty for marks to be composited afterwards.
+    ? `5. Every piece of on-image text, with its EXACT wording in double quotes, its typographic treatment, and its position in the frame. Count them, and confirm there are no more than SEVEN.
+6. Where each mark is drawn, and the clean flat area around it that keeps it legible.
 7. The target aspect ratio: ${aspectRatio}.`
-    : `5. Which clean flat areas are reserved and left empty for marks to be composited afterwards.
+    : `5. Where each mark is drawn, and the clean flat area around it that keeps it legible.
 6. The target aspect ratio: ${aspectRatio}.
 7. Confirm explicitly that this image contains NO text of any kind.`}
 
@@ -9726,6 +9735,109 @@ export async function generatePdpImage({
  * that product. These models expose no seed, so a generated reference is the only
  * mechanism that holds a face steady across independent calls.
  */
+/**
+ * Read one product's story and turn it into concrete, reusable direction.
+ *
+ * Run ONCE PER PRODUCT before the batch, alongside the cast pre-pass, and reused by every
+ * image of that product. Two reasons it is not done per image. Interpreting the same
+ * sentence thirteen times would give thirteen slightly different worlds, and a product's
+ * own set disagreeing with itself is worse than having no story at all. And it is one
+ * cheap text call per product rather than per image, which for a normal run is a handful
+ * of calls, not hundreds.
+ *
+ * Returns null rather than throwing. A story that cannot be interpreted still reaches the
+ * prompt as raw text, which is a weaker but perfectly serviceable outcome; failing the
+ * product over it would be a much worse trade.
+ */
+export async function derivePdpStoryDirection({
+  textGenModel = "gemini",
+  sku,
+  story,
+  style,
+  abortSignal,
+}: {
+  // No apiKey here, unlike its siblings: this is a text-only call and `getTextClient`
+  // resolves its own credentials from the chosen model. Accepting a key only to ignore it
+  // would be noise.
+  textGenModel?: TextGenModel;
+  sku: string;
+  story: string;
+  style: PdpStyle;
+  abortSignal?: AbortSignal;
+}): Promise<PdpStoryDirection | null> {
+  if (!story.trim()) return null;
+
+  const grammar = PDP_STYLE_GRAMMARS[style];
+  const pairings = grammar.typography.pairings;
+
+  const prompt = `You are an art director preparing a footwear product detail page set. One product, style ${sku}, has been given a story. Interpret it into concrete direction that every image of this product will share.
+
+THE STORY: ${story.trim()}
+
+THE ARTISTIC STYLE THIS SET IS RENDERED IN: ${grammar.name}. ${grammar.premise} Its world: ${grammar.world} Its light: ${grammar.light} Its typographic voice: ${grammar.typography.voice}
+
+Your direction must sit INSIDE that style, not replace it. The style decides how things are rendered. You are deciding what this particular product's images show and how they feel.
+
+AVAILABLE TYPEFACE PAIRINGS, choose the ONE that best suits this story:
+${pairings.map((p, i) => `${i}: ${p}`).join("\n")}
+
+Return ONLY a JSON object, no prose and no code fence, with exactly these keys:
+{
+  "setting": "the location this product lives in: place, surfaces, weather, time of day. Concrete and visual, one or two sentences. This is footwear, so the ground underfoot matters; say what it is.",
+  "wardrobe": "what a model in this story wears and carries, other than the footwear. Concrete garments and accessories, not adjectives.",
+  "pose": "what the model is in the middle of doing and how they hold themselves. An action, not a stance.",
+  "palette": "the colour lean this story asks for, described inside the style's palette rather than fighting it.",
+  "typography": "how the chosen pairing should be SET for this story: weight, case, tracking, scale, how loudly it speaks.",
+  "typographyIndex": <integer, the index of your chosen pairing from the list above>,
+  "iconography": "what any icons should depict and how they should be drawn, taken from this story's world rather than from stock pictograms.",
+  "copyTone": "the voice on-image callouts should speak in for this product."
+}
+
+RULES:
+- Everything must be traceable to the story. Do not invent a scenario it does not support.
+- NEVER state or imply a factual claim about the product's materials, performance or certification. You are setting a scene, not making a claim.
+- NEVER use an em dash or an en dash anywhere in your output.
+- Keep every value under forty words.`;
+
+  try {
+    const ai = getTextClient(textGenModel);
+    const response = await ai.models.generateContent({
+      model: "gemini-3.1-pro-preview",
+      contents: [{ text: prompt }],
+      config: { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }, abortSignal },
+    });
+
+    const text = response.text;
+    if (!text) return null;
+
+    // The model is asked for bare JSON but sometimes fences it anyway.
+    const match = /\{[\s\S]*\}/.exec(text);
+    if (!match) return null;
+    const raw = JSON.parse(match[0]) as Partial<PdpStoryDirection>;
+
+    const str = (v: unknown): string => (typeof v === "string" ? stripDashes(v.trim()) : "");
+    const setting = str(raw.setting);
+    // A direction with no setting and no typography is not worth carrying; fall back to
+    // the raw story, which the prompt still includes.
+    if (!setting && !str(raw.typography)) return null;
+
+    const index = Number(raw.typographyIndex);
+    return {
+      setting,
+      wardrobe: str(raw.wardrobe),
+      pose: str(raw.pose),
+      palette: str(raw.palette),
+      typography: str(raw.typography),
+      typographyIndex:
+        Number.isFinite(index) && index >= 0 ? Math.floor(index) % pairings.length : 0,
+      iconography: str(raw.iconography),
+      copyTone: str(raw.copyTone),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function generatePdpCastMember({
   apiKey,
   description,

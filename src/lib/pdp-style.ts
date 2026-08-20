@@ -208,11 +208,23 @@ export function buildPdpStyleBlock(
   background: PdpBackground,
   bearsText: boolean = true,
   /**
-   * Selects the typographic pairing from the style's pool. Chosen ONCE per batch and
-   * reused for every image in it, so a delivered set shares one typographic identity
-   * while a later run of the same style looks different. Wraps, so any integer is valid.
+   * Selects the typographic pairing from the style's pool.
+   *
+   * Chosen ONCE PER PRODUCT, not per image, so every image of one product shares a
+   * typographic identity while different products in a catalogue differ. When a product
+   * has a story the pre-pass picks the pairing that suits it; without one the index falls
+   * back to a per-run value. Wraps, so any integer is valid.
    */
-  typographyIndex: number = 0
+  typographyIndex: number = 0,
+  /**
+   * True when this option carries a human model and a product story is in play.
+   *
+   * A lifestyle image with no world is not a lifestyle image, so on those shots the story
+   * is allowed to place the scene even under a style that is otherwise placeless. Left
+   * false everywhere else, which keeps staged product shots and table-driven infographics
+   * exactly as they were.
+   */
+  storySetsScene: boolean = false
 ): string {
   const g = PDP_STYLE_GRAMMARS[style];
   const bg = resolveBackgroundClause(style, background);
@@ -229,7 +241,11 @@ ${bearsText ? `INFORMATION: ${g.information}` : PDP_NO_INFORMATION_CLAUSE}
 HIERARCHY: ${g.hierarchy}
 ${bearsText ? `SECONDARY MARK TREATMENT: ${g.secondaryMark}\n` : ""}${bearsText ? `TYPOGRAPHIC VOICE: ${g.typography.voice}\nTYPEFACES FOR THIS SET: ${pairing}. Use this same pairing consistently across the whole image.\n` : ""}REGISTER: ${g.register}
 SIGNATURE ELEMENTS: ${bearsText ? g.signature : "expressed only through space, light and subject treatment, since this image carries no information graphics."}
-${bg ? `\n${bg}` : `\nSETTING: none. This style is placeless by definition. Render no location, no horizon, no environment and no props. Any background preference stated elsewhere MUST be ignored in favour of the single tint field described above.`}
+${bg
+      ? `\n${bg}${storySetsScene ? `\nSETTING TAKES PRECEDENCE FROM THE STORY: this image carries a human model and the product story decides where it happens. Where the story implies a location, build that location instead of the background described immediately above. Everything else in this style layer, its light, its palette, its texture and its typographic feel, still governs how that location is rendered.` : ""}`
+      : storySetsScene
+      ? `\nSETTING: this style is placeless by default, but this image carries a human model and a product story, and a person standing in an empty tint field is not a lifestyle image. Build the world the story implies. Hold everything else this style asks for: the same quality of light, the same restraint, the same palette discipline and the same treatment of the subject. The result should read as this style visiting a real place, NOT as a different style.`
+      : `\nSETTING: none. This style is placeless by definition. Render no location, no horizon, no environment and no props. Any background preference stated elsewhere MUST be ignored in favour of the single tint field described above.`}
 
 ${PDP_STYLE_CONSTANTS}`;
 }

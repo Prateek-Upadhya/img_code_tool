@@ -20,6 +20,7 @@ import {
   generatePdpPrompt,
   generatePdpImage,
   generatePdpCastMember,
+  derivePdpStoryDirection,
   scorePdpImage,
   contextualRetryPdpImage,
   PDP_MAX_ATTEMPTS,
@@ -36,8 +37,9 @@ import {
   footwearSideLabel,
   placementLabel,
   shouldDrawOptionalLogo,
+  buildPdpStoryBlock,
 } from "@/lib/pdp-directives";
-import { resolvePdpCopy } from "@/lib/pdp-sheet";
+import { resolvePdpCopy, resolvePdpStory } from "@/lib/pdp-sheet";
 import { savePdpImage, readPdpImage, clearPdpRun } from "@/lib/pdp-result-store";
 import { downloadGroupedZip, downloadImage } from "@/lib/result-zip";
 import { isChunkLoadError, STALE_BUILD_MESSAGE } from "@/lib/stale-build";
@@ -45,7 +47,13 @@ import { runPool } from "@/lib/two-lane-runner";
 import { withPdpRetry, PdpConcurrencyGovernor } from "@/lib/pdp-retry";
 import { dataUrlToFile } from "@/lib/model-creation-client";
 import type { VTONStore } from "@/store/vton-store";
-import type { PdpProduct, PdpResult, PdpShotOption, StepCost } from "@/lib/types";
+import type {
+  PdpProduct,
+  PdpResult,
+  PdpShotOption,
+  PdpStoryDirection,
+  StepCost,
+} from "@/lib/types";
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -201,10 +209,74 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
    */
   const typographyIndexRef = useRef<number>(Math.floor(Math.random() * 997));
 
+  /** Interpreted story per product id, surviving the run so a later retry matches its set. */
+  const storyDirectionsRef = useRef<Map<string, PdpStoryDirection>>(new Map());
+
+  /**
+   * The style block for one image.
+   *
+   * `direction` is the product's interpreted story, when it has one. It supplies the
+   * typographic pairing, so a catalogue of products differs typographically while every
+   * image of one product agrees; without a story the run-level pairing is used exactly as
+   * before. `setsScene` is true only on options carrying a human model, which is the one
+   * place a story is allowed to override a style's own background.
+   */
   const buildStyleBlockFor = useCallback(
-    (bearsText: boolean) =>
-      buildPdpStyleBlock(pdpStyle, pdpBackground, bearsText, typographyIndexRef.current),
+    (bearsText: boolean, direction: PdpStoryDirection | null, setsScene: boolean) =>
+      buildPdpStyleBlock(
+        pdpStyle,
+        pdpBackground,
+        bearsText,
+        direction ? direction.typographyIndex : typographyIndexRef.current,
+        setsScene
+      ),
     [pdpStyle, pdpBackground]
+  );
+
+  /**
+   * Story pre-pass.
+   *
+   * One text call per product that HAS a story, run before the batch and reused by every
+   * image of that product. Interpreting the same sentence once per image would give each
+   * image its own slightly different world, and a product's set disagreeing with itself is
+   * worse than having no story at all.
+   *
+   * Products with no story, or whose interpretation fails, simply get no entry. Their
+   * prompts fall back to the raw story text, or to the artistic style alone, which is the
+   * behaviour that shipped before stories existed.
+   */
+  const prepareStoryDirections = useCallback(
+    async (signal: AbortSignal): Promise<Map<string, PdpStoryDirection>> => {
+      const byProduct = new Map<string, PdpStoryDirection>();
+      // Held for the session, not just the run. A card retried after the batch finishes
+      // must reuse its product's direction, or the replacement image would come back with
+      // a different world and typeface from the set it belongs to.
+      storyDirectionsRef.current = byProduct;
+      if (!pdpSheetSession?.storyColumn) return byProduct;
+
+      const withStories = readyProducts
+        .map((product) => ({ product, story: resolvePdpStory(product, pdpSheetSession) }))
+        .filter((entry) => entry.story.trim().length > 0);
+      if (withStories.length === 0) return byProduct;
+
+      setCastNote(
+        `Reading ${withStories.length} product stor${withStories.length === 1 ? "y" : "ies"}...`
+      );
+      for (const { product, story } of withStories) {
+        if (signal.aborted) break;
+        const direction = await derivePdpStoryDirection({
+          textGenModel,
+          sku: product.sku,
+          story,
+          style: pdpStyle,
+          abortSignal: signal,
+        });
+        if (direction) byProduct.set(product.id, direction);
+      }
+      setCastNote(null);
+      return byProduct;
+    },
+    [pdpSheetSession, readyProducts, textGenModel, pdpStyle]
   );
 
   /**
@@ -295,6 +367,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
       product: PdpProduct,
       option: PdpShotOption,
       castFile: File | undefined,
+      storyDirection: PdpStoryDirection | null,
       runId: string,
       signal: AbortSignal
     ) => {
@@ -336,6 +409,17 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
 
       try {
         const copy = resolvePdpCopy(product, option, pdpSheetSession, pdpOptionColumns);
+        // Only a shot carrying a human model may take its location from the story. On a
+        // staged product shot or a table-driven infographic a story-built environment
+        // would read as a mistake, so there the story shapes everything except place.
+        const storySetsScene = option.requiresModel === true;
+        const story = resolvePdpStory(product, pdpSheetSession);
+        const storyBlock = buildPdpStoryBlock({
+          story,
+          direction: storyDirection,
+          setsScene: storySetsScene,
+          bearsText: option.bearsText,
+        });
         // Structural accuracy degrades past roughly six references, and product folders
         // routinely hold more. Trimming is tag-aware so a tagged sole is never the image
         // that gets dropped.
@@ -390,7 +474,8 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
             sku: product.sku,
             overallContext: copy.overallContext,
             optionCopy: copy.optionCopy,
-            styleBlock: buildStyleBlockFor(option.bearsText),
+            storyBlock,
+            styleBlock: buildStyleBlockFor(option.bearsText, storyDirection, storySetsScene),
             globalDirectives,
             markAwareness,
             soleConstructionLayers: product.soleConstructionLayers ?? 3,
@@ -540,6 +625,9 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
     setPdpResults(initial);
 
     try {
+      // Stories first: the cast pre-pass is the slower of the two, and a story that fails
+      // to interpret should not have consumed a casting call before it did so.
+      const storyByProduct = await prepareStoryDirections(controller.signal);
       const castByProduct = await prepareCast(controller.signal);
 
       // Sliding-window pool: as each job finishes the next starts, so PDP_CONCURRENCY are
@@ -548,7 +636,15 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
         initial.map((result, i) => ({ result, ...plan[i] })),
         governor.current,
         ({ result, product, option }) =>
-          runOne(result, product, option, castByProduct.get(product.id), runId, controller.signal),
+          runOne(
+            result,
+            product,
+            option,
+            castByProduct.get(product.id),
+            storyByProduct.get(product.id) ?? null,
+            runId,
+            controller.signal
+          ),
         controller.signal
       );
     } finally {
@@ -559,6 +655,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
   }, [
     canGenerate,
     plan,
+    prepareStoryDirections,
     prepareCast,
     runOne,
     setIsPdpGenerating,
@@ -592,6 +689,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
         product,
         option,
         castFile,
+        storyDirectionsRef.current.get(product.id) ?? null,
         pdpRunId || uid("pdp-run"),
         new AbortController().signal
       );

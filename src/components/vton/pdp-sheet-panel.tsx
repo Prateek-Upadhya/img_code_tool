@@ -10,7 +10,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { parsePdpSheet, buildColumnRoleView, guessOverallContextColumns } from "@/lib/pdp-sheet";
+import {
+  parsePdpSheet,
+  buildColumnRoleView,
+  guessOverallContextColumns,
+  guessStoryColumn,
+  PDP_SHEET_NONE,
+} from "@/lib/pdp-sheet";
 import { PDP_CATALOG } from "@/lib/pdp-catalog";
 import type { VTONStore } from "@/store/vton-store";
 
@@ -78,6 +84,18 @@ export function PdpSheetPanel({ store }: { store: VTONStore }) {
         ...pdpSheetSession,
         skuColumn: header,
         overallContextColumns: guessOverallContextColumns(pdpSheetSession.headers, header),
+        storyColumn: guessStoryColumn(pdpSheetSession.headers, header),
+      });
+    },
+    [pdpSheetSession, setPdpSheetSession]
+  );
+
+  const setStory = useCallback(
+    (header: string) => {
+      if (!pdpSheetSession) return;
+      setPdpSheetSession({
+        ...pdpSheetSession,
+        storyColumn: header === PDP_SHEET_NONE ? null : header,
       });
     },
     [pdpSheetSession, setPdpSheetSession]
@@ -131,7 +149,7 @@ export function PdpSheetPanel({ store }: { store: VTONStore }) {
     );
   }
 
-  const { headers, records, skuColumn, overallContextColumns } = pdpSheetSession;
+  const { headers, records, skuColumn, overallContextColumns, storyColumn } = pdpSheetSession;
   const dataHeaders = headers.filter((h) => h !== skuColumn);
 
   return (
@@ -201,6 +219,43 @@ export function PdpSheetPanel({ store }: { store: VTONStore }) {
           )}
         </div>
       )}
+
+      {/* Product story column */}
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-foreground">Product story</span>
+          <Select value={storyColumn ?? PDP_SHEET_NONE} onValueChange={setStory}>
+            <SelectTrigger className="h-8 w-56 text-xs">
+              <SelectValue placeholder="Choose the story column" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={PDP_SHEET_NONE} className="text-xs">
+                None
+              </SelectItem>
+              {dataHeaders.map((h) => (
+                <SelectItem key={h} value={h} className="text-xs">
+                  {h}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          The column describing each product&apos;s theme, use case, scenario and identity. It is
+          the strongest per-product influence in the set: it decides the setting and the
+          model&apos;s pose, wardrobe and accessories on lifestyle shots, and it shapes the callout
+          voice, the type treatment and the iconography everywhere. Read once per product before
+          the batch, so every image of a product shares one world. Pick a column of prose here,
+          not a specification column.
+        </p>
+        {storyColumn && overallContextColumns.includes(storyColumn) && (
+          <p className="text-xs text-amber-600 dark:text-amber-500">
+            {storyColumn} is also feeding overall context. That is allowed, but a story column
+            usually reads better as direction alone, since overall context is treated as factual
+            product information.
+          </p>
+        )}
+      </div>
 
       {/* Overall context columns */}
       <div className="space-y-2">

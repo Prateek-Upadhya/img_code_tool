@@ -87,6 +87,34 @@ export function guessOverallContextColumns(headers: string[], skuColumn: string)
   return headers.filter((h) => h !== skuColumn && patterns.some((re) => re.test(h)));
 }
 
+/**
+ * Guess the column carrying the product's story.
+ *
+ * Deliberately narrow, unlike the overall-context guess. Over-selecting there is harmless
+ * because the extra text only adds product understanding, but the story column drives the
+ * setting, the wardrobe and the typography, so guessing a specifications column into that
+ * role would push the whole set somewhere the operator never asked for. Returns null when
+ * nothing matches, and the operator picks it themselves.
+ */
+export function guessStoryColumn(headers: string[], skuColumn: string): string | null {
+  const patterns = [
+    /\bstory\b/i,
+    /narrative/i,
+    /scenario/i,
+    /use.?case/i,
+    /\btheme\b/i,
+    /occasion/i,
+    /persona/i,
+    /positioning/i,
+    /\bidentity\b/i,
+    /\bmood\b/i,
+  ];
+  return findHeader(
+    headers.filter((h) => h !== skuColumn),
+    patterns
+  );
+}
+
 export async function parsePdpSheet(file: File): Promise<PdpSheetParseResult> {
   const parsed = await parseSpreadsheetFile(file);
   if (parsed.headers.length === 0) {
@@ -100,6 +128,7 @@ export async function parsePdpSheet(file: File): Promise<PdpSheetParseResult> {
       records: parsed.records,
       skuColumn,
       overallContextColumns: guessOverallContextColumns(parsed.headers, skuColumn),
+      storyColumn: guessStoryColumn(parsed.headers, skuColumn),
     },
     errors: parsed.errors,
   };
@@ -221,6 +250,17 @@ export function resolvePdpCopy(
 }
 
 /**
+ * This product's story text, or an empty string.
+ *
+ * Kept separate from `resolvePdpCopy` because the story is not copy. It never appears on
+ * an image verbatim; it is creative direction that shapes how the image is built.
+ */
+export function resolvePdpStory(product: PdpProduct, session: PdpSheetSession | null): string {
+  if (!session?.storyColumn || !product.sheetRow) return "";
+  return stripDashes((product.sheetRow[session.storyColumn] ?? "").trim());
+}
+
+/**
  * Inverse view of the mapping: header to the roles it serves. Rendered on the sheet panel
  * so coverage can be checked without walking every option.
  */
@@ -236,6 +276,7 @@ export function buildColumnRoleView(
     .filter((h) => h !== session.skuColumn)
     .map((header) => {
       const roles: string[] = [];
+      if (session.storyColumn === header) roles.push("Product story");
       if (session.overallContextColumns.includes(header)) roles.push("Overall context");
       for (const [optionId, columns] of Object.entries(optionColumns)) {
         if (columns.includes(header)) roles.push(labelById.get(optionId) ?? optionId);

@@ -590,9 +590,9 @@ export function StepPdpProducts({ store }: { store: VTONStore }) {
         <div>
           <h3 className="text-sm font-medium text-foreground">Logos</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Both marks are composited onto the finished image from your files, so they come out
-            pixel exact. The generator is told to leave these areas clean rather than to draw a mark
-            itself.
+            Both marks are drawn into the image by the generator, working from your files as the
+            reference for their exact shape. The generator is told to keep the area around each one
+            clean so it stays legible.
           </p>
         </div>
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">

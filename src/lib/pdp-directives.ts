@@ -1,4 +1,10 @@
-import type { FootwearSide, OverlayPosition, PdpLogos, PdpShotOption } from "./types";
+import type {
+  FootwearSide,
+  OverlayPosition,
+  PdpLogos,
+  PdpShotOption,
+  PdpStoryDirection,
+} from "./types";
 
 /**
  * Shared prompt directives for the PDP Set mode.
@@ -372,6 +378,64 @@ export function buildPdpGlobalDirectives(opts: {
     }),
   ];
   return blocks.filter(Boolean).join("\n\n");
+}
+
+/**
+ * The product story, turned into the strongest per-product instruction in the prompt.
+ *
+ * Ordering matters. This block sits ABOVE the product information, because the story
+ * decides what kind of image this is while the product information only decides what is
+ * true about the footwear in it. Two products with identical specifications and different
+ * stories should not produce the same picture.
+ *
+ * `setsScene` is the one axis that varies by option. On a shot carrying a human model the
+ * story is allowed to place that person somewhere, because a lifestyle image without a
+ * world is not a lifestyle image. On a pure product shot or a table-driven infographic the
+ * story still governs mood, palette lean, typography, iconography and callout voice, but
+ * it MUST NOT invent an environment: those images are staged, and a story-driven location
+ * appearing behind a size chart would read as an error rather than as direction.
+ */
+export function buildPdpStoryBlock(opts: {
+  /** The raw story cell, used when interpretation was unavailable. */
+  story: string;
+  /** Interpreted direction, when the per-product pre-pass produced one. */
+  direction?: PdpStoryDirection | null;
+  /** True for options that carry a human model. */
+  setsScene: boolean;
+  /** True when this image carries on-image text. */
+  bearsText: boolean;
+}): string {
+  const { story, direction, setsScene, bearsText } = opts;
+  if (!story.trim() && !direction) return "";
+
+  const scene = setsScene
+    ? `- THE SETTING IS THE STORY'S TO DECIDE. Place this image in the world the story implies: its location, its surfaces, its weather, its time of day. This OVERRIDES any instruction elsewhere that this set is placeless or that the background is a plain field. The artistic style still decides HOW that world is rendered, its light, its palette and its texture, but WHERE we are comes from the story.
+- THE MODEL BELONGS TO THAT WORLD. Their pose, what they are in the middle of doing, what they wear and what they carry all follow from the story. A commuter, an athlete and a host stand differently, dress differently and hold themselves differently. Dress and pose the person the story describes, not a generic model.`
+    : `- DO NOT BUILD A LOCATION. This image is a staged product or information image, so the story MUST NOT introduce an environment, a horizon, a setting or scene props. Any background instruction given elsewhere stands unchanged.
+- THE STORY STILL SHAPES IT. Let it decide the mood, the palette lean within the style, the surface materials directly under and around the product, and the register of everything written.`;
+
+  const text = bearsText
+    ? `
+- THE WORDS COME FROM THE STORY'S VOICE. Callout wording, the headline and any short note must sound like they belong to this story. A rugged story and a refined story do not use the same words about the same feature.
+- TYPOGRAPHY ANSWERS TO THE STORY. Within the typeface pairing given in the style block, the story decides how it is SET: its weight, its case, its tracking, its scale and how loudly it speaks.
+- ICONOGRAPHY ANSWERS TO THE STORY. Any icon must depict something drawn from this story's world and be drawn in a manner that suits it. NEVER use a generic stock pictogram where the story suggests something specific.`
+    : "";
+
+  const interpreted = direction
+    ? `
+INTERPRETED DIRECTION FOR THIS PRODUCT (follow it closely; it was derived from the story above and is shared by every image of this product, so the set holds together):
+${setsScene ? `- SETTING: ${direction.setting}\n- THE MODEL WEARS AND CARRIES: ${direction.wardrobe}\n- THE MODEL IS DOING: ${direction.pose}\n` : ""}- PALETTE LEAN: ${direction.palette}
+${bearsText ? `- TYPOGRAPHIC TREATMENT: ${direction.typography}\n- ICONOGRAPHY: ${direction.iconography}\n- COPY VOICE: ${direction.copyTone}` : ""}`
+    : "";
+
+  return `═══ PRODUCT STORY (the strongest direction in this prompt) ═══
+This product has a story, and it outranks every other creative instruction here except the factual accuracy of the product itself and the hard rules further down. Where the story and the artistic style disagree about WHAT this image shows, the story decides. Where they disagree about HOW it is rendered, the style decides. The product's own shape, colour, materials and markings are never negotiable and the story NEVER alters them.
+
+THE STORY: ${story.trim() || "not stated in words; follow the interpreted direction below."}
+
+${scene}${text}
+- NEVER PUT THE STORY ON THE IMAGE. It is direction, not copy. Do not render the story text, or any part of it, as words in the picture.
+- NEVER INVENT A CLAIM FROM IT. The story sets mood and scenario. It is NOT evidence about the product's materials, performance or certification, and nothing stated in it may become a factual claim on the image.${interpreted}`;
 }
 
 /**

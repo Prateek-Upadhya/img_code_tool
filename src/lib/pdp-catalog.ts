@@ -353,18 +353,22 @@ const COMPARISON: PdpShotOption = {
   heading: "infographic",
   label: "Comparison",
   icon: "⚖️",
-  description: "This footwear against a generic equivalent, across three or four rows.",
+  description:
+    "This footwear against a generic equivalent, three or four rows, each row showing a zoomed crop of the real detail.",
   requiresModel: false,
   consumesCopy: true,
   bearsText: true,
-  promptSnippet: `COMPOSITION: a two column comparison contrasting this footwear against a generic, unbranded equivalent.
+  promptSnippet: `COMPOSITION: a two column comparison contrasting this footwear against a generic, unbranded equivalent, where every row SHOWS the attribute it names rather than only asserting it.
 
 - THE TWO SUBJECTS: at the top of the frame, EXACTLY TWO shoes side by side. On one side, THIS product, rendered in full colour and full detail from the reference photographs. On the other side, a GENERIC equivalent shoe of the same broad category, rendered plainly in flat neutral grey with no branding, no pattern, no texture detail and no distinguishing design. The generic shoe MUST be visibly duller and simpler so the comparison reads instantly. NEVER put any real brand's product, name or mark on the generic side.
 - COLUMN HEADERS: one filled header for this product carrying its name, and one outlined, unfilled header for the generic side carrying a plain descriptor such as "ORDINARY SLIDE" or "ORDINARY SHOE". The visual weight difference between a filled and an outlined header is doing deliberate work.
-- ROWS: EXACTLY THREE OR FOUR comparison rows. Never more than four. Each row has a short attribute label on the left, then this product's entry marked with a filled tick, then the generic entry marked with an outlined cross or dash. Keep each entry to at most six words.
-- ROW SELECTION: choose the three or four attributes from the supplied product information that most strongly differentiate this footwear. Pick the differences a buyer would actually care about, not the trivial ones.
+- ROWS: EXACTLY THREE OR FOUR comparison rows. Never more than four. Each row has, from left to right: a small ZOOMED DETAIL CROP of this product, then a short attribute label, then this product's entry marked with a filled tick, then the generic entry marked with an outlined cross or dash. Keep each entry to at most six words.
+- THE ZOOMED CROP IS REQUIRED ON EVERY ROW, on every product, every time. This is a fixed part of this layout, not an optional flourish. Each crop is a close macro view of the ACTUAL REGION OF THIS PRODUCT that the row is about, taken from the reference photographs and rendered in full colour and full material detail: the outsole tread for a grip row, the footbed for a cushioning row, the upper's surface for a material row, the strap and its join for an adjustability row. A viewer must be able to look at the crop and see the thing the row claims.
+- CROP RENDERING: all three or four crops MUST be the same size and the same shape as each other, aligned in one column down the left of the grid, each one a clean circular or softly rounded square vignette. They are magnified views of the real product, sharply focused, evenly lit and clearly readable at small size. Choose the magnification so the feature fills the crop; a crop showing the whole shoe in miniature has failed its job.
+- THE CROPS SHOW THIS PRODUCT ONLY. NEVER show the generic shoe in a crop, and NEVER pair each row with two crops. The generic side stays as its plain grey shoe at the top and its outlined marks in the grid, and nothing else.
+- ROW SELECTION: choose the three or four attributes from the supplied product information that most strongly differentiate this footwear AND that are physically visible somewhere on it, since each one has to be shown in a crop. Prefer a visible difference a buyer would care about over an invisible one, and never select an attribute you cannot point a camera at.
 - HONESTY: every claim about this product must come from the supplied product information. Statements about the generic side must be plain, factual and unexaggerated, describing the ordinary absence of a feature rather than disparaging anything.
-- TEXT BUDGET: the row grid is one structured block. Beyond it, use at most one short headline and nothing else.`,
+- TEXT BUDGET: the row grid is one structured block and the crops are pictures, not text. Beyond the grid, use at most one short headline and nothing else. NEVER caption a crop; the attribute label beside it already names it, and a second label would say the same thing twice.`,
 };
 
 /** Option ids whose brief is completed per product from a construction pool. */
