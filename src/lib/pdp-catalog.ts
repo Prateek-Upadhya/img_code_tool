@@ -147,22 +147,56 @@ const MODEL_COLLAGE: PdpShotOption = {
 //  3) INFOGRAPHICS
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Regions for the close up feature study, each carrying its own camera.
+ *
+ * This option used to choose its subject with a two way rule: cushioning, footbed,
+ * midsole or outsole meant frame the heel, anything about the upper meant frame the top.
+ * Footwear copy leads with cushioning and comfort nearly every time, so the first branch
+ * won nearly every time and every product came back as the same zoomed heel. The rule was
+ * biased, not random, and no amount of sampling underneath it would have helped.
+ *
+ * So the region is drawn from this pool instead, one per PRODUCT via
+ * {@link pdpConstructionFor}, and each entry carries its own camera. Fixing the camera
+ * once for every entry was the other half of the sameness: a low lens looking along the
+ * footwear can only really see the heel.
+ */
+export const PDP_INTERIOR_REGIONS: string[] = [
+  "THE HEEL AND MIDSOLE STACK, where the cushioning depth is visible as layered material. Camera low and behind the heel, looking forward along the length of the shoe, so the stack rises in the foreground and the rest of the shoe recedes.",
+  "THE FOOTBED AND ARCH, the contoured surface the foot actually sits on. Camera above and to one side, angled down the length of the footbed so its contour and any surface texture read across the frame.",
+  "THE OUTSOLE TREAD, its pattern, depth and edges. Tip the shoe up so the ground facing surface turns toward the lens and fills the frame, lit at a low raking angle so the tread casts its own relief.",
+  "THE STRAP AND ITS ANCHOR POINT, where the strap meets and joins the sole unit. Camera square to the side at strap height, close enough that the join, its stitching or moulding, and the material change are all clearly legible.",
+  "THE TOE SPRING AND FOREFOOT, the curve where the sole lifts away from the ground at the front. Camera low and ahead of the shoe, looking back along it, so the upward curve is read against the surface beneath.",
+  "THE SIDEWALL AND MIDSOLE SCULPTING, the shaped flank of the sole unit. Camera at surface level running along the side of the shoe, close and parallel, so the sculpting, grooves and material transitions travel across the frame.",
+  "THE COLLAR AND TOPLINE, the edge where the foot enters. Camera raking across the opening at a shallow angle, close to the edge, so the lining, the binding and the way the edge is finished are all visible.",
+  "THE INTERIOR SURFACE, looking into the shoe itself. Camera above the opening angled into the cavity, lit so the inner surface, its texture and the way it is finished are clearly visible rather than lost in shadow.",
+];
+
+/** Option ids whose brief is completed per product from a pool. */
+export const PDP_INTERIOR_ANGLE_ID = "pdp-interior-angle";
+
 const INTERIOR_ANGLE: PdpShotOption = {
-  id: "pdp-interior-angle",
+  id: PDP_INTERIOR_ANGLE_ID,
   heading: "infographic",
   label: "Interior angle",
   icon: "🔍",
-  description: "A close up of one feature, heel or top, chosen from the technical information.",
+  description:
+    "An extreme close up of one region of the footwear. A different region and camera angle per product.",
   requiresModel: false,
   consumesCopy: true,
   bearsText: true,
-  promptSnippet: `COMPOSITION: an extreme close up feature study of EXACTLY ONE shoe, shot from a low interior angle so the camera looks along and into the footwear rather than down at it.
-- FEATURE SELECTION: read the supplied product information and choose the SINGLE most technically interesting feature it describes. If the information emphasises cushioning, the footbed, the midsole or the outsole, frame the HEEL and midsole region. If it emphasises the upper, the strap, the lining or the collar, frame the TOP of the shoe. Commit fully to one choice and build the whole frame around it.
-- CAMERA: sit the lens low and close, near the surface the shoe rests on, angled so the chosen feature dominates the frame. Use a macro perspective with shallow depth of field so the feature is razor sharp and the rest of the shoe falls away softly.
-- MAGNIFIED INSET: include ONE circular magnified inset showing a tighter crop of the same feature, connected to its source point on the shoe by a single thin line ending in a small dot. The inset shows a real photographic magnification of that exact area, not an illustration.
-- ON PRODUCT ANNOTATION: overlay ONE set of concentric thin arcs or a soft ring directly on the feature surface, indicating where the technology sits. It must sit in the product's own perspective plane, following the surface curvature.
-- TEXT: exactly one short headline naming the feature, one supporting line of at most twelve words, and one short label for the inset. Three text elements total, no more.
-- Derive all copy from the supplied product information. If the information is a long paragraph, reduce it first to short factual points and use only those.`,
+  // The region and its camera are appended per product from PDP_INTERIOR_REGIONS. This
+  // snippet carries everything shared, and deliberately fixes NO camera of its own.
+  promptSnippet: `COMPOSITION: an extreme close up feature study of EXACTLY ONE shoe, built entirely around the single region named below. That region must dominate the frame; this is a macro study of one part, not a picture of a whole shoe with something highlighted.
+- THE REGION IS ALREADY CHOSEN, and it is stated below along with the camera that goes with it. Use them. Do NOT substitute a different part of the shoe because the product information talks more about something else.
+- IF THE REGION IS NOT THERE: if the named region genuinely does not exist on this footwear, or carries nothing worth showing on it, move to the NEAREST ADJACENT region and shoot that instead. A slide has no meaningful collar; an open sandal has no interior cavity. Never invent a part the product does not have, and never fall back to the heel out of habit.
+- SHOOT WHAT YOU CAN SEE: prefer a region that is genuinely visible in the supplied reference photographs, and render it from what those photographs actually show. NEVER invent surface detail, texture or construction for a region the references do not cover.
+- CAMERA: use the camera stated with the region. Whatever it is, get the lens close, use a macro perspective and a shallow depth of field so the region is razor sharp and the rest of the shoe falls away softly.
+- MAGNIFIED INSET: include ONE circular magnified inset showing a tighter crop of the same region, connected to its source point on the shoe by a single thin line ending in a small dot. The inset shows a real photographic magnification of that exact area, not an illustration.
+- ON PRODUCT ANNOTATION: overlay ONE set of concentric thin arcs or a soft ring directly on the region's surface, indicating where the detail sits. It must sit in the product's own perspective plane, following the surface curvature.
+- TEXT: exactly one short headline naming what is shown, one supporting line of at most twelve words, and one short label for the inset. Three text elements total, no more.
+- THE COPY IS ABOUT THE REGION SHOWN. Take from the supplied product information whatever it says about THIS region and use that. If it says nothing about this region, describe plainly what is visibly true of it in the photographs instead. NEVER import a claim about a different part of the shoe just because the information talks about that part more, and NEVER state anything you cannot see. A short honest line about what is in frame beats an impressive line about something that is not.
+- If the information is a long paragraph, reduce it first to short factual points and use only those.`,
 };
 
 const MODEL_INFOGRAPHIC: PdpShotOption = {

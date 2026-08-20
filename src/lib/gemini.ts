@@ -81,6 +81,8 @@ import {
   PDP_SOLE_CONSTRUCTION_ID,
   PDP_WATERPROOF_ID,
   PDP_WATERPROOF_CONSTRUCTIONS,
+  PDP_INTERIOR_ANGLE_ID,
+  PDP_INTERIOR_REGIONS,
   pdpConstructionFor,
 } from "./pdp-catalog";
 import {
@@ -9447,6 +9449,42 @@ Output ONLY the edit instruction text — no preamble, no commentary.`;
 // pdp-directives.ts, which is what guards against this model substituting a canonical
 // version of a known mark or inventing lettering around it.
 
+/**
+ * The composition brief for one product and option.
+ *
+ * Most options carry a fixed string on their catalog entry. Three complete themselves per
+ * product instead, and each does it for its own reason:
+ *
+ *  - SOLE CONSTRUCTION varies with the layer count the operator tagged on the product.
+ *  - WATERPROOF draws a construction from a pool, so a catalogue of waterproof styles is
+ *    not six versions of the same split frame.
+ *  - INTERIOR ANGLE draws a region and its camera from a pool, because its previous rule
+ *    picked the subject from the product copy and footwear copy leads with cushioning
+ *    nearly every time, which made every product come back as the same zoomed heel.
+ *
+ * Both pools are keyed on the SKU rather than randomised, so a product keeps its subject
+ * across a retry. A retry that silently changed what the image was OF would make the
+ * operator's approve or discard decision meaningless.
+ */
+export function resolvePdpCompositionBrief(
+  option: PdpShotOption,
+  sku: string,
+  soleConstructionLayers: SoleConstructionLayerCount
+): string {
+  if (option.id === PDP_SOLE_CONSTRUCTION_ID) {
+    return buildSoleConstructionSnippet(soleConstructionLayers);
+  }
+  if (option.id === PDP_WATERPROOF_ID) {
+    return `${option.promptSnippet}
+- CONSTRUCTION FOR THIS PRODUCT: ${pdpConstructionFor(PDP_WATERPROOF_CONSTRUCTIONS, sku)}`;
+  }
+  if (option.id === PDP_INTERIOR_ANGLE_ID) {
+    return `${option.promptSnippet}
+- REGION AND CAMERA FOR THIS PRODUCT: ${pdpConstructionFor(PDP_INTERIOR_REGIONS, sku)}`;
+  }
+  return option.promptSnippet;
+}
+
 /** Step 1 — compose the art-direction brief for one product and one shot option. */
 export async function generatePdpPrompt({
   apiKey,
@@ -9491,17 +9529,7 @@ export async function generatePdpPrompt({
 }): Promise<{ enrichedPrompt: string; cost: StepCost }> {
   const ai = getTextClient(textGenModel);
 
-  // Two options have briefs that depend on the product rather than being a fixed string on
-  // the catalog entry: sole construction varies by layer count, and the waterproof image
-  // draws a construction from a pool keyed on the SKU so a catalogue does not repeat one
-  // composition across every waterproof style.
-  const compositionBrief =
-    option.id === PDP_SOLE_CONSTRUCTION_ID
-      ? buildSoleConstructionSnippet(soleConstructionLayers)
-      : option.id === PDP_WATERPROOF_ID
-      ? `${option.promptSnippet}
-- CONSTRUCTION FOR THIS PRODUCT: ${pdpConstructionFor(PDP_WATERPROOF_CONSTRUCTIONS, sku)}`
-      : option.promptSnippet;
+  const compositionBrief = resolvePdpCompositionBrief(option, sku, soleConstructionLayers);
 
   const systemPrompt = `You are an expert footwear e-commerce art director. You are given reference photographs of ONE footwear product, style ${sku}, plus information about it. Author ONE precise, deterministic, self-contained IMAGE COMPOSITION DESCRIPTION that an image generation model will follow to produce a finished asset.
 
