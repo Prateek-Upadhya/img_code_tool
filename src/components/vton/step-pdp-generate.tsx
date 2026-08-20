@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import {
   Sparkles,
@@ -784,15 +784,64 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
     [pdpResults, viewerId]
   );
 
-  const openViewer = useCallback(async (result: PdpResult) => {
+  /**
+   * The images the open viewer can move between: this product's, and only this product's.
+   *
+   * Scoped deliberately. A review session is about one product, and letting the arrows run
+   * on into the next SKU would make it easy to correct the wrong product's image without
+   * noticing. Results already arrive in catalog order, so no sorting is needed. Filtered to
+   * results that actually have an image, since a failed card has nothing to preview.
+   */
+  const viewerSiblings = useMemo(() => {
+    if (!viewerResult) return [];
+    return pdpResults.filter((r) => r.sku === viewerResult.sku && r.thumbnail);
+  }, [pdpResults, viewerResult]);
+
+  /**
+   * Id whose full image is currently wanted.
+   *
+   * Reads from the store are async, and the viewer can now be stepped through a product
+   * faster than they resolve. Without this, a slow read for the image just left behind
+   * lands on top of the one now on screen. The ref is the arbiter: a read whose id is no
+   * longer the wanted one is discarded.
+   */
+  const viewerWantedRef = useRef<string | null>(null);
+
+  const openViewer = useCallback((result: PdpResult) => {
+    viewerWantedRef.current = result.id;
     setViewerId(result.id);
+    // The thumbnail shows instantly; the effect below swaps in the full image.
     setViewerImage(result.thumbnail ?? null);
-    // The thumbnail shows instantly; the full image swaps in once read.
-    const full = await readPdpImage(result.id);
-    if (full) setViewerImage(full);
   }, []);
 
+  /**
+   * Keep the open viewer showing the current version of its image.
+   *
+   * Keyed on the thumbnail as well as the id, so this runs on open, on navigation, and
+   * again whenever a retry or an approval replaces the image underneath an open viewer.
+   * Without the thumbnail in the list, a retry would update the filmstrip while the large
+   * image beside it still showed the version that had just been replaced.
+   *
+   * Safe against a stale read on both axes: `cancelled` covers a superseded effect, and
+   * `viewerWantedRef` covers a read that resolves after the operator has moved on. Both
+   * callers write to the store before updating the thumbnail, so a thumbnail change always
+   * means the stored image is already the new one.
+   */
+  useEffect(() => {
+    const id = viewerResult?.id;
+    if (!id || !viewerResult?.thumbnail) return;
+    let cancelled = false;
+    void (async () => {
+      const full = await readPdpImage(id);
+      if (!cancelled && full && viewerWantedRef.current === id) setViewerImage(full);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [viewerResult?.id, viewerResult?.thumbnail]);
+
   const closeViewer = useCallback(() => {
+    viewerWantedRef.current = null;
     setViewerId(null);
     setViewerImage(null);
   }, []);
@@ -1079,7 +1128,7 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
                 className="overflow-hidden rounded-xl border border-border bg-card"
               >
                 <button
-                  onClick={() => result.thumbnail && void openViewer(result)}
+                  onClick={() => result.thumbnail && openViewer(result)}
                   disabled={!result.thumbnail}
                   className="relative block aspect-square w-full bg-muted/40 disabled:cursor-default"
                   title={result.thumbnail ? "Click to enlarge" : undefined}
@@ -1174,10 +1223,15 @@ export function StepPdpGenerate({ store }: { store: VTONStore }) {
 
       {viewerResult && (
         <PdpImageViewer
+          // Remounts on navigation, which is how the correction box and its attachments
+          // are cleared between images. See the component's own note.
+          key={viewerResult.id}
           result={viewerResult}
+          siblings={viewerSiblings}
           imageData={viewerImage}
           busy={correcting.includes(viewerResult.id) || BUSY.includes(viewerResult.status)}
           onClose={closeViewer}
+          onSelect={openViewer}
           onRetry={() => handleRetry(viewerResult)}
           onDownload={() => void handleDownloadOne(viewerResult)}
           onCorrect={(text, attachments) => void handleCorrect(viewerResult, text, attachments)}
