@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   X,
   Wand2,
@@ -116,12 +117,35 @@ export function PdpImageViewer({
     };
   }, []);
 
-  // Keep the active thumbnail in view when navigating by key or by edge button.
+  /**
+   * Keep the active thumbnail in view when navigating by key or by edge button.
+   *
+   * Scrolls the strip itself rather than calling `scrollIntoView` on the thumbnail.
+   * `scrollIntoView` walks up and scrolls EVERY scrollable ancestor, the document
+   * included, so it moved the page behind the modal on every navigation.
+   */
   useEffect(() => {
     const strip = stripRef.current;
     const active = strip?.querySelector<HTMLElement>("[data-active='true']");
-    active?.scrollIntoView({ block: "nearest", inline: "center" });
+    if (!strip || !active) return;
+    const target = active.offsetLeft - (strip.clientWidth - active.clientWidth) / 2;
+    strip.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
   }, [result.id]);
+
+  /**
+   * Hold the page still underneath.
+   *
+   * With nothing locked, a wheel over the modal chains through to the results page and
+   * moves it behind the backdrop. The previous value is restored rather than cleared, so
+   * an overlay opened above another cannot leave the page permanently unscrollable.
+   */
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -184,9 +208,17 @@ export function PdpImageViewer({
     });
   }, [onApprove]);
 
-  return (
-    <div className="fixed inset-0 z-[200] flex bg-black/70 p-3 backdrop-blur-md md:p-6">
-      <div className="mx-auto flex h-full w-full max-w-[1500px] overflow-hidden rounded-2xl border border-border bg-background shadow-2xl">
+  // Portalled to the body, and this is not cosmetic. The PDP step's root carries
+  // `animate-fade-in-up`, whose fill-mode leaves a permanent `transform: translateY(0)` on
+  // it. An element with any transform other than `none` becomes the containing block for
+  // its `position: fixed` descendants, so rendered in place this overlay sized itself to
+  // the whole results page instead of to the viewport: a modal as long as the run, that
+  // had to be scrolled to read. The portal takes it out of that ancestor entirely.
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md">
+      <div className="flex h-[80vh] w-[80vw] max-w-[1200px] overflow-hidden rounded-2xl border border-border bg-background shadow-2xl">
         {/* ── Left: the image, its navigation and the product's filmstrip ── */}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="relative flex min-h-0 flex-1 items-center justify-center gap-4 p-4">
@@ -451,6 +483,7 @@ export function PdpImageViewer({
           addFiles(files);
         }}
       />
-    </div>
+    </div>,
+    document.body
   );
 }
